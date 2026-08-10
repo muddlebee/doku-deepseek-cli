@@ -2,7 +2,7 @@
 
 # doku
 
-### DeepSeek AI coding assistant for your terminal
+### AI coding assistant for your terminal
 
 [![][github-stars-shield]][github-stars-link] [![][github-issues-shield]][github-issues-link] [![][github-license-shield]][github-license-link]
 
@@ -14,7 +14,7 @@ English · [中文](README-zh_CN.md)
 
 ---
 
-**doku** is a terminal AI coding assistant built for [DeepSeek](https://deepseek.com) models. It supports deep thinking, reasoning effort control, Agent Skills, and MCP integration — all from your terminal.
+**doku** is a provider-neutral terminal AI coding assistant powered by the OpenAI Agents JS runtime. It supports OpenAI, DeepSeek, custom OpenAI-compatible endpoints, Agent Skills, and MCP integration.
 
 ```bash
 npm install -g doku-deepseek-cli
@@ -23,8 +23,8 @@ doku
 
 ## Features
 
-- **DeepSeek-optimized** — tuned for DeepSeek v4 Pro/Flash with native thinking mode and reasoning effort control
-- **Context caching** — reduces API costs via [KV cache](https://api-docs.deepseek.com/guides/kv_cache)
+- **One agent runtime** — OpenAI Agents JS owns model turns, streaming, tools, cancellation, and turn limits
+- **Provider-neutral** — native OpenAI Responses support, DeepSeek reasoning through an isolated AI SDK adapter, and custom compatible endpoints
 - **Agent Skills** — extend the assistant with custom skill files at user or project level
 - **MCP support** — connect GitHub, browsers, databases, and more via Model Context Protocol
 - **Undo / checkpoints** — restore code and conversation to any previous state
@@ -44,26 +44,36 @@ doku
 
 ## Configuration
 
-Create `~/.doku/settings.json`:
+Create `~/.doku/settings.json` (the first-run setup can create this for you):
 
 ```json
 {
-  "env": {
-    "MODEL": "deepseek-v4-pro",
-    "BASE_URL": "https://api.deepseek.com",
-    "API_KEY": "sk-..."
-  },
-  "thinkingEnabled": true,
-  "reasoningEffort": "max"
+  "settingsVersion": 2,
+  "provider": "openai",
+  "model": "gpt-5.6-sol",
+  "apiMode": "auto",
+  "env": { "API_KEY": "sk-..." }
 }
 ```
 
+DeepSeek remains supported through its provider adapter:
+
+```json
+{
+  "settingsVersion": 2,
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "thinkingEnabled": true,
+  "reasoningEffort": "max",
+  "env": { "API_KEY": "sk-..." }
+}
+```
 For project-level settings, create `./.doku/settings.json` in your project root.
 
 You can also use environment variables — any `DOKU_*` env var maps to the corresponding setting:
 
 ```bash
-DOKU_API_KEY=sk-... DOKU_MODEL=deepseek-v4-flash doku
+DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.6-sol doku
 ```
 
 ## Slash Commands
@@ -93,13 +103,13 @@ DOKU_API_KEY=sk-... DOKU_MODEL=deepseek-v4-flash doku
 | `/` | Open commands menu |
 | `Ctrl+D` twice | Quit |
 
-## Supported Models
+## Providers and Models
 
-| Model | Notes |
-|-------|-------|
-| `deepseek-v4-pro` | Recommended — best quality |
-| `deepseek-v4-flash` | Faster, lower cost |
-| Any OpenAI-compatible model | Set `BASE_URL` accordingly |
+| Provider | API mode | Model IDs |
+|----------|----------|-----------|
+| OpenAI | Responses by default; Chat Completions optional | Any OpenAI model ID |
+| DeepSeek | Chat Completions through the isolated AI SDK bridge | Any DeepSeek model ID |
+| OpenAI-compatible | Chat Completions by default; Responses opt-in | Any endpoint-supported model ID |
 
 ## Agent Skills
 

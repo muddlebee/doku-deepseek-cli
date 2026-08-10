@@ -20,6 +20,10 @@ doku 使用 `settings.json` 设置文件进行持久化配置，支持两个层�
 | 用户设置文件 | `~/.doku/settings.json`         | 适用于当前用户的所有 doku 会话。                      |
 | 项目设置文件 | `项目根目录/.doku/settings.json` | 仅在该特定项目中运行 doku 时生效。项目设置会覆盖用户设置。 |
 
+### Provider 配置
+
+版本 2 可通过 `provider`、`model`、`apiMode` 和 `providers` 选择 OpenAI、DeepSeek 或自定义 OpenAI-compatible 服务。旧版 `env.MODEL`、`env.BASE_URL`、`env.API_KEY` 仍会自动识别，且不会被强制改写。`maxTurns` 默认 100，`tracingEnabled` 默认 `false`。
+
 ### `settings.json` 中的可用设置
 
 以下是 `settings.json` 支持的全部顶层字段，以及 `env` 内部支持的子字段：
@@ -132,6 +136,16 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 
 ## 环境变量优先级
 
+项目根目录的 `.env` 文件会使用 Node.js dotenv 语法自动加载。已有的 Shell 环境变量会覆盖 `.env` 中的同名值。OpenAI 的最小配置如下：
+
+```dotenv
+OPENAI_API_KEY=sk-...
+DOKU_PROVIDER=openai
+DOKU_MODEL=gpt-5.6-sol
+```
+
+也可以使用 `DOKU_API_KEY` 代替提供商专用变量。Git 会忽略 `.env` 和 `.env.*`，但保留 `.env.example`。
+
 环境变量是配置应用程序的常用方式，尤其适用于敏感信息（如 api-key）或可能在不同环境之间更改的设置。
 
 ### 优先级原则
@@ -152,7 +166,7 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 1. 硬编码默认值: `""`
 2. 用户级settings.json: `{"env": {"API_KEY": "abc123"}}`
 3. 项目级settings.json: `{"env": {"API_KEY": "abc123"}}`
-4. 系统环境变量: `DOKU_API_KEY=abc123 deepcode`
+4. 系统环境变量: `DOKU_API_KEY=abc123 doku`
 
 #### 二、设置模型的model, thinkingEnabled, reasoningEffort
 
@@ -163,7 +177,7 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 3. 用户级settings.json: `{"thinkingEnabled": true}`
 4. 项目级settings.json: `{"env": {"THINKING_ENABLED": "true"}}`
 5. 项目级settings.json: `{"thinkingEnabled": true}`
-6. 系统环境变量: `DOKU_THINKING_ENABLED=true deepcode`
+6. 系统环境变量: `DOKU_THINKING_ENABLED=true doku`
 
 #### 三、设置启动notify, webSearchTool等外挂脚本的环境变量
 
@@ -172,7 +186,7 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 1. 硬编码默认值：`os.environ.get('WEBHOOK', '...')  # notify脚本代码`
 2. 用户级settings.json: `{"env": {"WEBHOOK": "..."}}`
 3. 项目级settings.json: `{"env": {"WEBHOOK": "true"}}`
-4. 系统环境变量: `DOKU_WEBHOOK=... deepcode`
+4. 系统环境变量: `DOKU_WEBHOOK=... doku`
 
 #### 四、设置MCP Service的环境变量
 
@@ -182,4 +196,4 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 2. 用户级settings.json: `{"env": {"MCP_GITHUB_PERSONAL_ACCESS_TOKEN": "..."}}`
 3. 项目级settings.json: `{"mcpServers":{"github":{"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"..."}}}}`
 4. 项目级settings.json: `{"env": {"MCP_GITHUB_PERSONAL_ACCESS_TOKEN": "..."}}`
-5. 系统环境变量: `DOKU_MCP_GITHUB_PERSONAL_ACCESS_TOKEN=... deepcode`
+5. 系统环境变量: `DOKU_MCP_GITHUB_PERSONAL_ACCESS_TOKEN=... doku`

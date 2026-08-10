@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import { AppContext } from "./contexts";
 import { App } from "./App";
 import { RawModeProvider } from "./contexts/RawModeContext";
-import { SetupScreen } from "./SetupScreen";
+import { SetupScreen, type SetupResult } from "./SetupScreen";
 import { readSettings, resolveCurrentSettings, writeSettings } from "./App";
+import { buildSetupSettings } from "./setup-settings";
 
 const AppContainer: React.FC<{
   projectRoot: string;
@@ -14,9 +15,9 @@ const AppContainer: React.FC<{
   const [needsSetup] = useState(() => !resolveCurrentSettings(projectRoot).apiKey);
   const [setupDone, setSetupDone] = useState(false);
 
-  function handleSetupComplete({ apiKey, baseURL }: { apiKey: string; baseURL: string }): void {
+  function handleSetupComplete(result: SetupResult): void {
     const existing = readSettings() ?? {};
-    writeSettings({ ...existing, env: { ...existing.env, API_KEY: apiKey, BASE_URL: baseURL } });
+    writeSettings(buildSetupSettings(existing, result));
     setSetupDone(true);
   }
 

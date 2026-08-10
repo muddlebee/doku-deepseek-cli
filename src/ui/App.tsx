@@ -24,6 +24,7 @@ import {
   type ResolvedDeepcodingSettings,
   resolveSettingsSources,
 } from "../settings";
+import { loadProjectEnv } from "../common/project-env";
 import { PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
 import { MessageView, RawModeExitPrompt } from "./components";
 import { SessionList } from "./SessionList";
@@ -38,6 +39,7 @@ import {
   type AskUserQuestionAnswers,
   findPendingAskUserQuestion,
   formatAskUserQuestionAnswers,
+  formatAskUserQuestionDecline,
 } from "./askUserQuestion";
 import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
@@ -318,6 +320,17 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     [sessionManager]
   );
 
+  const redrawStaticChat = useCallback((nextMessages: SessionMessage[]): void => {
+    writeRef.current("\u001B[2J\u001B[3J\u001B[H");
+    setMessages([]);
+    setShowWelcome(false);
+    setWelcomeNonce((nonce) => nonce + 1);
+    setTimeout(() => {
+      setMessages(nextMessages);
+      setShowWelcome(true);
+    }, 0);
+  }, []);
+
   const handleModelConfigChange = useCallback(
     (selection: ModelConfigSelection): string => {
       const current = resolveCurrentSettings(projectRoot);
@@ -333,33 +346,32 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const meta: MessageMeta = {
         isModelChange: true,
       };
-      const content = `/model\n└ Set model to ${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
+      const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
 
       if (activeSessionId) {
         sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
+        redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
       } else {
         const now = new Date().toISOString();
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            sessionId: "local",
-            role: "system" as const,
-            content,
-            contentParams: null,
-            messageParams: null,
-            compacted: false,
-            visible: true,
-            createTime: now,
-            updateTime: now,
-            meta,
-          },
-        ]);
+        const message: SessionMessage = {
+          id: crypto.randomUUID(),
+          sessionId: "local",
+          role: "system",
+          content,
+          contentParams: null,
+          messageParams: null,
+          compacted: false,
+          visible: true,
+          createTime: now,
+          updateTime: now,
+          meta,
+        };
+        redrawStaticChat([...messagesRef.current, message]);
       }
 
       return `Model settings updated: ${formatModelConfig(current)} → ${formatModelConfig(next)}`;
     },
-    [projectRoot, sessionManager]
+    [projectRoot, redrawStaticChat, sessionManager]
   );
 
   const handleSubmit = useCallback(
@@ -371,16 +383,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const reloadActiveSessionView = useCallback(
     (sessionId: string): void => {
-      process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
-      setMessages([]);
-      setShowWelcome(false);
-      setWelcomeNonce((n) => n + 1);
-      setTimeout(() => {
-        setMessages(loadVisibleMessages(sessionManager, sessionId));
-        setShowWelcome(true);
-      }, 0);
+      redrawStaticChat(loadVisibleMessages(sessionManager, sessionId));
     },
-    [sessionManager]
+    [redrawStaticChat, sessionManager]
   );
 
   useEffect(() => {
@@ -626,7 +631,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       return;
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
-  }, [pendingQuestion]);
+    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] });
+  }, [handlePrompt, pendingQuestion]);
 
   if (mode === RawMode.Raw) {
     return <RawModeExitPrompt onExit={(prev) => handleRawModeChange(prev)} />;
@@ -859,6 +865,7 @@ export function writeModelConfigSelection(
 }
 
 export function resolveCurrentSettings(projectRoot: string = process.cwd()): ResolvedDeepcodingSettings {
+  const processEnv = { ...loadProjectEnv(projectRoot), ...process.env };
   return resolveSettingsSources(
     readSettings(),
     readProjectSettings(projectRoot),
@@ -866,7 +873,7 @@ export function resolveCurrentSettings(projectRoot: string = process.cwd()): Res
       model: DEFAULT_MODEL,
       baseURL: DEFAULT_BASE_URL,
     },
-    process.env
+    processEnv
   );
 }
 

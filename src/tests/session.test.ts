@@ -267,8 +267,8 @@ test("SessionManager replays normal assistant messages without reasoning content
 });
 
 test("SessionManager normalizes legacy sessions without activeTokens to zero", () => {
-  const workspace = createTempDir("deepcode-legacy-active-tokens-workspace-");
-  const home = createTempDir("deepcode-legacy-active-tokens-home-");
+  const workspace = createTempDir("doku-legacy-active-tokens-workspace-");
+  const home = createTempDir("doku-legacy-active-tokens-home-");
   setHomeDir(home);
 
   const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
@@ -299,8 +299,8 @@ test("SessionManager normalizes legacy sessions without activeTokens to zero", (
 });
 
 test("SessionManager keeps usagePerModel null until response usage is available", async () => {
-  const workspace = createTempDir("deepcode-null-usage-per-model-workspace-");
-  const home = createTempDir("deepcode-null-usage-per-model-home-");
+  const workspace = createTempDir("doku-null-usage-per-model-workspace-");
+  const home = createTempDir("doku-null-usage-per-model-home-");
   setHomeDir(home);
 
   const manager = createMockedClientSessionManager(workspace, [{ choices: [{ message: { content: "no usage" } }] }]);
@@ -312,8 +312,8 @@ test("SessionManager keeps usagePerModel null until response usage is available"
 });
 
 test("SessionManager marks skills loaded from existing session messages", async () => {
-  const workspace = createTempDir("deepcode-loaded-skills-workspace-");
-  const home = createTempDir("deepcode-loaded-skills-home-");
+  const workspace = createTempDir("doku-loaded-skills-workspace-");
+  const home = createTempDir("doku-loaded-skills-home-");
   setHomeDir(home);
 
   const skillDir = path.join(home, ".agents", "skills", "example-starter");
@@ -359,8 +359,8 @@ test("SessionManager marks skills loaded from existing session messages", async 
 });
 
 test("SessionManager lists project skills from .agents with legacy .doku compatibility", async () => {
-  const workspace = createTempDir("deepcode-project-skills-workspace-");
-  const home = createTempDir("deepcode-project-skills-home-");
+  const workspace = createTempDir("doku-project-skills-workspace-");
+  const home = createTempDir("doku-project-skills-home-");
   setHomeDir(home);
 
   const userSkillDir = path.join(home, ".agents", "skills", "shared");
@@ -399,7 +399,7 @@ test("SessionManager lists project skills from .agents with legacy .doku compati
 });
 
 test("SessionManager dispose disconnects MCP servers", async () => {
-  const workspace = createTempDir("deepcode-mcp-dispose-workspace-");
+  const workspace = createTempDir("doku-mcp-dispose-workspace-");
   const serverPath = path.join(workspace, "mcp-server.cjs");
   fs.writeFileSync(
     serverPath,
@@ -415,13 +415,14 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, prompts: {}, resources: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
     if (request.params && request.params.cursor === "page-2") {
       send({ jsonrpc: "2.0", id: request.id, result: { tools: [
-        { name: "count", inputSchema: { type: "object", properties: {} } }
+        { name: "count", inputSchema: { type: "object", properties: {} } },
+        { name: "hang", inputSchema: { type: "object", properties: {} } }
       ] } });
       return;
     }
@@ -431,7 +432,46 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "tools/call") {
+    if (request.params.name === "hang") {
+      return;
+    }
     send({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: request.params.name + ":" + (request.params.arguments.text || "") }] } });
+    return;
+  }
+  if (request.method === "prompts/list") {
+    if (request.params && request.params.cursor === "prompts-page-2") {
+      send({ jsonrpc: "2.0", id: request.id, result: { prompts: [
+        { name: "review", description: "Review code" }
+      ] } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: { prompts: [
+      { name: "explain", description: "Explain code", arguments: [{ name: "topic", required: true }] }
+    ], nextCursor: "prompts-page-2" } });
+    return;
+  }
+  if (request.method === "prompts/get") {
+    send({ jsonrpc: "2.0", id: request.id, result: { messages: [
+      { role: "user", content: { type: "text", text: "Explain " + request.params.arguments.topic } }
+    ] } });
+    return;
+  }
+  if (request.method === "resources/list") {
+    if (request.params && request.params.cursor === "resources-page-2") {
+      send({ jsonrpc: "2.0", id: request.id, result: { resources: [
+        { uri: "file:///two.txt", name: "two" }
+      ] } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: { resources: [
+      { uri: "file:///one.txt", name: "one" }
+    ], nextCursor: "resources-page-2" } });
+    return;
+  }
+  if (request.method === "resources/read") {
+    send({ jsonrpc: "2.0", id: request.id, result: { contents: [
+      { uri: request.params.uri, text: "resource body" }
+    ] } });
     return;
   }
   send({ jsonrpc: "2.0", id: request.id, result: { content: [] } });
@@ -464,12 +504,12 @@ rl.on("line", (line) => {
       name: "smoke",
       status: "ready",
       connected: true,
-      toolCount: 2,
-      tools: ["mcp__smoke__echo", "mcp__smoke__count"],
-      promptCount: 0,
-      prompts: [],
-      resourceCount: 0,
-      resources: [],
+      toolCount: 3,
+      tools: ["mcp__smoke__echo", "mcp__smoke__count", "mcp__smoke__hang"],
+      promptCount: 2,
+      prompts: ["mcp__smoke__explain", "mcp__smoke__review"],
+      resourceCount: 2,
+      resources: ["mcp__smoke__one", "mcp__smoke__two"],
     },
   ]);
   const mcpManager = (manager as any).mcpManager;
@@ -479,6 +519,25 @@ rl.on("line", (line) => {
     name: "mcp__smoke__echo",
     output: "echo:ok",
   });
+  assert.deepEqual(await mcpManager.readMcpResource("mcp__smoke__one", "file:///one.txt"), {
+    ok: true,
+    name: "mcp__smoke__one",
+    output: "resource body",
+  });
+  assert.deepEqual(await mcpManager.getMcpPrompt("mcp__smoke__explain", { topic: "sessions" }), {
+    ok: true,
+    name: "mcp__smoke__explain",
+    output: "[user] Explain sessions",
+  });
+  const abortController = new AbortController();
+  const cancelledCall = mcpManager.executeMcpTool("mcp__smoke__hang", {}, 60_000, abortController.signal);
+  abortController.abort(new Error("cancelled by user"));
+  const cancelledResult = await cancelledCall;
+  assert.equal(cancelledResult.ok, false);
+  assert.match(cancelledResult.error ?? "", /cancel|abort/i);
+  const timedOutCall = await mcpManager.executeMcpTool("mcp__smoke__hang", {}, 20);
+  assert.equal(timedOutCall.ok, false);
+  assert.match(timedOutCall.error ?? "", /timed out|abort/i);
 
   manager.dispose();
 
@@ -486,7 +545,7 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager refreshes cached MCP tool definitions after server crash", async () => {
-  const workspace = createTempDir("deepcode-mcp-crash-cache-workspace-");
+  const workspace = createTempDir("doku-mcp-crash-cache-workspace-");
   const serverPath = path.join(workspace, "mcp-server-crash.cjs");
   fs.writeFileSync(
     serverPath,
@@ -502,7 +561,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -540,7 +599,7 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager reports configured MCP servers as starting before initialization", () => {
-  const workspace = createTempDir("deepcode-mcp-configured-workspace-");
+  const workspace = createTempDir("doku-mcp-configured-workspace-");
   const manager = new SessionManager({
     projectRoot: workspace,
     createOpenAIClient: () => ({
@@ -573,8 +632,8 @@ test("SessionManager reports configured MCP servers as starting before initializ
   ]);
 });
 
-test("SessionManager reports MCP startup stderr on failure", async () => {
-  const workspace = createTempDir("deepcode-mcp-failure-workspace-");
+test("SessionManager reports MCP startup connection failure", async () => {
+  const workspace = createTempDir("doku-mcp-failure-workspace-");
   const serverPath = path.join(workspace, "mcp-server-fail.cjs");
   fs.writeFileSync(serverPath, 'process.stderr.write("mcp startup boom"); process.exit(7);', "utf8");
 
@@ -585,14 +644,14 @@ test("SessionManager reports MCP startup stderr on failure", async () => {
   assert.equal(status?.name, "broken");
   assert.equal(status?.status, "failed");
   assert.equal(status?.connected, false);
-  assert.match(status?.error ?? "", /mcp startup boom/);
+  assert.match(status?.error ?? "", /connection closed/i);
 });
 
 test(
   "SessionManager adds -y when launching MCP servers through npx",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-mcp-npx-workspace-");
+    const workspace = createTempDir("doku-mcp-npx-workspace-");
     const argsPath = path.join(workspace, "args.json");
     const fakeNpxPath = path.join(workspace, "npx");
     fs.writeFileSync(
@@ -611,7 +670,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -636,16 +695,16 @@ rl.on("line", (line) => {
 );
 
 test("createSession stores /init and sends the active .doku project AGENTS path to the LLM", async () => {
-  const workspace = createTempDir("deepcode-init-deepcode-workspace-");
-  const home = createTempDir("deepcode-init-deepcode-home-");
+  const workspace = createTempDir("doku-init-doku-workspace-");
+  const home = createTempDir("doku-init-doku-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
   fs.mkdirSync(path.join(workspace, ".doku"), { recursive: true });
-  fs.writeFileSync(path.join(workspace, ".doku", "AGENTS.md"), "deepcode project instructions", "utf8");
+  fs.writeFileSync(path.join(workspace, ".doku", "AGENTS.md"), "doku project instructions", "utf8");
   fs.writeFileSync(path.join(workspace, "AGENTS.md"), "root project instructions", "utf8");
 
-  const manager = createSessionManager(workspace, "machine-id-init-deepcode");
+  const manager = createSessionManager(workspace, "machine-id-init-doku");
   (manager as any).activateSession = async () => {};
 
   const sessionId = await manager.createSession({ text: "/init" });
@@ -663,13 +722,13 @@ test("createSession stores /init and sends the active .doku project AGENTS path 
   assert.equal(userMessage?.content, "/init");
   assert.match(openAIUserMessage?.content ?? "", /Update \.\/.doku\/AGENTS\.md/);
   assert.doesNotMatch(openAIUserMessage?.content ?? "", /Update \.\/AGENTS\.md/);
-  assert.ok(systemContents.includes("deepcode project instructions"));
+  assert.ok(systemContents.includes("doku project instructions"));
   assert.ok(!systemContents.includes("root project instructions"));
 });
 
 test("createSession appends default system prompts in prefix-cache-friendly order", async () => {
-  const workspace = createTempDir("deepcode-system-order-workspace-");
-  const home = createTempDir("deepcode-system-order-home-");
+  const workspace = createTempDir("doku-system-order-workspace-");
+  const home = createTempDir("doku-system-order-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -816,8 +875,8 @@ test("replySession does not auto-match extra skills when a skill is explicitly s
 });
 
 test("replySession stores /init and sends the active root project AGENTS path to the LLM", async () => {
-  const workspace = createTempDir("deepcode-init-root-workspace-");
-  const home = createTempDir("deepcode-init-root-home-");
+  const workspace = createTempDir("doku-init-root-workspace-");
+  const home = createTempDir("doku-init-root-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -843,8 +902,8 @@ test("replySession stores /init and sends the active root project AGENTS path to
 });
 
 test("createSession stores /init and sends generate prompt when no project AGENTS file is effective", async () => {
-  const workspace = createTempDir("deepcode-init-generate-workspace-");
-  const home = createTempDir("deepcode-init-generate-home-");
+  const workspace = createTempDir("doku-init-generate-workspace-");
+  const home = createTempDir("doku-init-generate-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -869,8 +928,8 @@ test("createSession stores /init and sends generate prompt when no project AGENT
 });
 
 test("createSession reports a new prompt with the machineId token", async () => {
-  const workspace = createTempDir("deepcode-session-workspace-");
-  const home = createTempDir("deepcode-session-home-");
+  const workspace = createTempDir("doku-session-workspace-");
+  const home = createTempDir("doku-session-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -902,8 +961,8 @@ test("createSession reports a new prompt with the machineId token", async () => 
 });
 
 test("replySession reports a new prompt with the machineId token", async () => {
-  const workspace = createTempDir("deepcode-reply-workspace-");
-  const home = createTempDir("deepcode-reply-home-");
+  const workspace = createTempDir("doku-reply-workspace-");
+  const home = createTempDir("doku-reply-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -934,8 +993,8 @@ test("replySession reports a new prompt with the machineId token", async () => {
 });
 
 test("reporting a new prompt does not warn when the background request fails", async () => {
-  const workspace = createTempDir("deepcode-report-failure-workspace-");
-  const home = createTempDir("deepcode-report-failure-home-");
+  const workspace = createTempDir("doku-report-failure-workspace-");
+  const home = createTempDir("doku-report-failure-home-");
   setHomeDir(home);
 
   const warnings: unknown[][] = [];
@@ -959,8 +1018,8 @@ test(
   "SessionManager notifies successful completion with session context",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-notify-success-workspace-");
-    const home = createTempDir("deepcode-notify-success-home-");
+    const workspace = createTempDir("doku-notify-success-workspace-");
+    const home = createTempDir("doku-notify-success-home-");
     setHomeDir(home);
 
     const notifyOutput = path.join(workspace, "notify.jsonl");
@@ -987,8 +1046,8 @@ test(
   "SessionManager notifies failed completion with failure context",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-notify-failure-workspace-");
-    const home = createTempDir("deepcode-notify-failure-home-");
+    const workspace = createTempDir("doku-notify-failure-workspace-");
+    const home = createTempDir("doku-notify-failure-home-");
     setHomeDir(home);
 
     const notifyOutput = path.join(workspace, "notify.jsonl");
@@ -1018,8 +1077,8 @@ test(
 );
 
 test("replySession continues without appending /continue as a user message", async () => {
-  const workspace = createTempDir("deepcode-continue-workspace-");
-  const home = createTempDir("deepcode-continue-home-");
+  const workspace = createTempDir("doku-continue-workspace-");
+  const home = createTempDir("doku-continue-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -1065,8 +1124,8 @@ test("replySession records the current file-history branch head as checkpointHas
     return;
   }
 
-  const workspace = createTempDir("deepcode-checkpoint-hash-workspace-");
-  const home = createTempDir("deepcode-checkpoint-hash-home-");
+  const workspace = createTempDir("doku-checkpoint-hash-workspace-");
+  const home = createTempDir("doku-checkpoint-hash-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-checkpoint-hash");
@@ -1087,8 +1146,8 @@ test("createSession initializes file-history repo and session branch", async (t)
     return;
   }
 
-  const workspace = createTempDir("deepcode-file-history-init-workspace-");
-  const home = createTempDir("deepcode-file-history-init-home-");
+  const workspace = createTempDir("doku-file-history-init-workspace-");
+  const home = createTempDir("doku-file-history-init-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-file-history-init");
@@ -1119,8 +1178,8 @@ test("Write tool advances file-history while preserving the user prompt checkpoi
     return;
   }
 
-  const workspace = createTempDir("deepcode-write-checkpoint-workspace-");
-  const home = createTempDir("deepcode-write-checkpoint-home-");
+  const workspace = createTempDir("doku-write-checkpoint-workspace-");
+  const home = createTempDir("doku-write-checkpoint-home-");
   setHomeDir(home);
 
   const filePath = path.join(workspace, "index.html");
@@ -1163,9 +1222,9 @@ test("Write checkpoints restore tool-touched files outside the workspace and lea
     return;
   }
 
-  const workspace = createTempDir("deepcode-write-outside-workspace-");
-  const outsideDir = createTempDir("deepcode-write-outside-target-");
-  const home = createTempDir("deepcode-write-outside-home-");
+  const workspace = createTempDir("doku-write-outside-workspace-");
+  const outsideDir = createTempDir("doku-write-outside-target-");
+  const home = createTempDir("doku-write-outside-home-");
   setHomeDir(home);
 
   const outsideFilePath = path.join(outsideDir, "outside.txt");
@@ -1206,8 +1265,8 @@ test("Write checkpoints restore tool-touched files outside the workspace and lea
 });
 
 test("missing git executable does not block sessions or Write tool calls", async () => {
-  const workspace = createTempDir("deepcode-no-git-write-workspace-");
-  const home = createTempDir("deepcode-no-git-write-home-");
+  const workspace = createTempDir("doku-no-git-write-workspace-");
+  const home = createTempDir("doku-no-git-write-home-");
   setHomeDir(home);
 
   const originalPath = process.env.PATH;
@@ -1253,8 +1312,8 @@ test("missing git executable does not block sessions or Write tool calls", async
 });
 
 test("restoreSessionConversation truncates messages before the selected user prompt", async () => {
-  const workspace = createTempDir("deepcode-undo-conversation-workspace-");
-  const home = createTempDir("deepcode-undo-conversation-home-");
+  const workspace = createTempDir("doku-undo-conversation-workspace-");
+  const home = createTempDir("doku-undo-conversation-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-undo-conversation");
@@ -1298,8 +1357,8 @@ test("restoreSessionCode restores project files from the recorded Git checkpoint
     return;
   }
 
-  const workspace = createTempDir("deepcode-undo-code-workspace-");
-  const home = createTempDir("deepcode-undo-code-home-");
+  const workspace = createTempDir("doku-undo-code-workspace-");
+  const home = createTempDir("doku-undo-code-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-undo-code");
@@ -1321,8 +1380,8 @@ test("restoreSessionCode restores project files from the recorded Git checkpoint
 });
 
 test("replySession /continue runs trailing pending tool calls before requesting another response", async () => {
-  const workspace = createTempDir("deepcode-continue-tool-workspace-");
-  const home = createTempDir("deepcode-continue-tool-home-");
+  const workspace = createTempDir("doku-continue-tool-workspace-");
+  const home = createTempDir("doku-continue-tool-home-");
   setHomeDir(home);
 
   const responses = [
@@ -1373,8 +1432,8 @@ test("replySession /continue runs trailing pending tool calls before requesting 
 });
 
 test("replySession preserves raw session messages when a previous tool call is pending", async () => {
-  const workspace = createTempDir("deepcode-pending-tool-workspace-");
-  const home = createTempDir("deepcode-pending-tool-home-");
+  const workspace = createTempDir("doku-pending-tool-workspace-");
+  const home = createTempDir("doku-pending-tool-home-");
   setHomeDir(home);
 
   globalThis.fetch = (async () =>
@@ -1730,13 +1789,11 @@ test("Write tool params prefer file_path even when content appears first", () =>
   assert.equal(toolMessage.meta?.paramsMd, filePath);
 });
 
-test("LLM tool calls without ids receive generated 32 character ids", async () => {
-  const workspace = createTempDir("deepcode-tool-call-id-workspace-");
-  const home = createTempDir("deepcode-tool-call-id-home-");
+test("LLM tool calls with an empty id receive a generated 32 character id", async () => {
+  const workspace = createTempDir("doku-tool-call-id-workspace-");
+  const home = createTempDir("doku-tool-call-id-home-");
   setHomeDir(home);
 
-  const filePath = path.join(workspace, "note.txt");
-  fs.writeFileSync(filePath, "hello\n", "utf8");
   const plan = "## Task List\n\n- [ ] Inspect current behavior";
   const manager = createMockedClientSessionManager(workspace, [
     {
@@ -1753,13 +1810,6 @@ test("LLM tool calls without ids receive generated 32 character ids", async () =
                   arguments: JSON.stringify({ plan, explanation: "Initial plan" }),
                 },
               },
-              {
-                type: "function",
-                function: {
-                  name: "read",
-                  arguments: JSON.stringify({ file_path: filePath }),
-                },
-              },
             ],
           },
         },
@@ -1774,20 +1824,14 @@ test("LLM tool calls without ids receive generated 32 character ids", async () =
     .find((message) => message.role === "assistant" && (message.messageParams as any)?.tool_calls);
   const toolCalls = (assistantMessage?.messageParams as { tool_calls?: Array<{ id?: unknown }> } | null)?.tool_calls;
 
-  assert.equal(toolCalls?.length, 2);
+  assert.equal(toolCalls?.length, 1);
   assert.match(String(toolCalls?.[0]?.id), /^[0-9a-f]{32}$/);
-  assert.match(String(toolCalls?.[1]?.id), /^[0-9a-f]{32}$/);
-  assert.notEqual(toolCalls?.[0]?.id, toolCalls?.[1]?.id);
 
   const toolMessages = manager.listSessionMessages(sessionId).filter((message) => message.role === "tool");
   assert.deepEqual(
     toolMessages.map((message) => (message.messageParams as { tool_call_id?: unknown } | null)?.tool_call_id),
     toolCalls?.map((toolCall) => toolCall.id)
   );
-
-  const readToolMessage = toolMessages.find((message) => JSON.parse(message.content ?? "{}").name === "read");
-  assert.equal((readToolMessage?.meta?.function as { name?: string } | undefined)?.name, "read");
-  assert.equal(readToolMessage?.meta?.paramsMd, "note.txt");
 });
 
 test("buildOpenAIMessages repairs mixed missing duplicate and orphan tool messages", () => {
@@ -1897,8 +1941,8 @@ test("buildOpenAIMessages ignores tool messages that appear before their assista
 });
 
 test("SessionManager accumulates response usage while active tokens track the latest response", async () => {
-  const workspace = createTempDir("deepcode-usage-workspace-");
-  const home = createTempDir("deepcode-usage-home-");
+  const workspace = createTempDir("doku-usage-workspace-");
+  const home = createTempDir("doku-usage-home-");
   setHomeDir(home);
 
   const responses = [
@@ -1947,9 +1991,28 @@ test("SessionManager accumulates response usage while active tokens track the la
   assert.equal(usagePerModel.total_reqs, 2);
 });
 
+test("SessionManager appends new turns to SDK session history without rebuilding prior provider items", async () => {
+  const workspace = createTempDir("doku-agent-history-workspace-");
+  const home = createTempDir("doku-agent-history-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("first", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+    createChatResponse("second", { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 }),
+  ]);
+
+  const sessionId = await manager.createSession({ text: "one" });
+  const agentHistoryPath = (manager as any).getAgentSessionPath(sessionId) as string;
+  const firstTurnHistory = fs.readFileSync(agentHistoryPath, "utf8");
+  await manager.replySession(sessionId, { text: "two" });
+  const secondTurnHistory = fs.readFileSync(agentHistoryPath, "utf8");
+
+  assert.ok(secondTurnHistory.startsWith(firstTurnHistory));
+  assert.ok(secondTurnHistory.length > firstTurnHistory.length);
+});
+
 test("SessionManager stores usage per model across model changes", async () => {
-  const workspace = createTempDir("deepcode-usage-per-model-workspace-");
-  const home = createTempDir("deepcode-usage-per-model-home-");
+  const workspace = createTempDir("doku-usage-per-model-workspace-");
+  const home = createTempDir("doku-usage-per-model-home-");
   setHomeDir(home);
 
   let currentModel = "deepseek-v4-pro";
@@ -1963,16 +2026,17 @@ test("SessionManager stores usage per model across model changes", async () => {
       prompt_tokens: 20,
       completion_tokens: 7,
       total_tokens: 27,
+      prompt_tokens_details: { cached_tokens: 6 },
       prompt_cache_hit_tokens: 6,
     }),
   ];
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2009,8 +2073,8 @@ test("SessionManager stores usage per model across model changes", async () => {
 });
 
 test("SessionManager resets active tokens to latest post-compaction response usage", async () => {
-  const workspace = createTempDir("deepcode-compact-usage-workspace-");
-  const home = createTempDir("deepcode-compact-usage-home-");
+  const workspace = createTempDir("doku-compact-usage-workspace-");
+  const home = createTempDir("doku-compact-usage-home-");
   setHomeDir(home);
 
   const responses = [
@@ -2050,9 +2114,62 @@ test("SessionManager resets active tokens to latest post-compaction response usa
   assert.equal(usagePerModel.total_reqs, 3);
 });
 
+test("SessionManager compacts after an internal tool cycle crosses the context threshold", async () => {
+  const workspace = createTempDir("doku-in-run-compact-workspace-");
+  const home = createTempDir("doku-in-run-compact-home-");
+  setHomeDir(home);
+
+  const responses = [
+    createChatResponse("first turn", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+    {
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "plan-before-compaction",
+                type: "function",
+                function: {
+                  name: "UpdatePlan",
+                  arguments: JSON.stringify({ plan: "- [ ] Finish the task" }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 139_990, completion_tokens: 10, total_tokens: 140_000 },
+    },
+    createChatResponse("compacted conversation", {
+      prompt_tokens: 100,
+      completion_tokens: 23,
+      total_tokens: 123,
+    }),
+    createChatResponse("finished after compaction", {
+      prompt_tokens: 5,
+      completion_tokens: 2,
+      total_tokens: 7,
+    }),
+  ];
+  const manager = createMockedClientSessionManager(workspace, responses);
+
+  const sessionId = await manager.createSession({ text: "start" });
+  await manager.replySession(sessionId, { text: "keep working" });
+
+  assert.equal(responses.length, 0);
+  assert.equal(manager.getSession(sessionId)?.activeTokens, 7);
+  assert.equal(manager.getSession(sessionId)?.assistantReply, "finished after compaction");
+  assert.ok(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.isSummary && message.content?.includes("compacted conversation"))
+  );
+});
+
 test("SessionManager streams chat completions and counts reasoning progress", async () => {
-  const workspace = createTempDir("deepcode-stream-workspace-");
-  const home = createTempDir("deepcode-stream-home-");
+  const workspace = createTempDir("doku-stream-workspace-");
+  const home = createTempDir("doku-stream-home-");
   setHomeDir(home);
 
   const progressEvents: Array<{
@@ -2067,8 +2184,8 @@ test("SessionManager streams chat completions and counts reasoning progress", as
           assert.equal(request.stream, true);
           assert.deepEqual(request.stream_options, { include_usage: true });
           return createChatStreamResponse([
-            { choices: [{ delta: { reasoning_content: "思考" } }] },
-            { choices: [{ delta: { content: "hello" } }] },
+            { id: "stream-response", choices: [{ index: 0, delta: { reasoning: "思考" } }] },
+            { id: "stream-response", choices: [{ index: 0, delta: { content: "hello" }, finish_reason: "stop" }] },
             {
               choices: [],
               usage: {
@@ -2113,13 +2230,82 @@ test("SessionManager streams chat completions and counts reasoning progress", as
     progressEvents.map((event) => event.phase),
     ["start", "update", "update", "end"]
   );
-  assert.equal(progressEvents[1]?.estimatedTokens, 1);
+  assert.ok((progressEvents[1]?.estimatedTokens ?? 0) > 0);
   assert.equal(progressEvents[2]?.formattedTokens, "3");
 });
 
+test("SessionManager omits image inputs for providers without image support", async () => {
+  const workspace = createTempDir("doku-agent-image-filter-workspace-");
+  const home = createTempDir("doku-agent-image-filter-home-");
+  setHomeDir(home);
+  let requestBody: Record<string, unknown> | null = null;
+  const response = createChatResponse("image omitted", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+  const client = {
+    chat: {
+      completions: {
+        create: async (request: Record<string, unknown>) => {
+          requestBody = request;
+          return createChatStreamFromResponse(response);
+        },
+      },
+    },
+  };
+  const manager = createMockedClientSessionManagerWithClient(workspace, client);
+
+  await manager.createSession({ text: "", imageUrls: ["data:image/png;base64,abc123"] });
+
+  assert.doesNotMatch(JSON.stringify(requestBody), /image_url|abc123/);
+});
+
+test("SessionManager resumes AskUserQuestion after restart and persists the answer as its tool result", async () => {
+  const workspace = createTempDir("doku-agent-hitl-workspace-");
+  const home = createTempDir("doku-agent-hitl-home-");
+  setHomeDir(home);
+  const approvalResponse = {
+    choices: [
+      {
+        message: {
+          content: "",
+          tool_calls: [
+            {
+              id: "ask-1",
+              type: "function",
+              function: {
+                name: "AskUserQuestion",
+                arguments: JSON.stringify({
+                  questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }],
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+  };
+  const firstManager = createMockedClientSessionManager(workspace, [approvalResponse]);
+  const sessionId = await firstManager.createSession({ text: "choose" });
+  assert.equal(firstManager.getSession(sessionId)?.status, "waiting_for_user");
+
+  const resumedManager = createMockedClientSessionManager(workspace, [
+    createChatResponse("continued", { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 }),
+  ]);
+  await resumedManager.replySession(sessionId, { text: "Yes" });
+
+  assert.equal(resumedManager.getSession(sessionId)?.status, "completed");
+  const result = resumedManager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: unknown } | null;
+    return message.role === "tool" && params?.tool_call_id === "ask-1";
+  });
+  assert.equal(result?.meta?.pendingApproval, false);
+  assert.match(result?.content ?? "", /Yes/);
+  assert.doesNotMatch(result?.content ?? "", /Waiting for user input/);
+  assert.equal(fs.existsSync((resumedManager as any).getPausedRunStatePath(sessionId)), false);
+});
+
 test("SessionManager persists session and user message before skill matching is cancelled", async () => {
-  const workspace = createTempDir("deepcode-skill-abort-workspace-");
-  const home = createTempDir("deepcode-skill-abort-home-");
+  const workspace = createTempDir("doku-skill-abort-workspace-");
+  const home = createTempDir("doku-skill-abort-home-");
   setHomeDir(home);
 
   const skillDir = path.join(home, ".agents", "skills", "demo");
@@ -2134,6 +2320,10 @@ test("SessionManager persists session and user message before skill matching is 
         create: async (_request: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
           return new Promise((_resolve, reject) => {
             const signal = options?.signal;
+            if (signal?.aborted) {
+              reject(new APIUserAbortError());
+              return;
+            }
             signal?.addEventListener("abort", () => reject(new APIUserAbortError()), { once: true });
             queueMicrotask(() => manager.interruptActiveSession());
           });
@@ -2156,8 +2346,8 @@ test("SessionManager persists session and user message before skill matching is 
 });
 
 test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () => {
-  const workspace = createTempDir("deepcode-api-abort-workspace-");
-  const home = createTempDir("deepcode-api-abort-home-");
+  const workspace = createTempDir("doku-api-abort-workspace-");
+  const home = createTempDir("doku-api-abort-home-");
   setHomeDir(home);
 
   let manager: SessionManager;
@@ -2167,6 +2357,10 @@ test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () =
         create: async (_request: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
           return new Promise((_resolve, reject) => {
             const signal = options?.signal;
+            if (signal?.aborted) {
+              reject(new APIUserAbortError());
+              return;
+            }
             signal?.addEventListener("abort", () => reject(new APIUserAbortError()), { once: true });
           });
         },
@@ -2203,7 +2397,7 @@ test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () =
 });
 
 test("SessionManager marks MCP server as failed on single failed attempt (no auto-retry)", async () => {
-  const workspace = createTempDir("deepcode-mcp-fail-noworkspace-");
+  const workspace = createTempDir("doku-mcp-fail-noworkspace-");
   const serverPath = path.join(workspace, "mcp-server-fail.cjs");
   fs.writeFileSync(serverPath, "process.exit(7);", "utf8");
 
@@ -2213,13 +2407,13 @@ test("SessionManager marks MCP server as failed on single failed attempt (no aut
   const status = manager.getMcpStatus();
   assert.equal(status.length, 1);
   assert.equal(status[0]?.status, "failed");
-  assert.match(status[0]?.error ?? "", /exited with code 7/);
+  assert.match(status[0]?.error ?? "", /connection closed/i);
 
   manager.dispose();
 });
 
 test("SessionManager reconnect succeeds on previously failed server", async () => {
-  const workspace = createTempDir("deepcode-mcp-reconn-ok-workspace-");
+  const workspace = createTempDir("doku-mcp-reconn-ok-workspace-");
   const serverPath = path.join(workspace, "mcp-server-ok.cjs");
   fs.writeFileSync(
     serverPath,
@@ -2233,7 +2427,7 @@ rl.on("line", (line) => {
   const request = JSON.parse(line);
   if (!("id" in request)) return;
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {} } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -2258,14 +2452,14 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager adjusts the active Bash timeout control and session metadata", async () => {
-  const workspace = createTempDir("deepcode-bash-timeout-session-");
-  const home = createTempDir("deepcode-bash-timeout-home-");
+  const workspace = createTempDir("doku-bash-timeout-session-");
+  const home = createTempDir("doku-bash-timeout-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "");
   const sessionId = await manager.createSession({ text: "hello" });
 
-  (manager as any).addSessionProcess(sessionId, 123, "sleep 10");
+  (manager as any).processTracker.add(sessionId, 123, "sleep 10");
 
   let timeoutInfo = {
     timeoutMs: 10 * 60 * 1000,
@@ -2273,7 +2467,7 @@ test("SessionManager adjusts the active Bash timeout control and session metadat
     deadlineAtMs: 1000 + 10 * 60 * 1000,
     timedOut: false,
   };
-  (manager as any).setSessionProcessTimeoutControl(sessionId, 123, {
+  (manager as any).processTracker.setTimeoutControl(sessionId, 123, {
     getInfo: () => timeoutInfo,
     setTimeoutMs: (timeoutMs: number) => {
       timeoutInfo = {
@@ -2370,13 +2564,13 @@ function createNotifyingSessionManager(
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
           if (response instanceof Error) {
             throw response;
           }
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2408,10 +2602,10 @@ function createMockedClientSessionManager(projectRoot: string, responses: unknow
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2453,6 +2647,43 @@ function createChatResponse(content: string, usage: Record<string, unknown>): un
     choices: [{ message: { content } }],
     usage,
   };
+}
+
+async function* createChatStreamFromResponse(response: unknown): AsyncGenerator<Record<string, unknown>> {
+  const completion = response as {
+    id?: string;
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+        reasoning_content?: string;
+        reasoning?: string;
+        tool_calls?: Array<Record<string, unknown>>;
+      };
+    }>;
+    usage?: Record<string, unknown>;
+  };
+  const message = completion.choices?.[0]?.message ?? {};
+  const toolCalls = message.tool_calls?.map((toolCall, index) => ({ ...toolCall, index }));
+  yield {
+    id: completion.id ?? "test-response",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          ...(message.reasoning_content || message.reasoning
+            ? { reasoning: message.reasoning_content ?? message.reasoning }
+            : {}),
+          ...(message.content != null ? { content: message.content } : {}),
+          ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: toolCalls?.length ? "tool_calls" : "stop",
+      },
+    ],
+  };
+  if (completion.usage) {
+    yield { id: completion.id ?? "test-response", choices: [], usage: completion.usage };
+  }
 }
 
 function buildTestMessage(

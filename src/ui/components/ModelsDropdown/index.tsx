@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
-import { useInput } from "ink";
+import React, { useEffect, useMemo, useState } from "react";
+import { Box, Text, useInput } from "ink";
+import { TextInput } from "@inkjs/ui";
 import DropdownMenu from "../../DropdownMenu";
-import type { ModelConfigSelection, ReasoningEffort } from "../../../settings";
+import type { ModelConfigSelection, ProviderProfile, ReasoningEffort } from "../../../settings";
 
-type ModelStep = "model" | "thinking";
+type ModelStep = "provider" | "model" | "custom" | "thinking";
 
 type ThinkingModeOption = {
   label: string;
@@ -12,6 +13,8 @@ type ThinkingModeOption = {
 };
 
 export const MODEL_COMMAND_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"] as const;
+export const OPENAI_MODEL_SUGGESTIONS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
+const CUSTOM_MODEL_KEY = "__custom_model__";
 
 export const MODEL_COMMAND_THINKING_OPTIONS: ThinkingModeOption[] = [
   { label: "Thinking mode [max]", thinkingEnabled: true, reasoningEffort: "max" },
@@ -19,14 +22,58 @@ export const MODEL_COMMAND_THINKING_OPTIONS: ThinkingModeOption[] = [
   { label: "No thinking", thinkingEnabled: false },
 ];
 
-function getThinkingOptionIndex(config: Pick<ModelConfigSelection, "thinkingEnabled" | "reasoningEffort">): number {
-  const index = MODEL_COMMAND_THINKING_OPTIONS.findIndex((option) => {
-    if (!config.thinkingEnabled) {
-      return !option.thinkingEnabled;
-    }
+const OPENAI_THINKING_OPTIONS: ThinkingModeOption[] = [
+  { label: "Reasoning [high]", thinkingEnabled: true, reasoningEffort: "high" },
+  { label: "Reasoning [medium]", thinkingEnabled: true, reasoningEffort: "medium" },
+  { label: "Reasoning [low]", thinkingEnabled: true, reasoningEffort: "low" },
+  { label: "No reasoning", thinkingEnabled: false },
+];
+
+export function getThinkingOptions(provider: ProviderProfile | undefined, model?: string): ThinkingModeOption[] {
+  const configuredEfforts = model ? provider?.models?.[model]?.reasoningEfforts : undefined;
+  if (configuredEfforts === undefined) {
+    return provider?.type === "deepseek" ? MODEL_COMMAND_THINKING_OPTIONS : OPENAI_THINKING_OPTIONS;
+  }
+  if (configuredEfforts.length === 0) return [{ label: "No reasoning", thinkingEnabled: false }];
+  return [...new Set(configuredEfforts)].map((effort) =>
+    effort === "none"
+      ? { label: "No reasoning", thinkingEnabled: false }
+      : {
+          label: `${provider?.type === "deepseek" ? "Thinking mode" : "Reasoning"} [${effort}]`,
+          thinkingEnabled: true,
+          reasoningEffort: effort,
+        }
+  );
+}
+
+function getThinkingOptionIndex(
+  config: Pick<ModelConfigSelection, "thinkingEnabled" | "reasoningEffort">,
+  options: ThinkingModeOption[] = MODEL_COMMAND_THINKING_OPTIONS
+): number {
+  const index = options.findIndex((option) => {
+    if (!config.thinkingEnabled) return !option.thinkingEnabled;
     return option.thinkingEnabled && option.reasoningEffort === config.reasoningEffort;
   });
   return index >= 0 ? index : 0;
+}
+
+export function suggestedModels(
+  providerId: string,
+  profile: ProviderProfile | undefined,
+  currentProviderId: string,
+  currentModel: string
+): string[] {
+  const configured = Object.keys(profile?.models ?? {});
+  const builtins =
+    profile?.type === "openai"
+      ? [...OPENAI_MODEL_SUGGESTIONS]
+      : profile?.type === "deepseek"
+        ? [...MODEL_COMMAND_MODELS]
+        : [];
+  const current = providerId === currentProviderId ? [currentModel] : [];
+  return [...new Set([...current, ...configured, ...builtins].filter(Boolean))].map((model) =>
+    model === CUSTOM_MODEL_KEY ? `${providerId}/${model}` : model
+  );
 }
 
 type Props = {
@@ -38,6 +85,10 @@ type Props = {
   onStatusMessage?: (message: string | null) => void;
 };
 
+export function handleCustomModelInput(key: { escape?: boolean }, onClose: () => void): void {
+  if (key.escape) onClose();
+}
+
 const ModelsDropdown: React.FC<Props> = ({
   open,
   modelConfig,
@@ -46,117 +97,137 @@ const ModelsDropdown: React.FC<Props> = ({
   onModelConfigChange,
   onStatusMessage,
 }) => {
+  const providers = useMemo(() => modelConfig.providers ?? {}, [modelConfig.providers]);
+  const providerIds = useMemo(() => {
+    const ids = Object.keys(providers);
+    return ids.length > 0 ? ids : [modelConfig.provider ?? "custom"];
+  }, [modelConfig.provider, providers]);
   const [step, setStep] = useState<ModelStep | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [pendingProvider, setPendingProvider] = useState(modelConfig.provider ?? providerIds[0]!);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  const profile = providers[pendingProvider];
+  const currentProvider = modelConfig.provider ?? providerIds[0]!;
+  const models = suggestedModels(pendingProvider, profile, currentProvider, modelConfig.model);
+  const modelOptions = [...models, CUSTOM_MODEL_KEY];
+  const thinkingOptions = getThinkingOptions(profile, pendingModel ?? undefined);
 
-  // Initialize state when opened
   useEffect(() => {
-    if (open) {
-      const currentIndex = MODEL_COMMAND_MODELS.findIndex((m) => m === modelConfig.model);
-      setPendingModel(null);
-      setStep("model");
-      setActiveIndex(currentIndex >= 0 ? currentIndex : 0);
-    } else {
+    if (!open) {
       setStep(null);
-    }
-  }, [open, modelConfig.model]);
-
-  // Validate activeIndex bounds
-  useEffect(() => {
-    if (!step) {
       return;
     }
-    const optionCount = step === "model" ? MODEL_COMMAND_MODELS.length : MODEL_COMMAND_THINKING_OPTIONS.length;
-    if (activeIndex >= optionCount) {
-      setActiveIndex(Math.max(0, optionCount - 1));
-    }
-  }, [activeIndex, step]);
+    const provider = modelConfig.provider ?? providerIds[0]!;
+    setPendingProvider(provider);
+    setPendingModel(null);
+    setStep("provider");
+    setActiveIndex(Math.max(0, providerIds.indexOf(provider)));
+  }, [modelConfig.provider, open, providerIds]);
 
-  function selectItem(): void {
-    if (step === "model") {
-      const model = MODEL_COMMAND_MODELS[activeIndex] ?? modelConfig.model;
-      setPendingModel(model);
-      setStep("thinking");
-      setActiveIndex(getThinkingOptionIndex(modelConfig));
-      return;
-    }
+  function showThinking(model: string): void {
+    setPendingModel(model);
+    setStep("thinking");
+    setActiveIndex(getThinkingOptionIndex(modelConfig, getThinkingOptions(providers[pendingProvider], model)));
+  }
 
-    const option = MODEL_COMMAND_THINKING_OPTIONS[activeIndex] ?? MODEL_COMMAND_THINKING_OPTIONS[0]!;
+  function applySelection(): void {
+    const option = thinkingOptions[activeIndex] ?? thinkingOptions[0]!;
     const selection: ModelConfigSelection = {
+      provider: pendingProvider,
       model: pendingModel ?? modelConfig.model,
       thinkingEnabled: option.thinkingEnabled,
       reasoningEffort: option.reasoningEffort ?? modelConfig.reasoningEffort,
     };
     onClose();
     Promise.resolve(onModelConfigChange(selection))
-      .then((message) => {
-        if (message) {
-          onStatusMessage?.(message);
-        }
-      })
+      .then((message) => message && onStatusMessage?.(message))
       .catch((error) => {
-        const msg = error instanceof Error ? error.message : String(error);
-        onStatusMessage?.(`Failed to update model settings: ${msg}`);
+        const message = error instanceof Error ? error.message : String(error);
+        onStatusMessage?.(`Failed to update model settings: ${message}`);
       });
   }
 
   useInput(
     (input, key) => {
-      if (!step) {
-        return;
-      }
-
-      const optionCount = step === "model" ? MODEL_COMMAND_MODELS.length : MODEL_COMMAND_THINKING_OPTIONS.length;
-
-      if (key.upArrow) {
-        setActiveIndex((idx) => (idx - 1 + optionCount) % optionCount);
-        return;
-      }
-      if (key.downArrow) {
-        setActiveIndex((idx) => (idx + 1) % optionCount);
-        return;
-      }
-      if ((input === " " && !key.ctrl && !key.meta) || (key.return && !key.shift && !key.meta)) {
-        selectItem();
-        return;
-      }
-      if (key.tab || key.escape) {
-        onClose();
-        return;
-      }
+      if (!step || step === "custom") return;
+      const optionCount =
+        step === "provider" ? providerIds.length : step === "model" ? modelOptions.length : thinkingOptions.length;
+      if (key.upArrow) setActiveIndex((index) => (index - 1 + optionCount) % optionCount);
+      else if (key.downArrow) setActiveIndex((index) => (index + 1) % optionCount);
+      else if ((input === " " && !key.ctrl && !key.meta) || (key.return && !key.shift && !key.meta)) {
+        if (step === "provider") {
+          const provider = providerIds[activeIndex] ?? pendingProvider;
+          setPendingProvider(provider);
+          setStep("model");
+          setActiveIndex(0);
+        } else if (step === "model") {
+          const model = modelOptions[activeIndex];
+          if (model === CUSTOM_MODEL_KEY) setStep("custom");
+          else if (model) showThinking(model);
+        } else {
+          applySelection();
+        }
+      } else if (key.tab || key.escape) onClose();
     },
-    { isActive: open }
+    { isActive: open && step !== "custom" }
   );
 
-  if (!open || !step) {
-    return null;
+  useInput(
+    (_input, key) => {
+      handleCustomModelInput(key, onClose);
+    },
+    { isActive: open && step === "custom" }
+  );
+
+  if (!open || !step) return null;
+
+  if (step === "custom") {
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold>Enter Model ID</Text>
+        <TextInput
+          placeholder="provider/model-name"
+          onSubmit={(value) => {
+            const model = value.trim();
+            if (model) showThinking(model);
+          }}
+        />
+        <Text dimColor>Enter continue · Esc cancel</Text>
+      </Box>
+    );
   }
 
   const items =
-    step === "model"
-      ? MODEL_COMMAND_MODELS.map((model) => ({
-          key: model,
-          label: model,
-          description: model === modelConfig.model ? "current model" : "",
-          selected: model === (pendingModel ?? modelConfig.model),
+    step === "provider"
+      ? providerIds.map((providerId) => ({
+          key: providerId,
+          label: providerId,
+          description: providers[providerId]?.type ?? "provider",
+          selected: providerId === (modelConfig.provider ?? pendingProvider),
         }))
-      : MODEL_COMMAND_THINKING_OPTIONS.map((option, i) => ({
-          key: option.label,
-          label: option.label,
-          description: option.thinkingEnabled ? `reasoningEffort: ${option.reasoningEffort}` : "thinking disabled",
-          selected: getThinkingOptionIndex(modelConfig) === i,
-        }));
+      : step === "model"
+        ? modelOptions.map((model) => ({
+            key: model,
+            label: model === CUSTOM_MODEL_KEY ? "Enter custom model ID…" : model,
+            description: model === modelConfig.model ? "current model" : "",
+            selected: model === modelConfig.model,
+          }))
+        : thinkingOptions.map((option, index) => ({
+            key: option.label,
+            label: option.label,
+            description: option.thinkingEnabled ? `reasoningEffort: ${option.reasoningEffort}` : "disabled",
+            selected: getThinkingOptionIndex(modelConfig, thinkingOptions) === index,
+          }));
 
   return (
     <DropdownMenu
       width={width}
-      title={step === "model" ? "Select Model" : "Select Thinking Mode"}
-      helpText={step === "model" ? "Space/Enter select model · Esc to cancel" : "Space/Enter apply · Esc to cancel"}
+      title={step === "provider" ? "Select Provider" : step === "model" ? "Select Model" : "Select Reasoning"}
+      helpText="Space/Enter select · Esc cancel"
       items={items}
       activeIndex={activeIndex}
       activeColor="#0ea5e9"
-      maxVisible={6}
+      maxVisible={7}
     />
   );
 };

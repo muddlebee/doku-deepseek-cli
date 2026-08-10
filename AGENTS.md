@@ -8,7 +8,6 @@
 - **Config directory**: `~/.doku/settings.json` (user-level), `./.doku/settings.json` (project-level)
 - **Environment variables**: `DOKU_*` prefix (e.g. `DOKU_API_KEY`, `DOKU_MODEL`)
 - **Internal env sentinels**: `__DOKU_STATUS__`, `__DOKU_PWD__` (used in bash-handler output parsing)
-- **MCP client name**: `"doku"` (in `src/mcp/mcp-client.ts`)
 - **File history manifest**: `.doku-file-history.json`; git checkpoint author is `doku checkpoint <doku-checkpoint@localhost>`
 
 Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEPCODE_`, or `~/.deepcode`.
@@ -18,9 +17,12 @@ Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEP
 - `src/cli.tsx` — entrypoint; parses CLI args, renders the Ink app
 - `src/ui/` — all Ink/React UI: `App.tsx`, `WelcomeScreen.tsx`, `PromptInput.tsx`, `UpdatePrompt.tsx`, `ThemedGradient.tsx`, and `components/MessageView/`
 - `src/tools/` — one handler file per tool (`bash-handler.ts`, `edit-handler.ts`, `write-handler.ts`, `read-handler.ts`, `grep-handler.ts`, `list-files-handler.ts`, `web-search-handler.ts`, `update-plan-handler.ts`, `ask-user-question-handler.ts`), plus `executor.ts` which dispatches tool calls
-- `src/mcp/` — MCP client and manager (`mcp-client.ts`, `mcp-manager.ts`)
+- `src/agent/` — provider-neutral OpenAI Agents JS runtime and ordered tool scheduler
+- `src/providers/` — provider registry plus OpenAI, OpenAI-compatible, and DeepSeek adapters; provider-specific SDK imports stay inside their adapter
+- `src/mcp/mcp-manager.ts` — MCP lifecycle, discovery, execution, resources, and prompts through the Agents SDK `MCPServerStdio` transport
 - `src/common/` — shared helpers: settings, file history, shell utils, model capabilities, etc.
-- `src/session.ts` — session lifecycle: create, reply, continue, undo, checkpoints
+- `src/session.ts` — thin session lifecycle facade: create, reply, continue, restore, and orchestration
+- `src/session/` — focused session modules for Agents turns, SDK history, compaction, persistence, checkpoints, tools, skills, notifications, and usage
 - `src/prompt.ts` — system prompt construction; identity string is `"You are doku, an interactive CLI tool..."`
 - `src/tests/` — Node test files (`*.test.ts`); run with `tsx --test`
 - `src/tests/live/` — reusable live LLM benchmark harness and scenarios (`live-llm-harness.ts`, `run-live-benchmark.ts`, `scenarios/`)
@@ -28,6 +30,21 @@ Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEP
 - `templates/tools/` — Markdown tool instruction files loaded into the system prompt (`bash.md`, `edit.md`, `write.md`, `read.md.ejs`, `grep.md`, `list-files.md`, `web-search.md`, `update-plan.md`, `ask-user-question.md`)
 - `templates/skills/` — built-in skill templates (`plan-and-execute.md`, `agent-drift-guard.md`)
 - `docs/` — user-facing documentation: `configuration.md`, `configuration_en.md`, `mcp.md`, `mcp_en.md`, `notify.md`, `notify_en.md`
+- `docs/agent-harness.md` — detailed provider harness, message flow, session history, tool execution, HITL, and compaction guide
+- `logs/` — dated engineering change records; do not place runtime debug or benchmark output here
+
+## Agent Harness Architecture
+
+- OpenAI Agents JS owns the agent loop, streaming, tool calls, turn limits, and resumable run state.
+- `ProviderRegistry` resolves a configured provider profile into a provider-neutral `ResolvedProvider`; session code must not branch on vendor request formats.
+- OpenAI and compatible endpoints use `OpenAIProvider`; DeepSeek uses the Agents AI SDK bridge, isolated in `src/providers/deepseek-adapter.ts`.
+- `FileAgentSession` stores canonical versioned SDK history. The user-facing JSONL transcript remains the UI and compatibility record.
+- Parallel-safe tools may run concurrently within a batch. Mutating and unknown tools are ordering barriers.
+- MCP uses the official SDK transport. Do not add another custom JSON-RPC MCP client.
+- Automatic compaction is provider-neutral and rewrites both transcript state and canonical SDK history.
+- `AskUserQuestion` interruptions persist serialized run state so approval can resume after restart.
+
+When adding a provider, implement a focused adapter under `src/providers/`, register it in `ProviderRegistry`, expose its profile through settings, and add mocked request-level tests. Do not add provider checks to `SessionManager` unless behavior is a genuine capability difference represented by `ResolvedProvider`.
 
 ## UI & Theming
 

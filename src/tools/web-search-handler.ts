@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import type OpenAI from "openai";
+import { generateProviderText } from "../providers/generate-text";
 import type { CreateOpenAIClient, ToolExecutionContext, ToolExecutionResult } from "./executor";
 
 const MAX_OUTPUT_CHARS = 30000;
@@ -21,16 +22,7 @@ type SearchPreparation = {
   translated: boolean;
 };
 
-type LLMClientContext = {
-  client: OpenAI;
-  model: string;
-  thinkingEnabled: boolean;
-  notify?: string;
-  webSearchTool?: string;
-  webSearchProvider?: string;
-  env?: Record<string, string>;
-  machineId?: string;
-};
+type LLMClientContext = ReturnType<CreateOpenAIClient> & { client: OpenAI };
 
 export async function handleWebSearchTool(
   args: Record<string, unknown>,
@@ -242,7 +234,7 @@ async function executeDefaultWebSearch(
   context: ToolExecutionContext
 ): Promise<ToolExecutionResult> {
   try {
-    const prepared = await prepareSearchQuery(query, llmContext);
+    const prepared = await prepareSearchQuery(query, llmContext, context.signal);
     const output = await runDefaultWebSearchRequest(prepared.resolvedQuery, llmContext.machineId, context);
 
     return {
@@ -314,12 +306,16 @@ async function runWebSearchScript(
   });
 }
 
-async function prepareSearchQuery(query: string, llmContext: LLMClientContext): Promise<SearchPreparation> {
-  const decision = await decideSearchLanguage(query, llmContext);
+async function prepareSearchQuery(
+  query: string,
+  llmContext: LLMClientContext,
+  signal?: AbortSignal
+): Promise<SearchPreparation> {
+  const decision = await decideSearchLanguage(query, llmContext, signal);
   const containsChinese = containsChineseChar(query);
 
   if (decision.dominantLanguage === "en" && containsChinese) {
-    const translatedQuery = await translateQuery(query, "English", llmContext);
+    const translatedQuery = await translateQuery(query, "English", llmContext, signal);
     if (translatedQuery) {
       return {
         resolvedQuery: translatedQuery,
@@ -330,7 +326,7 @@ async function prepareSearchQuery(query: string, llmContext: LLMClientContext): 
   }
 
   if (decision.dominantLanguage === "zh" && !containsChinese) {
-    const translatedQuery = await translateQuery(query, "Chinese", llmContext);
+    const translatedQuery = await translateQuery(query, "Chinese", llmContext, signal);
     if (translatedQuery) {
       return {
         resolvedQuery: translatedQuery,
@@ -351,7 +347,11 @@ function containsChineseChar(text: string): boolean {
   return /[\u4e00-\u9fff]/.test(text);
 }
 
-async function decideSearchLanguage(query: string, llmContext: LLMClientContext): Promise<SearchDecision> {
+async function decideSearchLanguage(
+  query: string,
+  llmContext: LLMClientContext,
+  signal?: AbortSignal
+): Promise<SearchDecision> {
   const prompt = `Decide whether the topic below has more useful online material in English or Chinese.
 
 Topic:
@@ -363,7 +363,7 @@ Return strict JSON:
 {"dominant_language":"en"|"zh","reason":"one short sentence"}
 Do not include markdown or any extra text.`;
 
-  const result = parseJsonResponse(await chat(llmContext, prompt));
+  const result = parseJsonResponse(await chat(llmContext, prompt, signal));
   const dominantLanguage = result.dominant_language;
 
   if (dominantLanguage !== "en" && dominantLanguage !== "zh") {
@@ -379,7 +379,8 @@ Do not include markdown or any extra text.`;
 async function translateQuery(
   query: string,
   targetLanguage: "English" | "Chinese",
-  llmContext: LLMClientContext
+  llmContext: LLMClientContext,
+  signal?: AbortSignal
 ): Promise<string> {
   const prompt = `Translate the query text below into ${targetLanguage}.
 
@@ -392,28 +393,13 @@ Query:
 ${query}
 \`\`\``;
 
-  return stripCodeFence(await chat(llmContext, prompt))
+  return stripCodeFence(await chat(llmContext, prompt, signal))
     .trim()
     .replace(/^['"]|['"]$/g, "");
 }
 
-async function chat(llmContext: LLMClientContext, prompt: string): Promise<string> {
-  const response = await llmContext.client.chat.completions.create({
-    model: llmContext.model,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const content = response.choices?.[0]?.message?.content as unknown;
-  if (typeof content === "string") {
-    return content.trim();
-  }
-  if (Array.isArray(content)) {
-    return (content as Array<{ text?: string }>)
-      .map((part) => (typeof part.text === "string" ? part.text : ""))
-      .join("\n")
-      .trim();
-  }
-  return "";
+async function chat(llmContext: LLMClientContext, prompt: string, signal?: AbortSignal): Promise<string> {
+  return generateProviderText(llmContext, { prompt, signal, thinkingEnabled: false });
 }
 
 function parseJsonResponse(text: string): Record<string, unknown> {

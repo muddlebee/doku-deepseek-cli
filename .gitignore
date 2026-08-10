@@ -5,5 +5,11 @@ dist/
 .vscode/
 *.tgz
 *.log
-.deepcode/
+.env
+.env.*
+!.env.example
 .crush/
+
+# Generated benchmark reports and workspaces
+.doku/live-tests/
+benchmarks/**/output/

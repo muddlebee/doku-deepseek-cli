@@ -2,18 +2,38 @@ import { defaultsToThinkingMode } from "./common/model-capabilities";
 
 export type WebSearchProvider = "tavily" | "firecrawl";
 
+export type ApiMode = "auto" | "responses" | "chat_completions";
+export type ProviderType = "openai" | "deepseek" | "openai-compatible";
+
+export type ProviderProfile = {
+  type: ProviderType;
+  baseURL?: string;
+  apiKeyEnv?: string;
+  apiMode?: ApiMode;
+  models?: Record<
+    string,
+    {
+      supportsImages?: boolean;
+      reasoningEfforts?: ReasoningEffort[];
+      compactAtTokens?: number;
+    }
+  >;
+};
+
 export type DeepcodingEnv = Record<string, string | undefined> & {
   MODEL?: string;
   BASE_URL?: string;
   API_KEY?: string;
   THINKING_ENABLED?: string;
   REASONING_EFFORT?: string;
+  PROVIDER?: string;
+  API_MODE?: string;
   DEBUG_LOG_ENABLED?: string;
   TAVILY_API_KEY?: string;
   FIRECRAWL_API_KEY?: string;
 };
 
-export type ReasoningEffort = "high" | "max";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type McpServerConfig = {
   command: string;
@@ -22,6 +42,10 @@ export type McpServerConfig = {
 };
 
 export type DeepcodingSettings = {
+  settingsVersion?: 2;
+  provider?: string;
+  apiMode?: ApiMode;
+  providers?: Record<string, ProviderProfile>;
   env?: DeepcodingEnv;
   model?: string;
   thinkingEnabled?: boolean;
@@ -31,9 +55,16 @@ export type DeepcodingSettings = {
   webSearchTool?: string;
   webSearchProvider?: WebSearchProvider;
   mcpServers?: Record<string, McpServerConfig>;
+  maxTurns?: number;
+  tracingEnabled?: boolean;
 };
 
 export type ResolvedDeepcodingSettings = {
+  settingsVersion: 2;
+  provider: string;
+  providerProfile: ProviderProfile;
+  apiMode: ApiMode;
+  providers: Record<string, ProviderProfile>;
   env: Record<string, string>;
   apiKey?: string;
   baseURL: string;
@@ -45,9 +76,13 @@ export type ResolvedDeepcodingSettings = {
   webSearchTool?: string;
   webSearchProvider?: WebSearchProvider;
   mcpServers?: Record<string, McpServerConfig>;
+  maxTurns: number;
+  tracingEnabled: boolean;
 };
 
 export type ModelConfigSelection = {
+  provider?: string;
+  providers?: Record<string, ProviderProfile>;
   model: string;
   thinkingEnabled: boolean;
   reasoningEffort: ReasoningEffort;
@@ -56,7 +91,9 @@ export type ModelConfigSelection = {
 export type SettingsProcessEnv = Record<string, string | undefined>;
 
 function resolveReasoningEffort(value: unknown): ReasoningEffort | undefined {
-  return value === "high" || value === "max" ? value : undefined;
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value))
+    ? (value as ReasoningEffort)
+    : undefined;
 }
 
 function parseBoolean(value: unknown): boolean | undefined {
@@ -75,6 +112,36 @@ function parseBoolean(value: unknown): boolean | undefined {
     return false;
   }
   return undefined;
+}
+
+function resolveApiMode(value: unknown): ApiMode | undefined {
+  return value === "auto" || value === "responses" || value === "chat_completions" ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function inferProvider(model: string, baseURL: string): string {
+  const normalizedModel = model.toLowerCase();
+  const normalizedURL = baseURL.toLowerCase();
+  if (normalizedModel.startsWith("deepseek") || normalizedURL.includes("deepseek.com")) return "deepseek";
+  if (!baseURL || normalizedURL.includes("api.openai.com")) return "openai";
+  return "custom";
+}
+
+function builtinProviders(defaultBaseURL: string): Record<string, ProviderProfile> {
+  return {
+    openai: { type: "openai", baseURL: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY", apiMode: "auto" },
+    deepseek: {
+      type: "deepseek",
+      baseURL: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      apiMode: "chat_completions",
+    },
+    custom: { type: "openai-compatible", baseURL: defaultBaseURL, apiMode: "chat_completions" },
+  };
 }
 
 function trimString(value: unknown): string {
@@ -196,6 +263,40 @@ export function resolveSettingsSources(
     trimString(userEnv.MODEL) ||
     defaults.model;
 
+  const configuredBaseURL = trimString(env.BASE_URL) || defaults.baseURL;
+  const providers = {
+    ...builtinProviders(configuredBaseURL),
+    ...(userSettings?.providers ?? {}),
+    ...(projectSettings?.providers ?? {}),
+  };
+  const explicitProvider =
+    trimString(systemEnv.PROVIDER) || trimString(projectSettings?.provider) || trimString(userSettings?.provider);
+  const requestedProvider = explicitProvider || inferProvider(model, configuredBaseURL);
+  const provider = providers[requestedProvider] ? requestedProvider : inferProvider(model, configuredBaseURL);
+  const providerProfile = providers[provider] ?? providers.custom;
+  const apiMode =
+    resolveApiMode(systemEnv.API_MODE) ??
+    resolveApiMode(projectSettings?.apiMode) ??
+    resolveApiMode(userSettings?.apiMode) ??
+    providerProfile.apiMode ??
+    "auto";
+  const baseURL =
+    trimString(systemEnv.BASE_URL) ||
+    (explicitProvider ? trimString(providerProfile.baseURL) : trimString(env.BASE_URL)) ||
+    trimString(providerProfile.baseURL) ||
+    defaults.baseURL;
+  const apiKeyEnv = trimString(providerProfile.apiKeyEnv);
+  const providerApiKey = apiKeyEnv
+    ? trimString(systemEnv[apiKeyEnv]) ||
+      trimString(processEnv[apiKeyEnv]) ||
+      trimString(projectEnv[apiKeyEnv]) ||
+      trimString(userEnv[apiKeyEnv])
+    : "";
+  const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
+  const apiKey =
+    trimString(systemEnv.API_KEY) ||
+    (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
+
   const thinkingEnabled =
     parseBoolean(systemEnv.THINKING_ENABLED) ??
     parseBoolean(projectSettings?.thinkingEnabled) ??
@@ -237,9 +338,14 @@ export function resolveSettingsSources(
     rawProvider === "tavily" || rawProvider === "firecrawl" ? rawProvider : undefined;
 
   return {
+    settingsVersion: 2,
+    provider,
+    providerProfile,
+    apiMode,
+    providers,
     env,
-    apiKey: trimString(env.API_KEY) || undefined,
-    baseURL: trimString(env.BASE_URL) || defaults.baseURL,
+    apiKey: apiKey || undefined,
+    baseURL,
     model,
     thinkingEnabled,
     reasoningEffort,
@@ -248,6 +354,16 @@ export function resolveSettingsSources(
     webSearchTool: webSearchTool || undefined,
     webSearchProvider,
     mcpServers: mergeMcpServers(userSettings, projectSettings, userEnv, projectEnv, systemEnv),
+    maxTurns:
+      positiveInteger(systemEnv.MAX_TURNS) ??
+      positiveInteger(projectSettings?.maxTurns) ??
+      positiveInteger(userSettings?.maxTurns) ??
+      100,
+    tracingEnabled:
+      parseBoolean(systemEnv.TRACING_ENABLED) ??
+      parseBoolean(projectSettings?.tracingEnabled) ??
+      parseBoolean(userSettings?.tracingEnabled) ??
+      false,
   };
 }
 
@@ -268,7 +384,11 @@ export function applyModelConfigSelection(
   current: ModelConfigSelection,
   selected: ModelConfigSelection
 ): { settings: DeepcodingSettings; changed: boolean } {
-  const changed = selected.model !== current.model || modelConfigKey(selected) !== modelConfigKey(current);
+  const selectedProvider = selected.provider ?? current.provider;
+  const changed =
+    selectedProvider !== current.provider ||
+    selected.model !== current.model ||
+    modelConfigKey(selected) !== modelConfigKey(current);
   const next: DeepcodingSettings = { ...(settings ?? {}) };
 
   if (!changed) {
@@ -279,6 +399,15 @@ export function applyModelConfigSelection(
     next.model = selected.model;
   } else {
     delete next.model;
+  }
+
+  if (selectedProvider) next.provider = selectedProvider;
+  if (selectedProvider && selectedProvider !== current.provider) {
+    const selectedProfile =
+      selected.providers?.[selectedProvider] ??
+      current.providers?.[selectedProvider] ??
+      next.providers?.[selectedProvider];
+    next.apiMode = selectedProfile?.apiMode ?? (selectedProfile?.type === "openai" ? "auto" : "chat_completions");
   }
 
   next.thinkingEnabled = selected.thinkingEnabled;

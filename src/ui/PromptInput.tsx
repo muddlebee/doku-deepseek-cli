@@ -214,13 +214,6 @@ export const PromptInput = React.memo(function PromptInput({
       : hasExpandedRegions
         ? " · ctrl+o collapse"
         : "";
-  const footerText = statusMessage
-    ? statusMessage
-    : busy
-      ? loadingText && loadingText.trim()
-        ? `${loadingText}${processOrPasteHint}`
-        : `esc to interrupt · ctrl+c to cancel input${processOrPasteHint}`
-      : `enter send · shift+enter newline · @ files · ctrl+v image · / commands · ctrl+c exit${processOrPasteHint}`;
   useTerminalFocusReporting(stdout, !disabled);
   useTerminalExtendedKeys(stdout, !disabled);
   useBracketedPaste(stdout, !disabled);
@@ -947,10 +940,14 @@ export const PromptInput = React.memo(function PromptInput({
       />
       <SlashCommandMenu width={screenWidth} items={slashMenu} activeIndex={menuIndex} />
       {!showFooterText &&
-        (busy ? (
+        (statusMessage ? (
+          <Box paddingX={2}>
+            <Text color="#0ea5e9">{statusMessage}</Text>
+          </Box>
+        ) : busy ? (
           <Box paddingX={2} gap={2} marginTop={0}>
             <Text color="#6366f1">{loadingText || "Thinking..."}</Text>
-            <Text dimColor>esc interrupt</Text>
+            <Text dimColor>{`esc interrupt${processOrPasteHint}`}</Text>
           </Box>
         ) : (
           <Box paddingX={2} gap={3}>
@@ -959,6 +956,7 @@ export const PromptInput = React.memo(function PromptInput({
             <KeyHint k="@" d="files" />
             <KeyHint k="ctrl+v" d="image" />
             <KeyHint k="ctrl+c" d="exit" />
+            {processOrPasteHint ? <Text dimColor>{processOrPasteHint}</Text> : null}
           </Box>
         ))}
     </Box>

@@ -182,7 +182,7 @@ If an MCP server fails to start, check:
 ### Tools Not Showing Up
 
 1. Verify that the `mcpServers` field in `settings.json` is correctly formatted
-2. After starting deepcode, use `/mcp` to check server status
+2. After starting doku, use `/mcp` to check server status
 3. If the server status shows an error, debug based on the error message
 
 ### Windows Users
