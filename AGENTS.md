@@ -38,7 +38,7 @@ Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEP
 - OpenAI Agents JS owns the agent loop, streaming, tool calls, turn limits, and resumable run state.
 - `ProviderRegistry` resolves a configured provider profile into a provider-neutral `ResolvedProvider`; session code must not branch on vendor request formats.
 - OpenAI and compatible endpoints use `OpenAIProvider`; DeepSeek uses the Agents AI SDK bridge, isolated in `src/providers/deepseek-adapter.ts`.
-- `FileAgentSession` stores canonical versioned SDK history. The user-facing JSONL transcript remains the UI and compatibility record.
+- `FileAgentSession` stores canonical versioned SDK history. The user-facing JSONL transcript remains the UI and audit record.
 - Parallel-safe tools may run concurrently within a batch. Mutating and unknown tools are ordering barriers.
 - MCP uses the official SDK transport. Do not add another custom JSON-RPC MCP client.
 - Automatic compaction is provider-neutral and rewrites both transcript state and canonical SDK history.

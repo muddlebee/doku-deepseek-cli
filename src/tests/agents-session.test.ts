@@ -23,25 +23,6 @@ test("FileAgentSession appends v2 items and supports session CRUD", async () => 
   assert.deepEqual(await session.getItems(), []);
 });
 
-test("FileAgentSession reads legacy and v2 records together", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "doku-agent-session-mixed-"));
-  const file = path.join(root, "session.jsonl");
-  fs.writeFileSync(
-    file,
-    `${JSON.stringify({ role: "user", content: "legacy" })}\n${JSON.stringify({
-      version: 2,
-      item: { role: "user", content: "new" },
-    })}\n`
-  );
-  const session = new FileAgentSession("mixed", file, (record) => [
-    { role: "user", content: typeof record.content === "string" ? record.content : "" },
-  ]);
-  assert.deepEqual(
-    (await session.getItems()).map((item) => ("content" in item ? item.content : null)),
-    ["legacy", "new"]
-  );
-});
-
 test("FileAgentSession separates new records from a malformed unterminated tail", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "doku-agent-session-torn-tail-"));
   const file = path.join(root, "session.jsonl");

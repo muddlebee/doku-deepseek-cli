@@ -1,7 +1,6 @@
 import * as path from "path";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { DEEPSEEK_V4_MODELS } from "./common/model-capabilities";
 import { getTools, type ToolDefinition } from "./prompt";
 import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
@@ -10,7 +9,6 @@ import type { McpServerConfig } from "./settings";
 import type { ApiMode, ProviderProfile } from "./settings";
 import type { AgentToolInvocation, AgentToolOutput } from "./agent/runtime";
 import { ProviderRegistry } from "./providers/registry";
-import { buildLegacyChatHistory, getTrailingPendingToolCalls } from "./session/legacy-history";
 import { FileSessionStore } from "./session/file-session-store";
 import { SkillCatalog } from "./session/skill-catalog";
 import { identifyMatchingSkills } from "./session/skill-matcher";
@@ -462,7 +460,7 @@ export class SessionManager {
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
           executeTool: (id, invocation, supportsImages) => this.executeAgentTool(id, invocation, supportsImages),
-          renderContent: (message) => this.renderOpenAIMessageContent(message),
+          renderContent: (message) => this.renderAgentMessageContent(message),
           onProgress: this.onLlmStreamProgress,
           isInterrupted: (id) => this.isInterrupted(id),
           getTools: () => getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
@@ -558,7 +556,7 @@ export class SessionManager {
       listMessages: (id) => this.listSessionMessages(id),
       saveMessages: (id, messages) => this.saveSessionMessages(id, messages),
       updateEntry: (id, updater) => this.updateSessionEntry(id, updater),
-      renderContent: (message) => this.renderOpenAIMessageContent(message),
+      renderContent: (message) => this.renderAgentMessageContent(message),
       agentHistoryPath: (id) => this.getAgentSessionPath(id),
     });
   }
@@ -753,10 +751,6 @@ export class SessionManager {
     return this.messageFactory.assistant(sessionId, content, toolCalls, reasoningContent, refusal);
   }
 
-  private normalizeLlmToolCalls(rawToolCalls: unknown[] | null | undefined): unknown[] | null {
-    return this.messageFactory.normalizeToolCalls(rawToolCalls);
-  }
-
   private buildToolMessage(
     sessionId: string,
     toolCallId: string,
@@ -775,26 +769,9 @@ export class SessionManager {
     return this.toolCoordinator.append(sessionId, toolCalls, signal, pendingApproval);
   }
 
-  private buildOpenAIMessages(
-    messages: SessionMessage[],
-    thinkingEnabled: boolean,
-    model: string
-  ): ChatCompletionMessageParam[] {
-    return buildLegacyChatHistory(messages, {
-      thinkingEnabled,
-      model,
-      renderContent: (message) => this.renderOpenAIMessageContent(message),
-      buildInterruptedResult: (toolFunction, reason) => this.buildInterruptedToolResult(toolFunction, reason),
-    });
-  }
-
-  private renderOpenAIMessageContent(message: SessionMessage): string {
+  private renderAgentMessageContent(message: SessionMessage): string {
     if (message.role === "user" && message.content === "/init") return this.renderInitCommandPrompt();
     return message.content ?? "";
-  }
-
-  private getTrailingPendingToolCalls(messages: SessionMessage[]): unknown[] {
-    return getTrailingPendingToolCalls(messages);
   }
 
   private maybeNotifyTaskCompletion(
@@ -811,9 +788,5 @@ export class SessionManager {
       session: this.getSession(sessionId),
       messages: this.listSessionMessages(sessionId),
     });
-  }
-
-  private buildInterruptedToolResult(toolFunction: unknown | null, reason: string): string {
-    return this.messageFactory.interruptedToolResult(toolFunction, reason);
   }
 }

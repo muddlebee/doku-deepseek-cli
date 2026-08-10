@@ -649,8 +649,8 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
   let entry: SessionEntry = {
     id: sessionId,
     summary: "request",
-    assistantReply: null,
-    assistantThinking: null,
+    assistantReply: "Previous reply.",
+    assistantThinking: "Previous reasoning.",
     assistantRefusal: null,
     toolCalls: null,
     status: "processing",
@@ -778,6 +778,8 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
     activeController.abort();
     await interruptedRun.catch(() => {});
 
+    assert.equal(entry.assistantReply, "Previous reply.");
+    assert.equal(entry.assistantThinking, "Previous reasoning.");
     const persisted = fs.readFileSync(path.join(projectDir, `${sessionId}.agent.jsonl`), "utf8");
     assert.match(persisted, /slow-command/);
     assert.match(persisted, /function_call_result/);

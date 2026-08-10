@@ -89,6 +89,50 @@ export function buildAgentInputItems(
   return items;
 }
 
+export function omitUnsupportedAgentImages(items: AgentInputItem[]): {
+  items: AgentInputItem[];
+  changed: boolean;
+} {
+  let changed = false;
+  const filteredItems = items.map((item) => {
+    const record = item as unknown as Record<string, unknown>;
+    let filtered = record;
+
+    if (Array.isArray(record.content)) {
+      const content = record.content.filter((part) => !isImagePart(part));
+      if (content.length !== record.content.length) {
+        changed = true;
+        filtered = {
+          ...filtered,
+          content: content.length ? content : [{ type: "input_text", text: "[Image omitted]" }],
+        };
+      }
+    }
+
+    if (record.type === "function_call_result") {
+      if (Array.isArray(record.output)) {
+        const output = record.output.filter((part) => !isImagePart(part));
+        if (output.length !== record.output.length) {
+          changed = true;
+          filtered = { ...filtered, output: output.length ? output : "[Image omitted]" };
+        }
+      } else if (isImagePart(record.output)) {
+        changed = true;
+        filtered = { ...filtered, output: "[Image omitted]" };
+      }
+    }
+
+    return filtered as AgentInputItem;
+  });
+  return { items: changed ? filteredItems : items, changed };
+}
+
+function isImagePart(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const type = (value as { type?: unknown }).type;
+  return type === "input_image" || type === "image";
+}
+
 export function agentUsageToModelUsage(usage: Usage): ModelUsage | null {
   const requests = numberOrZero(usage.requests);
   const inputTokens = numberOrZero(usage.inputTokens);

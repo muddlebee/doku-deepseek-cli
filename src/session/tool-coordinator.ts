@@ -1,8 +1,8 @@
 import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
 import type { ToolExecutor } from "../tools/executor";
-import { findToolFunction } from "./legacy-history";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
 import type { SessionProcessTracker } from "./process-tracker";
+import { findToolFunction } from "./tool-calls";
 import type { SessionMessage } from "./types";
 
 export type ToolCoordinatorDependencies = {
