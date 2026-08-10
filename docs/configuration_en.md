@@ -20,6 +20,31 @@ doku uses the `settings.json` file for persistent configuration, supporting two 
 | User settings file  | `~/.doku/settings.json`               | Applies to all doku sessions for the current user.               |
 | Project settings file | `<project root>/.doku/settings.json` | Takes effect only when running doku in that specific project. Project settings override user settings. |
 
+### Provider-neutral configuration
+
+Version 2 settings select a named provider profile. Legacy `env.MODEL`, `env.BASE_URL`, and `env.API_KEY` fields continue to work and are inferred without rewriting the file.
+
+```json
+{
+  "settingsVersion": 2,
+  "provider": "gateway",
+  "model": "vendor/model-id",
+  "apiMode": "chat_completions",
+  "maxTurns": 100,
+  "tracingEnabled": false,
+  "providers": {
+    "gateway": {
+      "type": "openai-compatible",
+      "baseURL": "https://gateway.example/v1",
+      "apiKeyEnv": "GATEWAY_API_KEY",
+      "apiMode": "chat_completions"
+    }
+  }
+}
+```
+
+Built-in profile types are `openai`, `deepseek`, and `openai-compatible`. `apiMode` accepts `auto`, `responses`, or `chat_completions`; DeepSeek rejects Responses mode. Tracing is disabled unless explicitly enabled. Environment overrides include `DOKU_PROVIDER`, `DOKU_API_MODE`, `DOKU_MAX_TURNS`, and `DOKU_TRACING_ENABLED`.
+
 ### Available Settings in `settings.json`
 
 The following are all the top-level fields supported in `settings.json`, along with the sub-fields inside `env`:
@@ -151,7 +176,7 @@ Applied in the following priority order (lower-numbered sources are overridden b
 1. Hardcoded default: `""`
 2. User-level settings.json: `{"env": {"API_KEY": "abc123"}}`
 3. Project-level settings.json: `{"env": {"API_KEY": "abc123"}}`
-4. System environment variable: `DOKU_API_KEY=abc123 deepcode`
+4. System environment variable: `DOKU_API_KEY=abc123 doku`
 
 #### 2. Setting model, thinkingEnabled, and reasoningEffort
 
@@ -162,7 +187,7 @@ Applied in the following priority order (lower-numbered overridden by higher-num
 3. User-level settings.json: `{"thinkingEnabled": true}`
 4. Project-level settings.json: `{"env": {"THINKING_ENABLED": "true"}}`
 5. Project-level settings.json: `{"thinkingEnabled": true}`
-6. System environment variable: `DOKU_THINKING_ENABLED=true deepcode`
+6. System environment variable: `DOKU_THINKING_ENABLED=true doku`
 
 #### 3. Setting environment variables for external scripts like notify and webSearchTool
 
@@ -171,7 +196,7 @@ Applied in the following priority order (lower-numbered overridden by higher-num
 1. Hardcoded default: `os.environ.get('WEBHOOK', '...')  # notify script code`
 2. User-level settings.json: `{"env": {"WEBHOOK": "..."}}`
 3. Project-level settings.json: `{"env": {"WEBHOOK": "true"}}`
-4. System environment variable: `DOKU_WEBHOOK=... deepcode`
+4. System environment variable: `DOKU_WEBHOOK=... doku`
 
 #### 4. Setting environment variables for an MCP Service
 
@@ -181,4 +206,4 @@ Applied in the following priority order (lower-numbered overridden by higher-num
 2. User-level settings.json: `{"env": {"MCP_GITHUB_PERSONAL_ACCESS_TOKEN": "..."}}`
 3. Project-level settings.json: `{"mcpServers":{"github":{"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"..."}}}}`
 4. Project-level settings.json: `{"env": {"MCP_GITHUB_PERSONAL_ACCESS_TOKEN": "..."}}`
-5. System environment variable: `DOKU_MCP_GITHUB_PERSONAL_ACCESS_TOKEN=... deepcode`
+5. System environment variable: `DOKU_MCP_GITHUB_PERSONAL_ACCESS_TOKEN=... doku`

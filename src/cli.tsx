@@ -19,7 +19,7 @@ if (args.includes("--version") || args.includes("-v")) {
 if (args.includes("--help") || args.includes("-h")) {
   process.stdout.write(
     [
-      "doku — DeepSeek AI coding assistant",
+      "doku — AI coding assistant",
       "",
       "Usage:",
       "  doku                              Launch the interactive TUI in the current directory",

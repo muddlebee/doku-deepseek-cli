@@ -263,10 +263,10 @@ test("resolveSettings allows explicit thinkingEnabled to override model defaults
   assert.equal(resolved.thinkingEnabled, false);
 });
 
-test("resolveSettings defaults invalid reasoning effort to max", () => {
+test("resolveSettings accepts provider-neutral reasoning efforts", () => {
   const resolved = resolveSettings(
     {
-      reasoningEffort: "medium" as never,
+      reasoningEffort: "medium",
     },
     {
       model: "default-model",
@@ -275,7 +275,7 @@ test("resolveSettings defaults invalid reasoning effort to max", () => {
     TEST_PROCESS_ENV
   );
 
-  assert.equal(resolved.reasoningEffort, "max");
+  assert.equal(resolved.reasoningEffort, "medium");
 });
 
 test("applyModelConfigSelection writes model only when the effective model changes or already exists", () => {
@@ -488,3 +488,85 @@ test(
     assert.equal(calls[1]?.options.env?.TITLE, "Fix login bug");
   }
 );
+
+test("resolveSettings infers providers and honors provider-specific credentials", () => {
+  const openai = resolveSettingsSources(
+    { model: "gpt-5", provider: "openai" },
+    null,
+    { model: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+    { OPENAI_API_KEY: "sk-openai" }
+  );
+  assert.equal(openai.settingsVersion, 2);
+  assert.equal(openai.provider, "openai");
+  assert.equal(openai.providerProfile.type, "openai");
+  assert.equal(openai.apiKey, "sk-openai");
+  assert.equal(openai.apiMode, "auto");
+  assert.equal(openai.maxTurns, 100);
+  assert.equal(openai.tracingEnabled, false);
+
+  const legacy = resolveSettings(
+    { env: { MODEL: "deepseek-reasoner", API_KEY: "sk-deepseek" } },
+    { model: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+    TEST_PROCESS_ENV
+  );
+  assert.equal(legacy.provider, "deepseek");
+  assert.equal(legacy.apiMode, "chat_completions");
+  assert.equal(legacy.apiKey, "sk-deepseek");
+});
+
+test("resolveSettings supports named compatible provider profiles and DOKU overrides", () => {
+  const resolved = resolveSettingsSources(
+    {
+      provider: "gateway",
+      providers: {
+        gateway: {
+          type: "openai-compatible",
+          baseURL: "https://gateway.example/v1",
+          apiKeyEnv: "GATEWAY_KEY",
+          apiMode: "chat_completions",
+        },
+      },
+    },
+    null,
+    { model: "fallback", baseURL: "https://fallback.example/v1" },
+    {
+      GATEWAY_KEY: "secret",
+      DOKU_MODEL: "custom-model",
+      DOKU_API_MODE: "responses",
+      DOKU_MAX_TURNS: "42",
+      DOKU_TRACING_ENABLED: "true",
+    }
+  );
+  assert.equal(resolved.provider, "gateway");
+  assert.equal(resolved.providerProfile.type, "openai-compatible");
+  assert.equal(resolved.baseURL, "https://gateway.example/v1");
+  assert.equal(resolved.apiKey, "secret");
+  assert.equal(resolved.model, "custom-model");
+  assert.equal(resolved.apiMode, "responses");
+  assert.equal(resolved.maxTurns, 42);
+  assert.equal(resolved.tracingEnabled, true);
+});
+
+test("provider-specific DOKU credentials are supported", () => {
+  const resolved = resolveSettingsSources(
+    { provider: "openai", model: "gpt-5" },
+    null,
+    { model: "fallback", baseURL: "https://fallback.example/v1" },
+    { DOKU_OPENAI_API_KEY: "provider-key" }
+  );
+  assert.equal(resolved.apiKey, "provider-key");
+});
+
+test("an explicit provider profile is not routed through a legacy base URL", () => {
+  const resolved = resolveSettingsSources(
+    {
+      provider: "openai",
+      model: "gpt-5",
+      env: { BASE_URL: "https://api.deepseek.com", API_KEY: "legacy-key" },
+    },
+    null,
+    { model: "deepseek-chat", baseURL: "https://api.deepseek.com" },
+    TEST_PROCESS_ENV
+  );
+  assert.equal(resolved.baseURL, "https://api.openai.com/v1");
+});

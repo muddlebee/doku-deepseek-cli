@@ -1,15 +1,37 @@
-import { McpClient, type McpToolDefinition, type McpPromptDefinition, type McpResourceDefinition } from "./mcp-client";
+import { MCPServerStdio, type MCPResource, type MCPServerWithResources } from "@openai/agents";
+import * as path from "node:path";
 import type { McpServerConfig } from "../settings";
 
-const MCP_STARTUP_TIMEOUT_MS = process.env.DOKU_MCP_TIMEOUT ? parseInt(process.env.DOKU_MCP_TIMEOUT, 10) : 30_000;
+const parsedStartupTimeout = process.env.DOKU_MCP_TIMEOUT ? Number.parseInt(process.env.DOKU_MCP_TIMEOUT, 10) : 30_000;
+const MCP_STARTUP_TIMEOUT_MS = Number.isFinite(parsedStartupTimeout) ? parsedStartupTimeout : 30_000;
 const MCP_CALL_TOOL_TIMEOUT_MS = 60_000;
+const MCP_TOOL_REFRESH_INTERVAL_MS = 1_000;
 
 type McpToolEntry = {
   serverName: string;
   originalName: string;
   namespacedName: string;
-  definition: McpToolDefinition;
-  client: McpClient;
+  definition: SdkMcpTool;
+  server: MCPServerStdio;
+};
+
+type SdkMcpTool = Awaited<ReturnType<MCPServerStdio["listTools"]>>[number];
+
+type McpResourceEntry = {
+  serverName: string;
+  namespacedName: string;
+  definition: MCPResource;
+  server: MCPServerWithResources;
+};
+
+type SdkTransport = {
+  onclose?: () => void;
+};
+
+type SdkServerInternals = {
+  underlying?: {
+    transport?: SdkTransport | null;
+  };
 };
 
 export type McpServerStatus = {
@@ -26,20 +48,9 @@ export type McpServerStatus = {
 };
 
 export class McpManager {
-  private clients: McpClient[] = [];
+  private readonly servers = new Map<string, MCPServerStdio>();
   private tools: McpToolEntry[] = [];
-  private prompts: Array<{
-    serverName: string;
-    namespacedName: string;
-    definition: McpPromptDefinition;
-    client: McpClient;
-  }> = [];
-  private resources: Array<{
-    serverName: string;
-    namespacedName: string;
-    definition: McpResourceDefinition;
-    client: McpClient;
-  }> = [];
+  private resources: McpResourceEntry[] = [];
   private initialized = false;
   private disposed = false;
   private configuredServerNames: string[] = [];
@@ -47,227 +58,51 @@ export class McpManager {
   private onToolsListChanged: (() => void) | null = null;
   private onStatusChanged: (() => void) | null = null;
   private serverConfigs: Record<string, McpServerConfig> = {};
+  private refreshTimer: NodeJS.Timeout | null = null;
+  private readonly refreshingServers = new Set<string>();
+  private readonly intentionallyClosing = new Set<string>();
 
   prepare(servers?: Record<string, McpServerConfig>): void {
     if (!servers || Object.keys(servers).length === 0) return;
     this.disposed = false;
-
     for (const name of Object.keys(servers)) {
-      if (!this.configuredServerNames.includes(name)) {
-        this.configuredServerNames.push(name);
-      }
-      if (this.serverStatuses.some((status) => status.name === name)) {
-        continue;
-      }
-      this.setStatus({
-        name,
-        status: "starting",
-        connected: false,
-        toolCount: 0,
-        tools: [],
-        promptCount: 0,
-        prompts: [],
-        resourceCount: 0,
-        resources: [],
-      });
+      if (!this.configuredServerNames.includes(name)) this.configuredServerNames.push(name);
+      if (this.serverStatuses.some((status) => status.name === name)) continue;
+      this.setStatus(this.emptyStatus(name, "starting"));
     }
   }
 
   async initialize(servers?: Record<string, McpServerConfig>): Promise<void> {
     if (this.initialized || this.disposed) return;
     this.initialized = true;
-
     if (!servers || Object.keys(servers).length === 0) return;
-
-    this.serverConfigs = servers;
+    this.serverConfigs = { ...servers };
     this.prepare(servers);
-
     for (const [name, config] of Object.entries(servers)) {
       if (this.disposed) break;
       await this.connectServer(name, config);
     }
+    this.startRefreshTimer();
   }
 
   async reconnect(name: string, config?: McpServerConfig): Promise<void> {
     if (this.disposed) return;
     const effectiveConfig = config ?? this.serverConfigs[name];
     if (!effectiveConfig) return;
-    if (config) {
-      this.serverConfigs[name] = config;
-    }
-
-    this.setStatus({
-      name,
-      status: "reconnecting",
-      connected: false,
-      error: "Reconnecting...",
-      toolCount: 0,
-      tools: [],
-      promptCount: 0,
-      prompts: [],
-      resourceCount: 0,
-      resources: [],
-    });
-
+    this.serverConfigs[name] = effectiveConfig;
+    this.setStatus({ ...this.emptyStatus(name, "reconnecting"), error: "Reconnecting..." });
+    await this.closeServer(name);
     await this.connectServer(name, effectiveConfig);
-  }
-
-  private async connectServer(name: string, config: McpServerConfig): Promise<void> {
-    if (this.disposed) return;
-
-    // Clean up stale entries from previous connection attempts
-    this.clients = this.clients.filter((c) => c.isConnected());
-    this.tools = this.tools.filter((t) => t.serverName !== name);
-    this.prompts = this.prompts.filter((p) => p.serverName !== name);
-    this.resources = this.resources.filter((r) => r.serverName !== name);
-
-    let client: McpClient | null = null;
-    try {
-      client = new McpClient(
-        name,
-        config.command,
-        config.args ?? [],
-        config.env,
-        (method) => {
-          if (method === "notifications/tools/list_changed") {
-            this.refreshServerTools(name, client!).catch(() => {});
-          }
-        },
-        (reason) => {
-          if (!this.disposed && this.serverConfigs[name]) {
-            this.onServerCrash(name, reason);
-          }
-        }
-      );
-      await client.connect(MCP_STARTUP_TIMEOUT_MS);
-      if (this.disposed) {
-        client.disconnect();
-        return;
-      }
-      this.clients.push(client);
-
-      const serverTools = await client.listTools(MCP_STARTUP_TIMEOUT_MS);
-      if (this.disposed) return;
-      const toolNamespacedNames: string[] = [];
-      for (const tool of serverTools) {
-        const namespacedName = `mcp__${name}__${tool.name}`;
-        this.tools.push({
-          serverName: name,
-          originalName: tool.name,
-          namespacedName,
-          definition: tool,
-          client,
-        });
-        toolNamespacedNames.push(namespacedName);
-      }
-
-      let serverPrompts: McpPromptDefinition[] = [];
-      try {
-        serverPrompts = await client.listPrompts(MCP_STARTUP_TIMEOUT_MS);
-      } catch {
-        // server may not support prompts
-      }
-      if (this.disposed) return;
-      const promptNamespacedNames: string[] = [];
-      for (const prompt of serverPrompts) {
-        const namespacedName = `mcp__${name}__${prompt.name}`;
-        this.prompts.push({
-          serverName: name,
-          namespacedName,
-          definition: prompt,
-          client,
-        });
-        promptNamespacedNames.push(namespacedName);
-      }
-
-      let serverResources: McpResourceDefinition[] = [];
-      try {
-        serverResources = await client.listResources(MCP_STARTUP_TIMEOUT_MS);
-      } catch {
-        // server may not support resources
-      }
-      if (this.disposed) return;
-      const resourceNamespacedNames: string[] = [];
-      for (const resource of serverResources) {
-        const namespacedName = `mcp__${name}__${resource.name}`;
-        this.resources.push({
-          serverName: name,
-          namespacedName,
-          definition: resource,
-          client,
-        });
-        resourceNamespacedNames.push(namespacedName);
-      }
-
-      this.setStatus({
-        name,
-        status: "ready",
-        connected: true,
-        toolCount: serverTools.length,
-        tools: toolNamespacedNames,
-        promptCount: serverPrompts.length,
-        prompts: promptNamespacedNames,
-        resourceCount: serverResources.length,
-        resources: resourceNamespacedNames,
-      });
-    } catch (err) {
-      client?.disconnect();
-      const message = err instanceof Error ? err.message : String(err);
-      this.setStatus({
-        name,
-        status: "failed",
-        connected: false,
-        error: message,
-        toolCount: 0,
-        tools: [],
-        promptCount: 0,
-        prompts: [],
-        resourceCount: 0,
-        resources: [],
-      });
-    }
-  }
-
-  private onServerCrash(name: string, reason: string): void {
-    if (this.disposed) return;
-    this.clients = this.clients.filter((c) => c.isConnected());
-    this.tools = this.tools.filter((t) => t.serverName !== name);
-    this.prompts = this.prompts.filter((p) => p.serverName !== name);
-    this.resources = this.resources.filter((r) => r.serverName !== name);
-    this.onToolsListChanged?.();
-    this.setStatus({
-      name,
-      status: "failed",
-      connected: false,
-      error: reason,
-      toolCount: 0,
-      tools: [],
-      promptCount: 0,
-      prompts: [],
-      resourceCount: 0,
-      resources: [],
-    });
+    this.startRefreshTimer();
   }
 
   getStatus(): McpServerStatus[] {
-    const result = [...this.serverStatuses];
-    const knownNames = new Set(result.map((s) => s.name));
+    const statuses = this.serverStatuses.map((status) => ({ ...status }));
+    const knownNames = new Set(statuses.map((status) => status.name));
     for (const name of this.configuredServerNames) {
-      if (!knownNames.has(name)) {
-        result.push({
-          name,
-          status: "starting",
-          connected: false,
-          toolCount: 0,
-          tools: [],
-          promptCount: 0,
-          prompts: [],
-          resourceCount: 0,
-          resources: [],
-        });
-      }
+      if (!knownNames.has(name)) statuses.push(this.emptyStatus(name, "starting"));
     }
-    return result;
+    return statuses;
   }
 
   getMcpToolDefinitions(): Array<{
@@ -283,21 +118,17 @@ export class McpManager {
       };
     };
   }> {
-    return this.tools.map((t) => ({
-      type: "function" as const,
-      function: {
-        name: t.namespacedName,
-        description: t.definition.description ?? `${t.serverName}: ${t.originalName}`,
-        parameters: {
-          type: "object" as const,
-          properties: t.definition.inputSchema.properties,
-          required: t.definition.inputSchema.required,
-          ...(t.definition.inputSchema.additionalProperties !== undefined
-            ? { additionalProperties: t.definition.inputSchema.additionalProperties }
-            : {}),
+    return this.tools.map((entry) => {
+      const schema = this.normalizeInputSchema(entry.definition.inputSchema);
+      return {
+        type: "function" as const,
+        function: {
+          name: entry.namespacedName,
+          description: entry.definition.description ?? `${entry.serverName}: ${entry.originalName}`,
+          parameters: schema,
         },
-      },
-    }));
+      };
+    });
   }
 
   isMcpTool(name: string): boolean {
@@ -309,125 +140,77 @@ export class McpManager {
     args: Record<string, unknown>,
     timeoutMs = MCP_CALL_TOOL_TIMEOUT_MS
   ): Promise<{ ok: boolean; name: string; output?: string; error?: string }> {
-    const tool = this.tools.find((t) => t.namespacedName === name);
-    if (!tool) {
-      return { ok: false, name, error: `Unknown MCP tool: ${name}` };
-    }
+    const tool = this.tools.find((entry) => entry.namespacedName === name);
+    if (!tool) return { ok: false, name, error: `Unknown MCP tool: ${name}` };
 
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`MCP tool call timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
     try {
-      const result = await tool.client.callTool(tool.originalName, args, timeoutMs);
+      const result = await tool.server.callToolResult(tool.originalName, args, null, {
+        signal: controller.signal,
+      });
       const text = result.content
-        .filter((c) => c.type === "text" && c.text)
-        .map((c) => c.text)
+        .filter((content) => content.type === "text" && "text" in content)
+        .map((content) => ("text" in content && typeof content.text === "string" ? content.text : ""))
         .join("\n");
       return {
         ok: !result.isError,
         name,
-        output: text || JSON.stringify(result.content),
+        output: text || JSON.stringify(result.structuredContent ?? result.content),
       };
-    } catch (err) {
-      return {
-        ok: false,
-        name,
-        error: err instanceof Error ? err.message : String(err),
-      };
+    } catch (error) {
+      if (!this.disposed && this.isConnectionError(error)) this.markServerFailed(tool.serverName, error);
+      return { ok: false, name, error: this.errorMessage(error) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   async getMcpPrompt(
     name: string,
-    args: Record<string, unknown>
+    _args: Record<string, unknown>
   ): Promise<{ ok: boolean; name: string; output?: string; error?: string }> {
-    const prompt = this.prompts.find((p) => p.namespacedName === name);
-    if (!prompt) {
-      return { ok: false, name, error: `Unknown MCP prompt: ${name}` };
-    }
-
-    try {
-      const result = await prompt.client.getPrompt(prompt.definition.name, args);
-      const text = result.messages
-        .filter((m) => m.content.type === "text" && m.content.text)
-        .map((m) => `[${m.role}] ${m.content.text}`)
-        .join("\n");
-      return {
-        ok: true,
-        name,
-        output: text || JSON.stringify(result),
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        name,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    return { ok: false, name, error: `Unknown MCP prompt: ${name}` };
   }
 
   async readMcpResource(
     name: string,
     uri: string
   ): Promise<{ ok: boolean; name: string; output?: string; error?: string }> {
-    const resource = this.resources.find((r) => r.namespacedName === name);
-    if (!resource) {
-      return { ok: false, name, error: `Unknown MCP resource: ${name}` };
-    }
-
+    const resource = this.resources.find((entry) => entry.namespacedName === name);
+    if (!resource) return { ok: false, name, error: `Unknown MCP resource: ${name}` };
     try {
-      const result = await resource.client.readResource(uri);
+      const result = await resource.server.readResource(uri);
       const text = result.contents
-        .filter((c) => c.text)
-        .map((c) => c.text)
+        .filter((content): content is Extract<(typeof result.contents)[number], { text: string }> => "text" in content)
+        .map((content) => content.text)
         .join("\n");
-      return {
-        ok: true,
-        name,
-        output: text || JSON.stringify(result.contents),
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        name,
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return { ok: true, name, output: text || JSON.stringify(result.contents) };
+    } catch (error) {
+      if (!this.disposed && this.isConnectionError(error)) this.markServerFailed(resource.serverName, error);
+      return { ok: false, name, error: this.errorMessage(error) };
     }
   }
 
   disconnect(): void {
     this.disposed = true;
-    for (const client of this.clients) {
-      client.disconnect();
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
+    const servers = [...this.servers.entries()];
+    this.servers.clear();
+    for (const [name, server] of servers) {
+      this.intentionallyClosing.add(name);
+      void server.close().finally(() => this.intentionallyClosing.delete(name));
     }
-    this.clients = [];
     this.tools = [];
-    this.prompts = [];
     this.resources = [];
     this.serverStatuses = [];
     this.configuredServerNames = [];
     this.serverConfigs = {};
     this.initialized = false;
-  }
-
-  private async refreshServerTools(serverName: string, client: McpClient): Promise<void> {
-    const serverTools = await client.listTools(MCP_STARTUP_TIMEOUT_MS);
-    this.tools = this.tools.filter((t) => t.serverName !== serverName);
-    const toolNamespacedNames: string[] = [];
-    for (const tool of serverTools) {
-      const namespacedName = `mcp__${serverName}__${tool.name}`;
-      this.tools.push({
-        serverName,
-        originalName: tool.name,
-        namespacedName,
-        definition: tool,
-        client,
-      });
-      toolNamespacedNames.push(namespacedName);
-    }
-    const existing = this.serverStatuses.find((s) => s.name === serverName);
-    if (existing) {
-      existing.toolCount = serverTools.length;
-      existing.tools = toolNamespacedNames;
-    }
-    this.onToolsListChanged?.();
   }
 
   setOnToolsListChanged(handler: () => void): void {
@@ -438,14 +221,261 @@ export class McpManager {
     this.onStatusChanged = handler;
   }
 
+  private async connectServer(name: string, config: McpServerConfig): Promise<void> {
+    if (this.disposed) return;
+    this.removeServerEntries(name);
+    const server = new MCPServerStdio({
+      name,
+      command: config.command,
+      args: this.withNpxYesArg(config.command, config.args ?? []),
+      env: this.mergeEnvironment(config.env),
+      cacheToolsList: false,
+      clientSessionTimeoutSeconds: Math.max(1, Math.ceil(MCP_STARTUP_TIMEOUT_MS / 1000)),
+      timeout: MCP_CALL_TOOL_TIMEOUT_MS,
+    });
+    try {
+      await this.withTimeout(server.connect(), MCP_STARTUP_TIMEOUT_MS, `starting MCP server "${name}"`);
+      if (this.disposed) {
+        await server.close();
+        return;
+      }
+      this.servers.set(name, server);
+      this.attachCloseMonitor(name, server);
+      const serverTools = await this.withTimeout(
+        server.listTools(),
+        MCP_STARTUP_TIMEOUT_MS,
+        `listing tools for "${name}"`
+      );
+      const serverResources = await this.listAllResources(server);
+      if (this.disposed || this.servers.get(name) !== server) return;
+      this.replaceServerTools(name, server, serverTools);
+      this.replaceServerResources(name, server, serverResources);
+      this.setStatus({
+        name,
+        status: "ready",
+        connected: true,
+        toolCount: serverTools.length,
+        tools: serverTools.map((tool) => `mcp__${name}__${tool.name}`),
+        promptCount: 0,
+        prompts: [],
+        resourceCount: serverResources.length,
+        resources: serverResources.map((resource) => `mcp__${name}__${resource.name ?? resource.uri}`),
+      });
+    } catch (error) {
+      this.intentionallyClosing.add(name);
+      await server.close().catch(() => {});
+      this.intentionallyClosing.delete(name);
+      if (!this.disposed) this.markServerFailed(name, error);
+    }
+  }
+
+  private async listAllResources(server: MCPServerWithResources): Promise<MCPResource[]> {
+    const resources: MCPResource[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      try {
+        const result = await this.withTimeout(
+          server.listResources(cursor ? { cursor } : undefined),
+          MCP_STARTUP_TIMEOUT_MS,
+          `listing resources for "${server.name}"`
+        );
+        resources.push(...result.resources);
+        cursor = result.nextCursor;
+        if (!cursor) return resources;
+      } catch (error) {
+        if (page === 0 && !this.isConnectionError(error)) return [];
+        throw error;
+      }
+    }
+    throw new Error(`MCP server "${server.name}" returned too many resources/list pages`);
+  }
+
+  private startRefreshTimer(): void {
+    if (this.refreshTimer || this.disposed || this.servers.size === 0) return;
+    this.refreshTimer = setInterval(() => {
+      for (const [name, server] of this.servers) void this.refreshServerTools(name, server);
+    }, MCP_TOOL_REFRESH_INTERVAL_MS);
+    this.refreshTimer.unref();
+  }
+
+  private async refreshServerTools(name: string, server: MCPServerStdio): Promise<void> {
+    if (this.disposed || this.refreshingServers.has(name) || this.servers.get(name) !== server) return;
+    this.refreshingServers.add(name);
+    try {
+      await server.invalidateToolsCache();
+      const serverTools = await server.listTools();
+      if (this.disposed || this.servers.get(name) !== server) return;
+      const previousNames = this.tools.filter((entry) => entry.serverName === name).map((entry) => entry.originalName);
+      const nextNames = serverTools.map((tool) => tool.name);
+      if (JSON.stringify(previousNames) === JSON.stringify(nextNames)) return;
+      this.replaceServerTools(name, server, serverTools);
+      const existing = this.serverStatuses.find((status) => status.name === name);
+      if (existing) {
+        this.setStatus({
+          ...existing,
+          toolCount: serverTools.length,
+          tools: serverTools.map((tool) => `mcp__${name}__${tool.name}`),
+        });
+      }
+      this.onToolsListChanged?.();
+    } catch (error) {
+      if (!this.disposed && this.servers.get(name) === server) this.markServerFailed(name, error);
+    } finally {
+      this.refreshingServers.delete(name);
+    }
+  }
+
+  private attachCloseMonitor(name: string, server: MCPServerStdio): void {
+    const internals = server as unknown as SdkServerInternals;
+    const transport = internals.underlying?.transport;
+    if (!transport) return;
+    const previousOnClose = transport.onclose;
+    transport.onclose = () => {
+      previousOnClose?.();
+      if (!this.disposed && !this.intentionallyClosing.has(name) && this.servers.get(name) === server) {
+        this.markServerFailed(name, new Error(`MCP server "${name}" connection closed`));
+      }
+    };
+  }
+
+  private async closeServer(name: string): Promise<void> {
+    const server = this.servers.get(name);
+    this.servers.delete(name);
+    this.removeServerEntries(name);
+    if (!server) return;
+    this.intentionallyClosing.add(name);
+    try {
+      await server.close();
+    } finally {
+      this.intentionallyClosing.delete(name);
+    }
+  }
+
+  private replaceServerTools(name: string, server: MCPServerStdio, tools: SdkMcpTool[]): void {
+    this.tools = this.tools.filter((entry) => entry.serverName !== name);
+    this.tools.push(
+      ...tools.map((definition) => ({
+        serverName: name,
+        originalName: definition.name,
+        namespacedName: `mcp__${name}__${definition.name}`,
+        definition,
+        server,
+      }))
+    );
+  }
+
+  private replaceServerResources(name: string, server: MCPServerWithResources, resources: MCPResource[]): void {
+    this.resources = this.resources.filter((entry) => entry.serverName !== name);
+    this.resources.push(
+      ...resources.map((definition) => ({
+        serverName: name,
+        namespacedName: `mcp__${name}__${definition.name ?? definition.uri}`,
+        definition,
+        server,
+      }))
+    );
+  }
+
+  private removeServerEntries(name: string): void {
+    this.tools = this.tools.filter((entry) => entry.serverName !== name);
+    this.resources = this.resources.filter((entry) => entry.serverName !== name);
+    this.onToolsListChanged?.();
+  }
+
+  private markServerFailed(name: string, error: unknown): void {
+    const server = this.servers.get(name);
+    this.servers.delete(name);
+    if (server) {
+      this.intentionallyClosing.add(name);
+      void server.close().finally(() => this.intentionallyClosing.delete(name));
+    }
+    this.removeServerEntries(name);
+    this.setStatus({ ...this.emptyStatus(name, "failed"), error: this.errorMessage(error) });
+  }
+
+  private normalizeInputSchema(schema: unknown): {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  } {
+    const record =
+      schema && typeof schema === "object" && !Array.isArray(schema) ? (schema as Record<string, unknown>) : {};
+    const properties =
+      record.properties && typeof record.properties === "object" && !Array.isArray(record.properties)
+        ? (record.properties as Record<string, unknown>)
+        : {};
+    const required = Array.isArray(record.required)
+      ? record.required.filter((value): value is string => typeof value === "string")
+      : undefined;
+    return {
+      type: "object",
+      properties,
+      ...(required ? { required } : {}),
+      ...(typeof record.additionalProperties === "boolean"
+        ? { additionalProperties: record.additionalProperties }
+        : {}),
+    };
+  }
+
+  private withNpxYesArg(command: string, args: string[]): string[] {
+    const executable = path
+      .basename(command)
+      .toLowerCase()
+      .replace(/\.cmd$/, "");
+    if (executable !== "npx" || args.includes("-y") || args.includes("--yes")) return args;
+    return ["-y", ...args];
+  }
+
+  private mergeEnvironment(overrides?: Record<string, string>): Record<string, string> {
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+    );
+    return { ...environment, ...overrides };
+  }
+
+  private isConnectionError(error: unknown): boolean {
+    const message = this.errorMessage(error).toLowerCase();
+    return message.includes("not connected") || message.includes("closed") || message.includes("connection");
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private emptyStatus(name: string, status: McpServerStatus["status"]): McpServerStatus {
+    return {
+      name,
+      status,
+      connected: false,
+      toolCount: 0,
+      tools: [],
+      promptCount: 0,
+      prompts: [],
+      resourceCount: 0,
+      resources: [],
+    };
+  }
+
   private setStatus(status: McpServerStatus): void {
     if (this.disposed) return;
-    const index = this.serverStatuses.findIndex((s) => s.name === status.name);
-    if (index === -1) {
-      this.serverStatuses.push(status);
-    } else {
-      this.serverStatuses[index] = status;
-    }
+    const index = this.serverStatuses.findIndex((entry) => entry.name === status.name);
+    if (index === -1) this.serverStatuses.push(status);
+    else this.serverStatuses[index] = status;
     this.onStatusChanged?.();
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms while ${operation}`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }

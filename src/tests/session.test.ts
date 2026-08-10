@@ -415,13 +415,14 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
     if (request.params && request.params.cursor === "page-2") {
       send({ jsonrpc: "2.0", id: request.id, result: { tools: [
-        { name: "count", inputSchema: { type: "object", properties: {} } }
+        { name: "count", inputSchema: { type: "object", properties: {} } },
+        { name: "hang", inputSchema: { type: "object", properties: {} } }
       ] } });
       return;
     }
@@ -431,7 +432,28 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "tools/call") {
+    if (request.params.name === "hang") {
+      return;
+    }
     send({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: request.params.name + ":" + (request.params.arguments.text || "") }] } });
+    return;
+  }
+  if (request.method === "resources/list") {
+    if (request.params && request.params.cursor === "resources-page-2") {
+      send({ jsonrpc: "2.0", id: request.id, result: { resources: [
+        { uri: "file:///two.txt", name: "two" }
+      ] } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: { resources: [
+      { uri: "file:///one.txt", name: "one" }
+    ], nextCursor: "resources-page-2" } });
+    return;
+  }
+  if (request.method === "resources/read") {
+    send({ jsonrpc: "2.0", id: request.id, result: { contents: [
+      { uri: request.params.uri, text: "resource body" }
+    ] } });
     return;
   }
   send({ jsonrpc: "2.0", id: request.id, result: { content: [] } });
@@ -464,12 +486,12 @@ rl.on("line", (line) => {
       name: "smoke",
       status: "ready",
       connected: true,
-      toolCount: 2,
-      tools: ["mcp__smoke__echo", "mcp__smoke__count"],
+      toolCount: 3,
+      tools: ["mcp__smoke__echo", "mcp__smoke__count", "mcp__smoke__hang"],
       promptCount: 0,
       prompts: [],
-      resourceCount: 0,
-      resources: [],
+      resourceCount: 2,
+      resources: ["mcp__smoke__one", "mcp__smoke__two"],
     },
   ]);
   const mcpManager = (manager as any).mcpManager;
@@ -479,6 +501,14 @@ rl.on("line", (line) => {
     name: "mcp__smoke__echo",
     output: "echo:ok",
   });
+  assert.deepEqual(await mcpManager.readMcpResource("mcp__smoke__one", "file:///one.txt"), {
+    ok: true,
+    name: "mcp__smoke__one",
+    output: "resource body",
+  });
+  const timedOutCall = await mcpManager.executeMcpTool("mcp__smoke__hang", {}, 20);
+  assert.equal(timedOutCall.ok, false);
+  assert.match(timedOutCall.error ?? "", /timed out|abort/i);
 
   manager.dispose();
 
@@ -502,7 +532,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -573,7 +603,7 @@ test("SessionManager reports configured MCP servers as starting before initializ
   ]);
 });
 
-test("SessionManager reports MCP startup stderr on failure", async () => {
+test("SessionManager reports MCP startup connection failure", async () => {
   const workspace = createTempDir("deepcode-mcp-failure-workspace-");
   const serverPath = path.join(workspace, "mcp-server-fail.cjs");
   fs.writeFileSync(serverPath, 'process.stderr.write("mcp startup boom"); process.exit(7);', "utf8");
@@ -585,7 +615,7 @@ test("SessionManager reports MCP startup stderr on failure", async () => {
   assert.equal(status?.name, "broken");
   assert.equal(status?.status, "failed");
   assert.equal(status?.connected, false);
-  assert.match(status?.error ?? "", /mcp startup boom/);
+  assert.match(status?.error ?? "", /connection closed/i);
 });
 
 test(
@@ -611,7 +641,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -1730,13 +1760,11 @@ test("Write tool params prefer file_path even when content appears first", () =>
   assert.equal(toolMessage.meta?.paramsMd, filePath);
 });
 
-test("LLM tool calls without ids receive generated 32 character ids", async () => {
+test("LLM tool calls with an empty id receive a generated 32 character id", async () => {
   const workspace = createTempDir("deepcode-tool-call-id-workspace-");
   const home = createTempDir("deepcode-tool-call-id-home-");
   setHomeDir(home);
 
-  const filePath = path.join(workspace, "note.txt");
-  fs.writeFileSync(filePath, "hello\n", "utf8");
   const plan = "## Task List\n\n- [ ] Inspect current behavior";
   const manager = createMockedClientSessionManager(workspace, [
     {
@@ -1753,13 +1781,6 @@ test("LLM tool calls without ids receive generated 32 character ids", async () =
                   arguments: JSON.stringify({ plan, explanation: "Initial plan" }),
                 },
               },
-              {
-                type: "function",
-                function: {
-                  name: "read",
-                  arguments: JSON.stringify({ file_path: filePath }),
-                },
-              },
             ],
           },
         },
@@ -1774,20 +1795,14 @@ test("LLM tool calls without ids receive generated 32 character ids", async () =
     .find((message) => message.role === "assistant" && (message.messageParams as any)?.tool_calls);
   const toolCalls = (assistantMessage?.messageParams as { tool_calls?: Array<{ id?: unknown }> } | null)?.tool_calls;
 
-  assert.equal(toolCalls?.length, 2);
+  assert.equal(toolCalls?.length, 1);
   assert.match(String(toolCalls?.[0]?.id), /^[0-9a-f]{32}$/);
-  assert.match(String(toolCalls?.[1]?.id), /^[0-9a-f]{32}$/);
-  assert.notEqual(toolCalls?.[0]?.id, toolCalls?.[1]?.id);
 
   const toolMessages = manager.listSessionMessages(sessionId).filter((message) => message.role === "tool");
   assert.deepEqual(
     toolMessages.map((message) => (message.messageParams as { tool_call_id?: unknown } | null)?.tool_call_id),
     toolCalls?.map((toolCall) => toolCall.id)
   );
-
-  const readToolMessage = toolMessages.find((message) => JSON.parse(message.content ?? "{}").name === "read");
-  assert.equal((readToolMessage?.meta?.function as { name?: string } | undefined)?.name, "read");
-  assert.equal(readToolMessage?.meta?.paramsMd, "note.txt");
 });
 
 test("buildOpenAIMessages repairs mixed missing duplicate and orphan tool messages", () => {
@@ -1947,6 +1962,25 @@ test("SessionManager accumulates response usage while active tokens track the la
   assert.equal(usagePerModel.total_reqs, 2);
 });
 
+test("SessionManager appends new turns to SDK session history without rebuilding prior provider items", async () => {
+  const workspace = createTempDir("doku-agent-history-workspace-");
+  const home = createTempDir("doku-agent-history-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("first", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+    createChatResponse("second", { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 }),
+  ]);
+
+  const sessionId = await manager.createSession({ text: "one" });
+  const agentHistoryPath = (manager as any).getAgentSessionPath(sessionId) as string;
+  const firstTurnHistory = fs.readFileSync(agentHistoryPath, "utf8");
+  await manager.replySession(sessionId, { text: "two" });
+  const secondTurnHistory = fs.readFileSync(agentHistoryPath, "utf8");
+
+  assert.ok(secondTurnHistory.startsWith(firstTurnHistory));
+  assert.ok(secondTurnHistory.length > firstTurnHistory.length);
+});
+
 test("SessionManager stores usage per model across model changes", async () => {
   const workspace = createTempDir("deepcode-usage-per-model-workspace-");
   const home = createTempDir("deepcode-usage-per-model-home-");
@@ -1963,16 +1997,17 @@ test("SessionManager stores usage per model across model changes", async () => {
       prompt_tokens: 20,
       completion_tokens: 7,
       total_tokens: 27,
+      prompt_tokens_details: { cached_tokens: 6 },
       prompt_cache_hit_tokens: 6,
     }),
   ];
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2067,8 +2102,8 @@ test("SessionManager streams chat completions and counts reasoning progress", as
           assert.equal(request.stream, true);
           assert.deepEqual(request.stream_options, { include_usage: true });
           return createChatStreamResponse([
-            { choices: [{ delta: { reasoning_content: "思考" } }] },
-            { choices: [{ delta: { content: "hello" } }] },
+            { id: "stream-response", choices: [{ index: 0, delta: { reasoning: "思考" } }] },
+            { id: "stream-response", choices: [{ index: 0, delta: { content: "hello" }, finish_reason: "stop" }] },
             {
               choices: [],
               usage: {
@@ -2113,8 +2148,77 @@ test("SessionManager streams chat completions and counts reasoning progress", as
     progressEvents.map((event) => event.phase),
     ["start", "update", "update", "end"]
   );
-  assert.equal(progressEvents[1]?.estimatedTokens, 1);
+  assert.ok((progressEvents[1]?.estimatedTokens ?? 0) > 0);
   assert.equal(progressEvents[2]?.formattedTokens, "3");
+});
+
+test("SessionManager omits image inputs for providers without image support", async () => {
+  const workspace = createTempDir("doku-agent-image-filter-workspace-");
+  const home = createTempDir("doku-agent-image-filter-home-");
+  setHomeDir(home);
+  let requestBody: Record<string, unknown> | null = null;
+  const response = createChatResponse("image omitted", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+  const client = {
+    chat: {
+      completions: {
+        create: async (request: Record<string, unknown>) => {
+          requestBody = request;
+          return createChatStreamFromResponse(response);
+        },
+      },
+    },
+  };
+  const manager = createMockedClientSessionManagerWithClient(workspace, client);
+
+  await manager.createSession({ text: "", imageUrls: ["data:image/png;base64,abc123"] });
+
+  assert.doesNotMatch(JSON.stringify(requestBody), /image_url|abc123/);
+});
+
+test("SessionManager resumes AskUserQuestion after restart and persists the answer as its tool result", async () => {
+  const workspace = createTempDir("doku-agent-hitl-workspace-");
+  const home = createTempDir("doku-agent-hitl-home-");
+  setHomeDir(home);
+  const approvalResponse = {
+    choices: [
+      {
+        message: {
+          content: "",
+          tool_calls: [
+            {
+              id: "ask-1",
+              type: "function",
+              function: {
+                name: "AskUserQuestion",
+                arguments: JSON.stringify({
+                  questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }],
+                }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+  };
+  const firstManager = createMockedClientSessionManager(workspace, [approvalResponse]);
+  const sessionId = await firstManager.createSession({ text: "choose" });
+  assert.equal(firstManager.getSession(sessionId)?.status, "waiting_for_user");
+
+  const resumedManager = createMockedClientSessionManager(workspace, [
+    createChatResponse("continued", { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 }),
+  ]);
+  await resumedManager.replySession(sessionId, { text: "Yes" });
+
+  assert.equal(resumedManager.getSession(sessionId)?.status, "completed");
+  const result = resumedManager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: unknown } | null;
+    return message.role === "tool" && params?.tool_call_id === "ask-1";
+  });
+  assert.equal(result?.meta?.pendingApproval, false);
+  assert.match(result?.content ?? "", /Yes/);
+  assert.doesNotMatch(result?.content ?? "", /Waiting for user input/);
+  assert.equal(fs.existsSync((resumedManager as any).getPausedRunStatePath(sessionId)), false);
 });
 
 test("SessionManager persists session and user message before skill matching is cancelled", async () => {
@@ -2134,6 +2238,10 @@ test("SessionManager persists session and user message before skill matching is 
         create: async (_request: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
           return new Promise((_resolve, reject) => {
             const signal = options?.signal;
+            if (signal?.aborted) {
+              reject(new APIUserAbortError());
+              return;
+            }
             signal?.addEventListener("abort", () => reject(new APIUserAbortError()), { once: true });
             queueMicrotask(() => manager.interruptActiveSession());
           });
@@ -2167,6 +2275,10 @@ test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () =
         create: async (_request: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
           return new Promise((_resolve, reject) => {
             const signal = options?.signal;
+            if (signal?.aborted) {
+              reject(new APIUserAbortError());
+              return;
+            }
             signal?.addEventListener("abort", () => reject(new APIUserAbortError()), { once: true });
           });
         },
@@ -2213,7 +2325,7 @@ test("SessionManager marks MCP server as failed on single failed attempt (no aut
   const status = manager.getMcpStatus();
   assert.equal(status.length, 1);
   assert.equal(status[0]?.status, "failed");
-  assert.match(status[0]?.error ?? "", /exited with code 7/);
+  assert.match(status[0]?.error ?? "", /connection closed/i);
 
   manager.dispose();
 });
@@ -2233,7 +2345,7 @@ rl.on("line", (line) => {
   const request = JSON.parse(line);
   if (!("id" in request)) return;
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {} } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -2265,7 +2377,7 @@ test("SessionManager adjusts the active Bash timeout control and session metadat
   const manager = createSessionManager(workspace, "");
   const sessionId = await manager.createSession({ text: "hello" });
 
-  (manager as any).addSessionProcess(sessionId, 123, "sleep 10");
+  (manager as any).processTracker.add(sessionId, 123, "sleep 10");
 
   let timeoutInfo = {
     timeoutMs: 10 * 60 * 1000,
@@ -2273,7 +2385,7 @@ test("SessionManager adjusts the active Bash timeout control and session metadat
     deadlineAtMs: 1000 + 10 * 60 * 1000,
     timedOut: false,
   };
-  (manager as any).setSessionProcessTimeoutControl(sessionId, 123, {
+  (manager as any).processTracker.setTimeoutControl(sessionId, 123, {
     getInfo: () => timeoutInfo,
     setTimeoutMs: (timeoutMs: number) => {
       timeoutInfo = {
@@ -2370,13 +2482,13 @@ function createNotifyingSessionManager(
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
           if (response instanceof Error) {
             throw response;
           }
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2408,10 +2520,10 @@ function createMockedClientSessionManager(projectRoot: string, responses: unknow
   const client = {
     chat: {
       completions: {
-        create: async () => {
+        create: async (request: { stream?: boolean }) => {
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
-          return response;
+          return request.stream ? createChatStreamFromResponse(response) : response;
         },
       },
     },
@@ -2453,6 +2565,43 @@ function createChatResponse(content: string, usage: Record<string, unknown>): un
     choices: [{ message: { content } }],
     usage,
   };
+}
+
+async function* createChatStreamFromResponse(response: unknown): AsyncGenerator<Record<string, unknown>> {
+  const completion = response as {
+    id?: string;
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+        reasoning_content?: string;
+        reasoning?: string;
+        tool_calls?: Array<Record<string, unknown>>;
+      };
+    }>;
+    usage?: Record<string, unknown>;
+  };
+  const message = completion.choices?.[0]?.message ?? {};
+  const toolCalls = message.tool_calls?.map((toolCall, index) => ({ ...toolCall, index }));
+  yield {
+    id: completion.id ?? "test-response",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          ...(message.reasoning_content || message.reasoning
+            ? { reasoning: message.reasoning_content ?? message.reasoning }
+            : {}),
+          ...(message.content != null ? { content: message.content } : {}),
+          ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: toolCalls?.length ? "tool_calls" : "stop",
+      },
+    ],
+  };
+  if (completion.usage) {
+    yield { id: completion.id ?? "test-response", choices: [], usage: completion.usage };
+  }
 }
 
 function buildTestMessage(

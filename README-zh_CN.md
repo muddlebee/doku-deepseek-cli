@@ -2,7 +2,7 @@
 
 # doku
 
-### 面向终端的 DeepSeek AI 编程助手
+### 面向终端的 AI 编程助手
 
 [![][github-stars-shield]][github-stars-link] [![][github-issues-shield]][github-issues-link] [![][github-license-shield]][github-license-link]
 
@@ -14,7 +14,7 @@
 
 ---
 
-**doku** 是专为 [DeepSeek](https://deepseek.com) 模型打造的终端 AI 编程助手。支持深度思考、推理强度控制、Agent Skills 以及 MCP 集成——一切尽在终端。
+**doku** 是基于 OpenAI Agents JS 运行时的 provider-neutral 终端 AI 编程助手。支持 OpenAI、DeepSeek、自定义 OpenAI-compatible 服务、Agent Skills 以及 MCP 集成。
 
 ```bash
 npm install -g doku-deepseek-cli
@@ -23,8 +23,8 @@ doku
 
 ## 功能特性
 
-- **DeepSeek 深度优化** — 专为 DeepSeek v4 Pro/Flash 调优，原生支持思考模式和推理强度控制
-- **上下文缓存** — 通过 [KV 缓存](https://api-docs.deepseek.com/guides/kv_cache) 降低 API 成本
+- **统一 Agent 运行时** — 由 OpenAI Agents JS 管理模型轮次、流式输出、工具调用、取消和轮次限制
+- **Provider-neutral** — 原生支持 OpenAI Responses，并通过隔离的 AI SDK adapter 支持 DeepSeek 和自定义 compatible 服务
 - **Agent Skills** — 通过用户级或项目级 skill 文件扩展助手能力
 - **MCP 支持** — 通过 Model Context Protocol 连接 GitHub、浏览器、数据库等
 - **撤销 / 检查点** — 随时将代码和对话恢复到任意历史状态
@@ -44,17 +44,15 @@ doku
 
 ## 配置
 
-创建 `~/.doku/settings.json`：
+创建 `~/.doku/settings.json`（首次启动向导也可自动创建）：
 
 ```json
 {
-  "env": {
-    "MODEL": "deepseek-v4-pro",
-    "BASE_URL": "https://api.deepseek.com",
-    "API_KEY": "sk-..."
-  },
-  "thinkingEnabled": true,
-  "reasoningEffort": "max"
+  "settingsVersion": 2,
+  "provider": "openai",
+  "model": "gpt-5.4-mini",
+  "apiMode": "auto",
+  "env": { "API_KEY": "sk-..." }
 }
 ```
 
@@ -63,7 +61,7 @@ doku
 也可以使用环境变量——任意 `DOKU_*` 环境变量都会映射到对应配置项：
 
 ```bash
-DOKU_API_KEY=sk-... DOKU_MODEL=deepseek-v4-flash doku
+DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.4-mini doku
 ```
 
 ## 斜杠命令
@@ -93,13 +91,13 @@ DOKU_API_KEY=sk-... DOKU_MODEL=deepseek-v4-flash doku
 | `/` | 打开命令菜单 |
 | 连续 `Ctrl+D` | 退出 |
 
-## 支持的模型
+## Provider 与模型
 
-| 模型 | 说明 |
-|------|------|
-| `deepseek-v4-pro` | 推荐——质量最佳 |
-| `deepseek-v4-flash` | 更快，成本更低 |
-| 任意 OpenAI 兼容模型 | 相应设置 `BASE_URL` 即可 |
+| Provider | API 模式 | 模型 ID |
+|----------|----------|---------|
+| OpenAI | 默认 Responses；可选 Chat Completions | 任意 OpenAI 模型 ID |
+| DeepSeek | 通过隔离的 AI SDK bridge 使用 Chat Completions | 任意 DeepSeek 模型 ID |
+| OpenAI-compatible | 默认 Chat Completions；可选 Responses | 服务端支持的任意模型 ID |
 
 ## Agent Skills
 

@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import type { ReasoningEffort } from "../settings";
+import type { ApiMode, ProviderProfile, ReasoningEffort } from "../settings";
 import { handleAskUserQuestionTool } from "./ask-user-question-handler";
 import { handleBashTool } from "./bash-handler";
 import { handleEditTool } from "./edit-handler";
@@ -13,6 +13,9 @@ import type { McpManager } from "../mcp/mcp-manager";
 
 export type CreateOpenAIClient = () => {
   client: OpenAI | null;
+  provider?: string;
+  providerProfile?: ProviderProfile;
+  apiMode?: ApiMode;
   model: string;
   baseURL?: string;
   thinkingEnabled: boolean;
@@ -23,6 +26,8 @@ export type CreateOpenAIClient = () => {
   webSearchProvider?: string;
   env?: Record<string, string>;
   machineId?: string;
+  maxTurns?: number;
+  tracingEnabled?: boolean;
 };
 
 export type ToolCall = {
@@ -35,6 +40,7 @@ export type ToolCall = {
 };
 
 export type ToolExecutionContext = {
+  signal?: AbortSignal;
   sessionId: string;
   projectRoot: string;
   toolCall: ToolCall;
@@ -51,6 +57,7 @@ export type ToolExecutionContext = {
 };
 
 export type ToolExecutionHooks = {
+  signal?: AbortSignal;
   onProcessStart?: (processId: string | number, command: string) => void;
   onProcessExit?: (processId: string | number) => void;
   onProcessStdout?: (processId: string | number, chunk: string) => void;
@@ -284,6 +291,11 @@ export class ToolExecutor {
     toolCall: ToolCall,
     hooks?: ToolExecutionHooks
   ): Promise<ToolExecutionResult> {
+    if (hooks?.signal?.aborted) {
+      const error = new Error("Tool execution was aborted.");
+      error.name = "AbortError";
+      throw error;
+    }
     const toolName = toolCall.function.name;
     const handlerName = BUILT_IN_TOOL_NAME_ALIASES.get(toolName) ?? toolName;
     const handler = this.toolHandlers.get(handlerName);
@@ -312,6 +324,7 @@ export class ToolExecutor {
 
     try {
       return await handler(parsedArgs.args, {
+        signal: hooks?.signal,
         sessionId,
         projectRoot: this.projectRoot,
         toolCall,

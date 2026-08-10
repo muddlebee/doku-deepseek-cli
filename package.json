@@ -1,7 +1,7 @@
 {
   "name": "doku-deepseek-cli",
   "version": "0.1.0",
-  "description": "doku — DeepSeek AI coding assistant for your terminal",
+  "description": "doku — provider-neutral AI coding assistant for your terminal",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -38,7 +38,7 @@
     "dev": "npx tsx src/cli.tsx",
     "start": "npm run bundle && node dist/cli.js",
     "typecheck": "tsc -p ./ --noEmit",
-    "bundle": "esbuild ./src/cli.tsx --bundle --platform=node --format=esm --target=node18 --outfile=dist/cli.js --banner:js=\"#!/usr/bin/env node\" --jsx=automatic --jsx-import-source=react --packages=external --log-override:empty-import-meta=silent",
+    "bundle": "esbuild ./src/cli.tsx --bundle --platform=node --format=esm --target=node22 --outfile=dist/cli.js --banner:js=\"#!/usr/bin/env node\" --jsx=automatic --jsx-import-source=react --packages=external --log-override:empty-import-meta=silent",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.{ts,tsx}'",
@@ -52,7 +52,11 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@ai-sdk/deepseek": "^3.0.26",
     "@inkjs/ui": "^2.0.0",
+    "@openai/agents": "^0.14.3",
+    "@openai/agents-extensions": "^0.14.3",
+    "ai": "^7.0.58",
     "chalk": "^5.6.2",
     "ejs": "^5.0.2",
     "figlet": "^1.11.0",

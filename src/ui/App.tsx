@@ -38,6 +38,7 @@ import {
   type AskUserQuestionAnswers,
   findPendingAskUserQuestion,
   formatAskUserQuestionAnswers,
+  formatAskUserQuestionDecline,
 } from "./askUserQuestion";
 import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
@@ -333,7 +334,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const meta: MessageMeta = {
         isModelChange: true,
       };
-      const content = `/model\n└ Set model to ${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
+      const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
 
       if (activeSessionId) {
         sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
@@ -626,7 +627,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       return;
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
-  }, [pendingQuestion]);
+    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] });
+  }, [handlePrompt, pendingQuestion]);
 
   if (mode === RawMode.Raw) {
     return <RawModeExitPrompt onExit={(prev) => handleRawModeChange(prev)} />;
