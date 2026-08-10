@@ -72,17 +72,6 @@ export class SessionMessageFactory {
     });
   }
 
-  normalizeToolCalls(rawToolCalls: unknown[] | null | undefined): unknown[] | null {
-    if (!rawToolCalls?.length) return null;
-    return rawToolCalls.map((toolCall) => {
-      if (!toolCall || typeof toolCall !== "object" || Array.isArray(toolCall)) return toolCall;
-      const record = toolCall as Record<string, unknown>;
-      return typeof record.id === "string" && record.id.trim()
-        ? toolCall
-        : { ...record, id: crypto.randomBytes(16).toString("hex") };
-    });
-  }
-
   renderInitPrompt(): string {
     const template = fs.readFileSync(
       path.join(this.extensionRoot, "templates", "prompts", "init_command.md.ejs"),
@@ -93,14 +82,6 @@ export class SessionMessageFactory {
 
   loadAgentInstructions(): string | null {
     return this.projectInstructions()?.content ?? readNonEmptyFile(path.join(os.homedir(), ".doku", "AGENTS.md"));
-  }
-
-  interruptedToolResult(toolFunction: unknown | null, reason: string): string {
-    const toolName =
-      toolFunction && typeof toolFunction === "object" && typeof (toolFunction as { name?: unknown }).name === "string"
-        ? (toolFunction as { name: string }).name
-        : "tool";
-    return JSON.stringify({ ok: false, name: toolName, error: reason, metadata: { interrupted: true } }, null, 2);
   }
 
   private projectInstructions(): { content: string; displayPath: string } | null {
