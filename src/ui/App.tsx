@@ -639,7 +639,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   }
 
   return (
-    <Box flexDirection="column" width={screenWidth} minWidth={80} overflowX={"visible"}>
+    <Box flexDirection="column" width={screenWidth} overflowX={"visible"}>
       <Static items={staticItems}>
         {(item) => {
           if (item.id.startsWith("__welcome__")) {

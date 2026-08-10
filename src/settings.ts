@@ -67,6 +67,7 @@ export type ResolvedDeepcodingSettings = {
   providers: Record<string, ProviderProfile>;
   env: Record<string, string>;
   apiKey?: string;
+  apiKeySource?: "environment" | "settings";
   baseURL: string;
   model: string;
   thinkingEnabled: boolean;
@@ -286,16 +287,16 @@ export function resolveSettingsSources(
     trimString(providerProfile.baseURL) ||
     defaults.baseURL;
   const apiKeyEnv = trimString(providerProfile.apiKeyEnv);
-  const providerApiKey = apiKeyEnv
-    ? trimString(systemEnv[apiKeyEnv]) ||
-      trimString(processEnv[apiKeyEnv]) ||
-      trimString(projectEnv[apiKeyEnv]) ||
-      trimString(userEnv[apiKeyEnv])
+  const environmentProviderApiKey = apiKeyEnv
+    ? trimString(systemEnv[apiKeyEnv]) || trimString(processEnv[apiKeyEnv])
     : "";
+  const settingsProviderApiKey = apiKeyEnv ? trimString(projectEnv[apiKeyEnv]) || trimString(userEnv[apiKeyEnv]) : "";
+  const providerApiKey = environmentProviderApiKey || settingsProviderApiKey;
   const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
+  const environmentApiKey = trimString(systemEnv.API_KEY);
   const apiKey =
-    trimString(systemEnv.API_KEY) ||
-    (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
+    environmentApiKey || (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
+  const apiKeySource = environmentApiKey || environmentProviderApiKey ? "environment" : apiKey ? "settings" : undefined;
 
   const thinkingEnabled =
     parseBoolean(systemEnv.THINKING_ENABLED) ??
@@ -345,6 +346,7 @@ export function resolveSettingsSources(
     providers,
     env,
     apiKey: apiKey || undefined,
+    apiKeySource,
     baseURL,
     model,
     thinkingEnabled,

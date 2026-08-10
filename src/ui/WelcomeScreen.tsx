@@ -28,30 +28,47 @@ const SHORTCUT_TIPS = [
 
 const LOGO = figlet.textSync("doku", { font: "Slant" });
 
-export function WelcomeScreen({ projectRoot, settings, skills }: WelcomeScreenProps): React.ReactElement {
+export function WelcomeScreen({ projectRoot, settings, skills, width }: WelcomeScreenProps): React.ReactElement {
   const { version } = useAppContext();
   const tips = useMemo(() => buildWelcomeTips(skills), [skills]);
   const [tipIndex] = useState(() => randomTipIndex(tips.length));
   const cwd = formatHomeRelativePath(projectRoot);
   const tip = tips[Math.min(tipIndex, Math.max(0, tips.length - 1))] ?? tips[0];
   const thinkingLabel = settings.thinkingEnabled ? `thinking ${settings.reasoningEffort}` : "no thinking";
+  const layout = getWelcomeLayout(width);
+  const credentialLabel = settings.apiKeySource === "environment" ? "env credential" : "saved credential";
 
   return (
-    <Box flexDirection="column" paddingX={2} marginTop={1} marginBottom={1}>
+    <Box flexDirection="column" paddingX={layout === "compact" ? 1 : 2} marginTop={1} marginBottom={1}>
       {/* Compact figlet logo */}
       <Box>
-        <ThemedGradient>{LOGO}</ThemedGradient>
+        <ThemedGradient>{layout === "compact" ? "doku" : LOGO}</ThemedGradient>
       </Box>
 
       {/* Version + settings — one line */}
-      <Box gap={2} marginTop={0} alignItems="center">
-        <Badge color="cyan">v{version || "unknown"}</Badge>
-        <Text color="magenta">{settings.model}</Text>
-        <Text dimColor>·</Text>
-        <Text color={settings.thinkingEnabled ? "green" : "gray"}>{thinkingLabel}</Text>
-        <Text dimColor>·</Text>
-        <Text dimColor>{cwd}</Text>
-      </Box>
+      {layout === "compact" ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Box gap={1}>
+            <Badge color="cyan">v{version || "unknown"}</Badge>
+            <Text color="magenta">{truncateMiddle(settings.model, Math.max(16, width - 16))}</Text>
+          </Box>
+          <Text color={settings.thinkingEnabled ? "green" : "gray"}>
+            {thinkingLabel} · {credentialLabel}
+          </Text>
+          <Text dimColor>{truncateMiddle(cwd, Math.max(20, width - 4))}</Text>
+        </Box>
+      ) : (
+        <Box gap={2} marginTop={0} alignItems="center">
+          <Badge color="cyan">v{version || "unknown"}</Badge>
+          <Text color="magenta">{settings.model}</Text>
+          <Text dimColor>·</Text>
+          <Text color={settings.thinkingEnabled ? "green" : "gray"}>{thinkingLabel}</Text>
+          <Text dimColor>·</Text>
+          <Text dimColor>{credentialLabel}</Text>
+          <Text dimColor>·</Text>
+          <Text dimColor>{cwd}</Text>
+        </Box>
+      )}
 
       {/* Tip */}
       {tip ? (
@@ -64,6 +81,19 @@ export function WelcomeScreen({ projectRoot, settings, skills }: WelcomeScreenPr
       ) : null}
     </Box>
   );
+}
+
+export function getWelcomeLayout(width: number): "compact" | "full" {
+  return width < 80 ? "compact" : "full";
+}
+
+export function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 3) return value.slice(0, Math.max(0, maxLength));
+  const available = maxLength - 1;
+  const startLength = Math.ceil(available / 2);
+  const endLength = Math.floor(available / 2);
+  return `${value.slice(0, startLength)}…${value.slice(-endLength)}`;
 }
 
 export function formatHomeRelativePath(value: string, home = os.homedir()): string {

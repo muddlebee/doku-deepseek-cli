@@ -526,6 +526,7 @@ test("resolveSettings infers providers and honors provider-specific credentials"
   assert.equal(openai.provider, "openai");
   assert.equal(openai.providerProfile.type, "openai");
   assert.equal(openai.apiKey, "sk-openai");
+  assert.equal(openai.apiKeySource, "environment");
   assert.equal(openai.apiMode, "auto");
   assert.equal(openai.maxTurns, 100);
   assert.equal(openai.tracingEnabled, false);
@@ -538,6 +539,7 @@ test("resolveSettings infers providers and honors provider-specific credentials"
   assert.equal(legacy.provider, "deepseek");
   assert.equal(legacy.apiMode, "chat_completions");
   assert.equal(legacy.apiKey, "sk-deepseek");
+  assert.equal(legacy.apiKeySource, "settings");
 });
 
 test("resolveSettings supports named compatible provider profiles and DOKU overrides", () => {
@@ -598,7 +600,9 @@ test("named provider credentials can be configured in settings env", () => {
   );
 
   assert.equal(projectOverridesUser.apiKey, "project-key");
+  assert.equal(projectOverridesUser.apiKeySource, "settings");
   assert.equal(processOverridesSettings.apiKey, "process-key");
+  assert.equal(processOverridesSettings.apiKeySource, "environment");
 });
 
 test("provider-specific DOKU credentials are supported", () => {

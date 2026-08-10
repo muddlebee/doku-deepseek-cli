@@ -5,6 +5,7 @@ import { RawModeProvider } from "./contexts/RawModeContext";
 import { SetupScreen, type SetupResult } from "./SetupScreen";
 import { readSettings, resolveCurrentSettings, writeSettings } from "./App";
 import { buildSetupSettings } from "./setup-settings";
+import { getConfigurationIssue } from "./configuration";
 
 const AppContainer: React.FC<{
   projectRoot: string;
@@ -12,19 +13,18 @@ const AppContainer: React.FC<{
   initialPrompt: string | undefined;
   onRestart: () => void;
 }> = ({ version, projectRoot, initialPrompt, onRestart }) => {
-  const [needsSetup] = useState(() => !resolveCurrentSettings(projectRoot).apiKey);
-  const [setupDone, setSetupDone] = useState(false);
+  const [setupIssue, setSetupIssue] = useState(() => getConfigurationIssue(resolveCurrentSettings(projectRoot)));
 
   function handleSetupComplete(result: SetupResult): void {
     const existing = readSettings() ?? {};
     writeSettings(buildSetupSettings(existing, result));
-    setSetupDone(true);
+    setSetupIssue(getConfigurationIssue(resolveCurrentSettings(projectRoot)));
   }
 
-  if (needsSetup && !setupDone) {
+  if (setupIssue) {
     return (
       <AppContext.Provider value={{ version }}>
-        <SetupScreen onComplete={handleSetupComplete} />
+        <SetupScreen onComplete={handleSetupComplete} notice={setupIssue} />
       </AppContext.Provider>
     );
   }
