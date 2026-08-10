@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { appendJsonLines } from "./jsonl";
 import { buildToolParamsSnippet, buildToolResultSnippet, isInvisibleToolExecution } from "./tool-presentation";
 import type {
   ModelUsage,
@@ -56,7 +57,7 @@ export class FileSessionStore {
 
   appendMessage(sessionId: string, message: SessionMessage): void {
     this.ensureProjectDir();
-    fs.appendFileSync(this.messagesPath(sessionId), `${JSON.stringify(message)}\n`, "utf8");
+    appendJsonLines(this.messagesPath(sessionId), [JSON.stringify(message)]);
   }
 
   saveMessages(sessionId: string, messages: SessionMessage[]): void {
