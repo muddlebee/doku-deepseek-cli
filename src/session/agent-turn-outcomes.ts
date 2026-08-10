@@ -31,7 +31,7 @@ export function recordAgentTurnUsage(
   const latestRequestTokens = agentUsage.requestUsageEntries?.at(-1)?.totalTokens;
   const entry = deps.updateEntry(sessionId, (current) => ({
     ...current,
-    assistantThinking: latestReasoning || pendingReasoning || current.assistantThinking,
+    assistantThinking: latestReasoning || pendingReasoning || null,
     usage: accumulateUsage(current.usage, usage),
     usagePerModel: accumulateUsagePerModel(current.usagePerModel, model, usage),
     activeTokens: latestRequestTokens ?? usage?.total_tokens ?? current.activeTokens,
@@ -43,6 +43,9 @@ export function recordAgentTurnUsage(
 export function completeAgentTurnAtLimit(sessionId: string, deps: OutcomeDependencies): void {
   deps.updateEntry(sessionId, (entry) => ({
     ...entry,
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
     toolCalls: null,
     status: "completed",
     failReason: null,
@@ -90,7 +93,7 @@ export async function handleAgentRefusal(
   const latestRequestTokens = state?.usage.requestUsageEntries?.at(-1)?.totalTokens;
   deps.updateEntry(sessionId, (entry) => ({
     ...entry,
-    assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
+    assistantThinking: latestReasoning || pendingReasoning || null,
     assistantRefusal: refusal,
     toolCalls: null,
     usage: accumulateUsage(entry.usage, usage),

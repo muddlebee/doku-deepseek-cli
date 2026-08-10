@@ -6,6 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionMessage } from "../session";
+import { FileAgentSession } from "../session/agents-session";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleWarn = console.warn;
@@ -41,229 +42,6 @@ afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
-});
-
-test("SessionManager preserves structured system content when building OpenAI messages", () => {
-  const manager = new SessionManager({
-    projectRoot: process.cwd(),
-    createOpenAIClient: () => ({
-      client: null,
-      model: "test-model",
-      thinkingEnabled: false,
-    }),
-    getResolvedSettings: () => ({ model: "test-model" }),
-    renderMarkdown: (text) => text,
-    onAssistantMessage: () => {},
-  });
-
-  const messages: SessionMessage[] = [
-    {
-      id: "system-image",
-      sessionId: "session-1",
-      role: "system",
-      content: "The read tool has loaded `pixel.png`.",
-      contentParams: [
-        {
-          type: "image_url",
-          image_url: { url: "data:image/png;base64,abc123" },
-        },
-      ],
-      messageParams: null,
-      compacted: false,
-      visible: false,
-      createTime: "2026-01-01T00:00:00.000Z",
-      updateTime: "2026-01-01T00:00:00.000Z",
-    },
-  ];
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    role: string;
-    content: unknown;
-  }>;
-
-  assert.equal(openAIMessages.length, 1);
-  assert.equal(openAIMessages[0]?.role, "system");
-  assert.deepEqual(openAIMessages[0]?.content, [
-    { type: "text", text: "The read tool has loaded `pixel.png`." },
-    {
-      type: "image_url",
-      image_url: { url: "data:image/png;base64,abc123" },
-    },
-  ]);
-});
-
-test("SessionManager filters image content for non-multimodal models", () => {
-  const manager = new SessionManager({
-    projectRoot: process.cwd(),
-    createOpenAIClient: () => ({
-      client: null,
-      model: "deepseek-chat",
-      thinkingEnabled: false,
-    }),
-    getResolvedSettings: () => ({ model: "deepseek-chat" }),
-    renderMarkdown: (text) => text,
-    onAssistantMessage: () => {},
-  });
-
-  const messages: SessionMessage[] = [
-    {
-      id: "system-image",
-      sessionId: "session-1",
-      role: "system",
-      content: "The read tool has loaded `pixel.png`.",
-      contentParams: [
-        {
-          type: "image_url",
-          image_url: { url: "data:image/png;base64,abc123" },
-        },
-      ],
-      messageParams: null,
-      compacted: false,
-      visible: false,
-      createTime: "2026-01-01T00:00:00.000Z",
-      updateTime: "2026-01-01T00:00:00.000Z",
-    },
-  ];
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(messages, false, "deepseek-chat") as Array<{
-    role: string;
-    content: unknown;
-  }>;
-
-  assert.equal(openAIMessages.length, 1);
-  assert.deepEqual(openAIMessages[0]?.content, [{ type: "text", text: "The read tool has loaded `pixel.png`." }]);
-});
-
-test("SessionManager preserves empty reasoning content on assistant tool calls", () => {
-  const manager = new SessionManager({
-    projectRoot: process.cwd(),
-    createOpenAIClient: () => ({
-      client: null,
-      model: "test-model",
-      thinkingEnabled: false,
-    }),
-    getResolvedSettings: () => ({ model: "test-model" }),
-    renderMarkdown: (text) => text,
-    onAssistantMessage: () => {},
-  });
-
-  const message = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "read", arguments: "{}" },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-
-  assert.deepEqual(message.messageParams, {
-    tool_calls: [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "read", arguments: "{}" },
-      },
-    ],
-    reasoning_content: "",
-  });
-
-  const openAIMessages = (manager as any).buildOpenAIMessages([message], true, "test-model") as Array<{
-    reasoning_content?: string;
-  }>;
-
-  assert.equal(openAIMessages[0]?.reasoning_content, "");
-});
-
-test("SessionManager repairs legacy thinking tool calls missing reasoning content", () => {
-  const manager = new SessionManager({
-    projectRoot: process.cwd(),
-    createOpenAIClient: () => ({
-      client: null,
-      model: "test-model",
-      thinkingEnabled: false,
-    }),
-    getResolvedSettings: () => ({ model: "test-model" }),
-    renderMarkdown: (text) => text,
-    onAssistantMessage: () => {},
-  });
-
-  const messages: SessionMessage[] = [
-    {
-      id: "assistant-tool",
-      sessionId: "session-1",
-      role: "assistant",
-      content: "",
-      contentParams: null,
-      messageParams: {
-        tool_calls: [
-          {
-            id: "call-1",
-            type: "function",
-            function: { name: "read", arguments: "{}" },
-          },
-        ],
-      },
-      compacted: false,
-      visible: false,
-      createTime: "2026-01-01T00:00:00.000Z",
-      updateTime: "2026-01-01T00:00:00.000Z",
-    },
-  ];
-
-  const thinkingMessages = (manager as any).buildOpenAIMessages(messages, true, "test-model") as Array<{
-    reasoning_content?: string;
-  }>;
-  const nonThinkingMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    reasoning_content?: string;
-  }>;
-
-  assert.equal(thinkingMessages[0]?.reasoning_content, "");
-  assert.equal(Object.prototype.hasOwnProperty.call(nonThinkingMessages[0] ?? {}, "reasoning_content"), false);
-});
-
-test("SessionManager replays normal assistant messages without reasoning content in thinking mode", () => {
-  const manager = new SessionManager({
-    projectRoot: process.cwd(),
-    createOpenAIClient: () => ({
-      client: null,
-      model: "test-model",
-      thinkingEnabled: false,
-    }),
-    getResolvedSettings: () => ({ model: "test-model" }),
-    renderMarkdown: (text) => text,
-    onAssistantMessage: () => {},
-  });
-
-  const messages: SessionMessage[] = [
-    {
-      id: "assistant-final",
-      sessionId: "session-1",
-      role: "assistant",
-      content: "Final answer",
-      contentParams: null,
-      messageParams: null,
-      compacted: false,
-      visible: true,
-      createTime: "2026-01-01T00:00:00.000Z",
-      updateTime: "2026-01-01T00:00:00.000Z",
-    },
-  ];
-
-  const thinkingMessages = (manager as any).buildOpenAIMessages(messages, true, "test-model") as Array<{
-    reasoning_content?: string;
-  }>;
-  const nonThinkingMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    reasoning_content?: string;
-  }>;
-
-  // Per DeepSeek spec: reasoning_content must NOT be included for non-tool-call
-  // assistant messages — only tool-call assistant messages require it.
-  assert.equal(Object.prototype.hasOwnProperty.call(thinkingMessages[0] ?? {}, "reasoning_content"), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(nonThinkingMessages[0] ?? {}, "reasoning_content"), false);
 });
 
 test("SessionManager normalizes legacy sessions without activeTokens to zero", () => {
@@ -710,18 +488,14 @@ test("createSession stores /init and sends the active .doku project AGENTS path 
   const sessionId = await manager.createSession({ text: "/init" });
   const messages = manager.listSessionMessages(sessionId);
   const userMessage = messages.find((message) => message.role === "user");
-  const openAIMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    role: string;
-    content: string;
-  }>;
-  const openAIUserMessage = openAIMessages.find((message) => message.role === "user");
+  const renderedUserMessage = (manager as any).renderAgentMessageContent(userMessage) as string;
   const systemContents = messages
     .filter((message) => message.role === "system")
     .map((message) => message.content ?? "");
 
   assert.equal(userMessage?.content, "/init");
-  assert.match(openAIUserMessage?.content ?? "", /Update \.\/.doku\/AGENTS\.md/);
-  assert.doesNotMatch(openAIUserMessage?.content ?? "", /Update \.\/AGENTS\.md/);
+  assert.match(renderedUserMessage, /Update \.\/.doku\/AGENTS\.md/);
+  assert.doesNotMatch(renderedUserMessage, /Update \.\/AGENTS\.md/);
   assert.ok(systemContents.includes("doku project instructions"));
   assert.ok(!systemContents.includes("root project instructions"));
 });
@@ -890,15 +664,10 @@ test("replySession stores /init and sends the active root project AGENTS path to
   const messages = manager.listSessionMessages(sessionId);
   const userMessages = messages.filter((message) => message.role === "user");
   const replyMessage = userMessages[userMessages.length - 1];
-  const openAIMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    role: string;
-    content: string;
-  }>;
-  const openAIUserMessages = openAIMessages.filter((message) => message.role === "user");
-  const openAIReplyMessage = openAIUserMessages[openAIUserMessages.length - 1];
+  const renderedReplyMessage = (manager as any).renderAgentMessageContent(replyMessage) as string;
 
   assert.equal(replyMessage?.content, "/init");
-  assert.match(openAIReplyMessage?.content ?? "", /Update \.\/AGENTS\.md/);
+  assert.match(renderedReplyMessage, /Update \.\/AGENTS\.md/);
 });
 
 test("createSession stores /init and sends generate prompt when no project AGENTS file is effective", async () => {
@@ -916,15 +685,11 @@ test("createSession stores /init and sends generate prompt when no project AGENT
   const sessionId = await manager.createSession({ text: "/init" });
   const messages = manager.listSessionMessages(sessionId);
   const userMessage = messages.find((message) => message.role === "user");
-  const openAIMessages = (manager as any).buildOpenAIMessages(messages, false, "test-model") as Array<{
-    role: string;
-    content: string;
-  }>;
-  const openAIUserMessage = openAIMessages.find((message) => message.role === "user");
+  const renderedUserMessage = (manager as any).renderAgentMessageContent(userMessage) as string;
 
   assert.equal(userMessage?.content, "/init");
-  assert.match(openAIUserMessage?.content ?? "", /Generate a file named \.\/AGENTS\.md/);
-  assert.doesNotMatch(openAIUserMessage?.content ?? "", /Update \.\/AGENTS\.md/);
+  assert.match(renderedUserMessage, /Generate a file named \.\/AGENTS\.md/);
+  assert.doesNotMatch(renderedUserMessage, /Update \.\/AGENTS\.md/);
 });
 
 test("createSession reports a new prompt with the machineId token", async () => {
@@ -1473,281 +1238,6 @@ test("replySession preserves raw session messages when a previous tool call is p
   );
 });
 
-test("buildOpenAIMessages inserts interrupted results for missing tool messages", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-missing-tool");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "I will run a tool.",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"sleep 100"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const userMessage = buildTestMessage("user-after-tool-call", "session-1", "user", "continue");
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, userMessage],
-    false,
-    "test-model"
-  ) as Array<{
-    role: string;
-    content: string;
-    tool_call_id?: string;
-  }>;
-
-  assert.equal(openAIMessages.length, 3);
-  assert.equal(openAIMessages[0]?.role, "assistant");
-  assert.equal(openAIMessages[1]?.role, "tool");
-  assert.equal(openAIMessages[1]?.tool_call_id, "call-1");
-  assert.match(openAIMessages[1]?.content ?? "", /Previous tool call did not complete/);
-  assert.equal(openAIMessages[2]?.role, "user");
-});
-
-test("buildOpenAIMessages keeps only the first non-interrupted tool result for a tool call", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-duplicate-tool");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"date"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const successToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: true, name: "bash", output: "2026-05-07 星期四\n" }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-  const interruptedToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({
-      ok: false,
-      name: "bash",
-      error: "Previous tool call did not complete.",
-      metadata: { interrupted: true },
-    }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, successToolMessage, interruptedToolMessage],
-    false,
-    "test-model"
-  ) as Array<{ role: string; content: string; tool_call_id?: string }>;
-  const toolMessages = openAIMessages.filter((message) => message.role === "tool");
-
-  assert.equal(toolMessages.length, 1);
-  assert.equal(toolMessages[0]?.tool_call_id, "call-1");
-  assert.match(toolMessages[0]?.content ?? "", /2026-05-07/);
-  assert.doesNotMatch(toolMessages[0]?.content ?? "", /Previous tool call did not complete/);
-});
-
-test("buildOpenAIMessages prefers a later real tool result over an earlier interrupted placeholder", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-prefer-real-tool");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"date"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const interruptedToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({
-      ok: false,
-      name: "bash",
-      error: "Previous tool call did not complete.",
-      metadata: { interrupted: true },
-    }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-  const successToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: true, name: "bash", output: "real result" }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, interruptedToolMessage, successToolMessage],
-    false,
-    "test-model"
-  ) as Array<{ role: string; content: string; tool_call_id?: string }>;
-  const toolMessages = openAIMessages.filter((message) => message.role === "tool");
-
-  assert.equal(toolMessages.length, 1);
-  assert.equal(toolMessages[0]?.tool_call_id, "call-1");
-  assert.match(toolMessages[0]?.content ?? "", /real result/);
-});
-
-test("buildOpenAIMessages ignores orphan tool messages", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-orphan-tool");
-  const userMessage = buildTestMessage("user-1", "session-1", "user", "hello");
-  const orphanToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-orphan",
-    JSON.stringify({ ok: true, name: "bash", output: "orphan" }),
-    { name: "bash", arguments: '{"command":"echo orphan"}' }
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [userMessage, orphanToolMessage],
-    false,
-    "test-model"
-  ) as Array<{
-    role: string;
-  }>;
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["user"]
-  );
-});
-
-test("buildOpenAIMessages moves a later paired tool message behind its assistant", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-later-tool");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"date"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const userMessage = buildTestMessage("user-between", "session-1", "user", "continue");
-  const toolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: true, name: "bash", output: "paired later" }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, userMessage, toolMessage],
-    false,
-    "test-model"
-  ) as Array<{ role: string; content: string }>;
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["assistant", "tool", "user"]
-  );
-  assert.match(openAIMessages[1]?.content ?? "", /paired later/);
-});
-
-test("buildOpenAIMessages preserves a complete multi-tool happy path", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-multi-tool-happy");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "read", arguments: '{"file_path":"/tmp/a.txt"}' },
-      },
-      {
-        id: "call-2",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"pwd"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const firstToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: true, name: "read", content: "file content" }),
-    { name: "read", arguments: '{"file_path":"/tmp/a.txt"}' }
-  ) as SessionMessage;
-  const secondToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-2",
-    JSON.stringify({ ok: true, name: "bash", output: "/tmp\n" }),
-    { name: "bash", arguments: '{"command":"pwd"}' }
-  ) as SessionMessage;
-  const userMessage = buildTestMessage("user-after-complete-tools", "session-1", "user", "thanks");
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, firstToolMessage, secondToolMessage, userMessage],
-    false,
-    "test-model"
-  ) as Array<{ role: string; content: string; tool_call_id?: string }>;
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["assistant", "tool", "tool", "user"]
-  );
-  assert.deepEqual(
-    openAIMessages.filter((message) => message.role === "tool").map((message) => message.tool_call_id),
-    ["call-1", "call-2"]
-  );
-  assert.equal(
-    openAIMessages.some((message) => message.content.includes("Previous tool call did not complete.")),
-    false
-  );
-});
-
-test("buildOpenAIMessages preserves a real failed tool result", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-real-failed-tool");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"false"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const failedToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: false, name: "bash", error: "Command failed", metadata: { exitCode: 1 } }),
-    { name: "bash", arguments: '{"command":"false"}' }
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, failedToolMessage],
-    false,
-    "test-model"
-  ) as Array<{
-    role: string;
-    content: string;
-    tool_call_id?: string;
-  }>;
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["assistant", "tool"]
-  );
-  assert.equal(openAIMessages[1]?.tool_call_id, "call-1");
-  assert.match(openAIMessages[1]?.content ?? "", /Command failed/);
-  assert.doesNotMatch(openAIMessages[1]?.content ?? "", /Previous tool call did not complete/);
-});
-
 test("UpdatePlan tool params only show explanation when provided", () => {
   const manager = createSessionManager(process.cwd(), "machine-id-update-plan-params");
   const plan = "## Task List\n\n- [ ] Inspect project";
@@ -1832,112 +1322,6 @@ test("LLM tool calls with an empty id receive a generated 32 character id", asyn
     toolMessages.map((message) => (message.messageParams as { tool_call_id?: unknown } | null)?.tool_call_id),
     toolCalls?.map((toolCall) => toolCall.id)
   );
-});
-
-test("buildOpenAIMessages repairs mixed missing duplicate and orphan tool messages", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-mixed-tool-badcase");
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "read", arguments: '{"file_path":"/tmp/missing.txt"}' },
-      },
-      {
-        id: "call-2",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"pwd"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-  const orphanToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-orphan",
-    JSON.stringify({ ok: true, name: "bash", output: "orphan" }),
-    { name: "bash", arguments: '{"command":"echo orphan"}' }
-  ) as SessionMessage;
-  const pairedToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-2",
-    JSON.stringify({ ok: true, name: "bash", output: "/tmp\n" }),
-    { name: "bash", arguments: '{"command":"pwd"}' }
-  ) as SessionMessage;
-  const duplicateToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-2",
-    JSON.stringify({ ok: true, name: "bash", output: "duplicate" }),
-    { name: "bash", arguments: '{"command":"pwd"}' }
-  ) as SessionMessage;
-  const userMessage = buildTestMessage("user-after-mixed-tools", "session-1", "user", "continue");
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [assistantMessage, orphanToolMessage, pairedToolMessage, duplicateToolMessage, userMessage],
-    false,
-    "test-model"
-  ) as Array<{ role: string; content: string; tool_call_id?: string }>;
-  const toolMessages = openAIMessages.filter((message) => message.role === "tool");
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["assistant", "tool", "tool", "user"]
-  );
-  assert.deepEqual(
-    toolMessages.map((message) => message.tool_call_id),
-    ["call-1", "call-2"]
-  );
-  assert.match(toolMessages[0]?.content ?? "", /Previous tool call did not complete/);
-  assert.match(toolMessages[1]?.content ?? "", /\/tmp/);
-  assert.equal(
-    openAIMessages.some((message) => message.content.includes("orphan")),
-    false
-  );
-  assert.equal(
-    openAIMessages.some((message) => message.content.includes("duplicate")),
-    false
-  );
-});
-
-test("buildOpenAIMessages ignores tool messages that appear before their assistant", () => {
-  const manager = createSessionManager(process.cwd(), "machine-id-tool-before-assistant");
-  const earlyToolMessage = (manager as any).buildToolMessage(
-    "session-1",
-    "call-1",
-    JSON.stringify({ ok: true, name: "bash", output: "too early" }),
-    { name: "bash", arguments: '{"command":"date"}' }
-  ) as SessionMessage;
-  const assistantMessage = (manager as any).buildAssistantMessage(
-    "session-1",
-    "",
-    [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "bash", arguments: '{"command":"date"}' },
-      },
-    ],
-    ""
-  ) as SessionMessage;
-
-  const openAIMessages = (manager as any).buildOpenAIMessages(
-    [earlyToolMessage, assistantMessage],
-    false,
-    "test-model"
-  ) as Array<{
-    role: string;
-    content: string;
-    tool_call_id?: string;
-  }>;
-
-  assert.deepEqual(
-    openAIMessages.map((message) => message.role),
-    ["assistant", "tool"]
-  );
-  assert.equal(openAIMessages[1]?.tool_call_id, "call-1");
-  assert.match(openAIMessages[1]?.content ?? "", /Previous tool call did not complete/);
-  assert.doesNotMatch(openAIMessages[1]?.content ?? "", /too early/);
 });
 
 test("SessionManager accumulates response usage while active tokens track the latest response", async () => {
@@ -2234,6 +1618,32 @@ test("SessionManager streams chat completions and counts reasoning progress", as
   assert.equal(progressEvents[2]?.formattedTokens, "3");
 });
 
+test("SessionManager clears stale reply and reasoning after an empty successful turn", async () => {
+  const workspace = createTempDir("doku-empty-turn-workspace-");
+  const home = createTempDir("doku-empty-turn-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(
+    workspace,
+    [
+      {
+        choices: [{ message: { content: "first reply", reasoning_content: "first reasoning" } }],
+        usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+      },
+      createChatResponse("", { prompt_tokens: 2, completion_tokens: 0, total_tokens: 2 }),
+    ],
+    { maxTurns: 1 }
+  );
+
+  const sessionId = await manager.createSession({ text: "first" });
+  assert.equal(manager.getSession(sessionId)?.assistantReply, "first reply");
+  assert.equal(manager.getSession(sessionId)?.assistantThinking, "first reasoning");
+
+  await manager.replySession(sessionId, { text: "second" });
+
+  assert.equal(manager.getSession(sessionId)?.assistantReply, null);
+  assert.equal(manager.getSession(sessionId)?.assistantThinking, null);
+});
+
 test("SessionManager omits image inputs for providers without image support", async () => {
   const workspace = createTempDir("doku-agent-image-filter-workspace-");
   const home = createTempDir("doku-agent-image-filter-home-");
@@ -2255,6 +1665,47 @@ test("SessionManager omits image inputs for providers without image support", as
   await manager.createSession({ text: "", imageUrls: ["data:image/png;base64,abc123"] });
 
   assert.doesNotMatch(JSON.stringify(requestBody), /image_url|abc123/);
+});
+
+test("SessionManager removes canonical image history before using a text-only provider", async () => {
+  const workspace = createTempDir("doku-agent-history-image-filter-workspace-");
+  const home = createTempDir("doku-agent-history-image-filter-home-");
+  setHomeDir(home);
+  const requests: Record<string, unknown>[] = [];
+  const responses = [
+    createChatResponse("first", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+    createChatResponse("second", { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 }),
+  ];
+  const client = {
+    chat: {
+      completions: {
+        create: async (request: Record<string, unknown>) => {
+          requests.push(request);
+          const response = responses.shift();
+          assert.ok(response);
+          return createChatStreamFromResponse(response);
+        },
+      },
+    },
+  };
+  const manager = createMockedClientSessionManagerWithClient(workspace, client);
+  const sessionId = await manager.createSession({ text: "first" });
+  const historyPath = (manager as any).getAgentSessionPath(sessionId) as string;
+  await new FileAgentSession(sessionId, historyPath).replaceItems([
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: "historical image" },
+        { type: "input_image", image: "data:image/png;base64,abc123", detail: "auto" },
+      ],
+    },
+    { role: "assistant", status: "completed", content: [{ type: "output_text", text: "first" }] },
+  ]);
+
+  await manager.replySession(sessionId, { text: "second" });
+
+  assert.doesNotMatch(JSON.stringify(requests[1]), /input_image|abc123/);
+  assert.doesNotMatch(fs.readFileSync(historyPath, "utf8"), /input_image|abc123/);
 });
 
 test("SessionManager resumes AskUserQuestion after restart and persists the answer as its tool result", async () => {
@@ -2598,7 +2049,11 @@ function createNotifyingSessionManager(
   });
 }
 
-function createMockedClientSessionManager(projectRoot: string, responses: unknown[]): SessionManager {
+function createMockedClientSessionManager(
+  projectRoot: string,
+  responses: unknown[],
+  settings: { maxTurns?: number } = {}
+): SessionManager {
   const client = {
     chat: {
       completions: {
@@ -2619,7 +2074,7 @@ function createMockedClientSessionManager(projectRoot: string, responses: unknow
       baseURL: "https://api.deepseek.com",
       thinkingEnabled: false,
     }),
-    getResolvedSettings: () => ({ model: "test-model" }),
+    getResolvedSettings: () => ({ model: "test-model", ...settings }),
     renderMarkdown: (text) => text,
     onAssistantMessage: () => {},
   });

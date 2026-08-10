@@ -16,7 +16,12 @@ import {
 } from "../agent/runtime";
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
-import { agentUsageToModelUsage, buildAgentInputItems, parseAgentStreamEvent } from "./agent-history";
+import {
+  agentUsageToModelUsage,
+  buildAgentInputItems,
+  omitUnsupportedAgentImages,
+  parseAgentStreamEvent,
+} from "./agent-history";
 import { FileAgentSession } from "./agents-session";
 import { completeAgentTurnAtLimit, handleAgentRefusal, recordAgentTurnUsage } from "./agent-turn-outcomes";
 import { AgentTurnProgress } from "./agent-turn-progress";
@@ -29,8 +34,8 @@ import {
   removePausedAgentState,
 } from "./agent-turn-state";
 import type { FileSessionStore } from "./file-session-store";
-import { getTrailingPendingToolCalls } from "./legacy-history";
 import { buildToolResultSnippet } from "./tool-presentation";
+import { getTrailingPendingToolCalls } from "./tool-calls";
 import type { LlmStreamProgress, SessionEntry, SessionMessage } from "./types";
 import { accumulateUsage, accumulateUsagePerModel } from "./usage";
 
@@ -180,8 +185,8 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
         const finalOutput = typeof result.finalOutput === "string" ? result.finalOutput : "";
         deps.updateEntry(sessionId, (entry) => ({
           ...entry,
-          assistantReply: finalOutput || entry.assistantReply,
-          assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
+          assistantReply: finalOutput || null,
+          assistantThinking: latestReasoning || pendingReasoning || null,
           assistantRefusal: refusal,
           toolCalls: null,
           usage: accumulateUsage(entry.usage, usage),
@@ -275,7 +280,14 @@ async function buildRunInput(
   }
   const historyMessages = latestUserIndex >= 0 ? messages.slice(0, latestUserIndex) : messages;
   const turnMessages = latestUserIndex >= 0 ? messages.slice(latestUserIndex) : [];
-  const persistedItems = await agentSession.getItems();
+  let persistedItems = await agentSession.getItems();
+  if (!options.provider.supportsImages && persistedItems.length) {
+    const filtered = omitUnsupportedAgentImages(persistedItems);
+    if (filtered.changed) {
+      persistedItems = filtered.items;
+      await agentSession.replaceItems(persistedItems);
+    }
+  }
   if (!persistedItems.length) {
     await agentSession.replaceItems(
       buildAgentInputItems(

@@ -10,13 +10,10 @@ export type DokuAgentSessionRecord = {
   display?: Record<string, unknown>;
 };
 
-export type LegacyAgentItemDecoder = (record: Record<string, unknown>) => AgentInputItem[];
-
 export class FileAgentSession implements Session {
   constructor(
     private readonly sessionId: string,
-    private readonly filePath: string,
-    private readonly decodeLegacy: LegacyAgentItemDecoder = () => []
+    private readonly filePath: string
   ) {}
 
   async getSessionId(): Promise<string> {
@@ -61,8 +58,6 @@ export class FileAgentSession implements Session {
         const record = JSON.parse(line) as Record<string, unknown>;
         if (record.version === 2 && record.item && typeof record.item === "object") {
           items.push(record.item as AgentInputItem);
-        } else {
-          items.push(...this.decodeLegacy(record));
         }
       } catch {
         // A malformed tail must not make older session items unavailable.
