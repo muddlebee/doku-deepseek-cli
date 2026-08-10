@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type OpenAI from "openai";
 import { AgentRuntime } from "../agent/runtime";
 import { DeepSeekAdapter } from "../providers/deepseek-adapter";
+import { generateProviderText } from "../providers/generate-text";
 import { OpenAIAdapter } from "../providers/openai-adapter";
 import { OpenAICompatibleAdapter } from "../providers/openai-compatible-adapter";
 import { ProviderRegistry } from "../providers/registry";
@@ -99,4 +101,72 @@ test("DeepSeek adapter sends thinking options in the provider request body", asy
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("compatible providers forward configured reasoning effort", async () => {
+  const resolved = await new OpenAICompatibleAdapter().resolve({
+    ...base,
+    apiMode: "responses",
+    thinkingEnabled: true,
+    reasoningEffort: "medium",
+    profile: {
+      type: "openai-compatible",
+      apiMode: "responses",
+      models: { "test-model": { reasoningEfforts: ["low", "medium", "high"] } },
+    },
+  });
+
+  assert.deepEqual(resolved.modelSettings, { reasoning: { effort: "medium" } });
+  await resolved.close();
+});
+
+test("compatible provider reasoning reaches a Responses request", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const client = {
+    apiKey: "test-key",
+    responses: {
+      create: async (request: Record<string, unknown>) => {
+        requests.push(request);
+        return {
+          id: "compatible-reasoning-response",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "test-model",
+          output: [
+            {
+              id: "compatible-reasoning-message",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: "ok", annotations: [] }],
+            },
+          ],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens_details: { reasoning_tokens: 0 },
+          },
+        };
+      },
+    },
+  } as unknown as OpenAI;
+
+  const output = await generateProviderText(
+    {
+      client,
+      provider: "compatible",
+      providerProfile: { type: "openai-compatible", apiMode: "responses" },
+      apiMode: "responses",
+      model: "test-model",
+      thinkingEnabled: true,
+      reasoningEffort: "medium",
+    },
+    { prompt: "hello" }
+  );
+
+  assert.equal(output, "ok");
+  assert.deepEqual(requests[0]?.reasoning, { effort: "medium" });
 });

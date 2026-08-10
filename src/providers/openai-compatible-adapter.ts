@@ -16,6 +16,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       id: options.id,
       model,
       modelProvider: provider,
+      modelSettings: options.thinkingEnabled ? { reasoning: { effort: options.reasoningEffort } } : undefined,
       supportsImages: modelProfile?.supportsImages ?? false,
       compactAtTokens: modelProfile?.compactAtTokens,
       close: () => provider.close(),

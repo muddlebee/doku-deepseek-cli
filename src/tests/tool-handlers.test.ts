@@ -420,7 +420,7 @@ test("replace_all requires expected_occurrences for broad short-fragment replace
   );
 });
 
-test("Edit accepts a unique loose-escape match when only escaping differs", async () => {
+test("Edit escape correction supports Responses-only compatible providers", async () => {
   const workspace = createTempWorkspace();
   const filePath = path.join(workspace, "query.py");
   fs.writeFileSync(filePath, "params['city_json'] = f'\"{city}\"'\n", "utf8");
@@ -437,24 +437,46 @@ test("Edit accepts a unique loose-escape match when only escaping differs", asyn
     createContext(sessionId, workspace, {
       createOpenAIClient: () => ({
         client: {
-          chat: {
-            completions: {
-              create: async () => ({
-                choices: [
-                  {
-                    message: {
-                      content:
+          apiKey: "test-key",
+          responses: {
+            create: async () => ({
+              id: "edit-correction-response",
+              object: "response",
+              created_at: 1,
+              status: "completed",
+              model: "test-model",
+              output: [
+                {
+                  id: "edit-correction-message",
+                  type: "message",
+                  status: "completed",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "output_text",
+                      text:
                         "<response>" +
                         "<corrected_old_string><![CDATA[params['city_json'] = f'\"{city}\"']]></corrected_old_string>" +
                         "<corrected_new_string><![CDATA[params['city_json'] = city]]></corrected_new_string>" +
                         "</response>",
+                      annotations: [],
                     },
-                  },
-                ],
-              }),
-            },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                input_tokens_details: { cached_tokens: 0 },
+                output_tokens_details: { reasoning_tokens: 0 },
+              },
+            }),
           },
         } as any,
+        provider: "compatible",
+        providerProfile: { type: "openai-compatible", apiMode: "responses" },
+        apiMode: "responses",
         model: "test-model",
         thinkingEnabled: false,
       }),

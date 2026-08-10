@@ -40,16 +40,16 @@ export class FileAgentSession implements Session {
   async popItem(): Promise<AgentInputItem | undefined> {
     const items = this.readItems();
     const item = items.pop();
-    if (item) this.replaceItems(items);
+    if (item) this.writeItemsAtomically(items);
     return item;
   }
 
   async clearSession(): Promise<void> {
-    this.replaceItems([]);
+    this.writeItemsAtomically([]);
   }
 
-  async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
-    this.replaceItems(items);
+  async replaceItems(items: AgentInputItem[]): Promise<void> {
+    this.writeItemsAtomically(items);
   }
 
   private readItems(): AgentInputItem[] {
@@ -71,7 +71,7 @@ export class FileAgentSession implements Session {
     return items;
   }
 
-  private replaceItems(items: AgentInputItem[]): void {
+  private writeItemsAtomically(items: AgentInputItem[]): void {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const payload = items
       .map((item): DokuAgentSessionRecord => ({ version: 2, item }))

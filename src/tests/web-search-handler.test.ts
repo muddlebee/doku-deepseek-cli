@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type OpenAI from "openai";
+import type { ApiMode, ProviderProfile } from "../settings";
 import type { ToolExecutionContext } from "../tools/executor";
 import { handleWebSearchTool } from "../tools/web-search-handler";
 
@@ -133,6 +134,47 @@ test("WebSearch uses the default API when no script is configured", async () => 
   assert.equal((fetchCalls[0].init?.headers as Record<string, string>).Token, "machine-id-123");
 });
 
+test("WebSearch query preparation supports Responses-only compatible providers", async () => {
+  const workspace = createTempWorkspace();
+  const responseRequests: Array<Record<string, unknown>> = [];
+  const fakeClient = {
+    apiKey: "test-key",
+    responses: {
+      create: async (request: Record<string, unknown>) => {
+        responseRequests.push(request);
+        return createResponsesResult(
+          '{"dominant_language":"en","reason":"Most release notes are published in English."}'
+        );
+      },
+    },
+  } as unknown as OpenAI;
+
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        result: JSON.stringify({ organic_results: [{ title: "Result", link: "https://example.test" }] }),
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )) as typeof fetch;
+
+  const result = await handleWebSearchTool(
+    { query: "latest runtime release" },
+    createContext(workspace, {
+      client: fakeClient,
+      provider: "compatible",
+      providerProfile: { type: "openai-compatible", apiMode: "responses" },
+      apiMode: "responses",
+      machineId: "machine-id-123",
+    })
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(responseRequests.length, 1);
+  assert.equal(responseRequests[0]?.model, "test-model");
+  assert.equal(responseRequests[0]?.stream, false);
+});
+
 test("WebSearch returns a configuration error when neither a script nor an LLM client is available", async () => {
   const workspace = createTempWorkspace();
   const result = await handleWebSearchTool({ query: "latest node release" }, createContext(workspace));
@@ -145,6 +187,9 @@ function createContext(
   projectRoot: string,
   options: {
     client?: OpenAI | null;
+    provider?: string;
+    providerProfile?: ProviderProfile;
+    apiMode?: ApiMode;
     webSearchTool?: string;
     env?: Record<string, string>;
     machineId?: string;
@@ -165,6 +210,9 @@ function createContext(
     },
     createOpenAIClient: () => ({
       client: options.client ?? null,
+      provider: options.provider,
+      providerProfile: options.providerProfile,
+      apiMode: options.apiMode,
       model: "test-model",
       thinkingEnabled: false,
       webSearchTool: options.webSearchTool,
@@ -180,4 +228,30 @@ function createTempWorkspace(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doku-web-search-"));
   tempDirs.push(dir);
   return dir;
+}
+
+function createResponsesResult(text: string): Record<string, unknown> {
+  return {
+    id: "response-web-search",
+    object: "response",
+    created_at: 1,
+    status: "completed",
+    model: "test-model",
+    output: [
+      {
+        id: "message-web-search",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text, annotations: [] }],
+      },
+    ],
+    usage: {
+      input_tokens: 1,
+      output_tokens: 1,
+      total_tokens: 2,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  };
 }

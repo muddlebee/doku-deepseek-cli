@@ -58,7 +58,7 @@ export async function compactAgentSession(
   }
   messages.splice(range.end, 0, buildSummaryMessage(sessionId, summary, now));
   deps.saveMessages(sessionId, messages);
-  await new FileAgentSession(sessionId, deps.agentHistoryPath(sessionId)).replaceHistoryWithCompaction(
+  await new FileAgentSession(sessionId, deps.agentHistoryPath(sessionId)).replaceItems(
     buildAgentInputItems(messages, provider.supportsImages, deps.renderContent)
   );
 }

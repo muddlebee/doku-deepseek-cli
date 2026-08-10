@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import { z } from "zod";
-import { buildThinkingRequestOptions } from "../common/openai-thinking";
+import { generateProviderText } from "../providers/generate-text";
 import type { ToolExecutionContext, ToolExecutionResult } from "./executor";
 import {
   buildDiffPreview,
@@ -758,43 +758,36 @@ async function correctEscapedStringsWithLLM(
     return null;
   }
 
-  const { client, model, baseURL, thinkingEnabled, reasoningEffort } = clientFactory();
-  if (!client) {
+  const config = clientFactory();
+  if (!config.client) {
     return null;
   }
 
   try {
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You correct file-edit strings when the only problem is escaping. " +
-            "Return XML only using <response><corrected_old_string>...</corrected_old_string><corrected_new_string>...</corrected_new_string></response>. " +
-            "Do not change semantics; only fix quoting or escaping so corrected_old_string matches the snippet exactly.",
-        },
-        {
-          role: "user",
-          content:
-            "<request>\n" +
-            `  <snippet_text><![CDATA[${snippetText}]]></snippet_text>\n` +
-            `  <old_string><![CDATA[${oldString}]]></old_string>\n` +
-            `  <new_string><![CDATA[${newString}]]></new_string>\n` +
-            `  <matched_text><![CDATA[${matchedText}]]></matched_text>\n` +
-            "</request>\n" +
-            "<output_format>\n" +
-            "  <response>\n" +
-            "    <corrected_old_string><![CDATA[...]]></corrected_old_string>\n" +
-            "    <corrected_new_string><![CDATA[...]]></corrected_new_string>\n" +
-            "  </response>\n" +
-            "</output_format>",
-        },
-      ],
-      ...buildThinkingRequestOptions(thinkingEnabled, baseURL, reasoningEffort),
-    });
+    const content = await generateProviderText(
+      { ...config, client: config.client },
+      {
+        systemInstructions:
+          "You correct file-edit strings when the only problem is escaping. " +
+          "Return XML only using <response><corrected_old_string>...</corrected_old_string><corrected_new_string>...</corrected_new_string></response>. " +
+          "Do not change semantics; only fix quoting or escaping so corrected_old_string matches the snippet exactly.",
+        prompt:
+          "<request>\n" +
+          `  <snippet_text><![CDATA[${snippetText}]]></snippet_text>\n` +
+          `  <old_string><![CDATA[${oldString}]]></old_string>\n` +
+          `  <new_string><![CDATA[${newString}]]></new_string>\n` +
+          `  <matched_text><![CDATA[${matchedText}]]></matched_text>\n` +
+          "</request>\n" +
+          "<output_format>\n" +
+          "  <response>\n" +
+          "    <corrected_old_string><![CDATA[...]]></corrected_old_string>\n" +
+          "    <corrected_new_string><![CDATA[...]]></corrected_new_string>\n" +
+          "  </response>\n" +
+          "</output_format>",
+        signal: context.signal,
+      }
+    );
 
-    const content = response.choices?.[0]?.message?.content ?? "";
     const parsed = parseCorrectedEditStrings(content);
     if (!parsed) {
       return null;

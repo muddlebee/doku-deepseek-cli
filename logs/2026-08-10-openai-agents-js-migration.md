@@ -96,6 +96,11 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Makes skill matching tolerant of fenced or explanatory JSON responses.
 - Prevents provider switching from selecting the previous provider's model.
 - Restricts reasoning choices to the selected model profile's declared capabilities.
+- Routes Edit correction and WebSearch preparation through the selected provider and API mode.
+- Forwards compatible-provider reasoning effort through Agents model settings.
+- Persists terminal refusal and turn-limit run history in canonical SDK sessions.
+- Restores bounded `/continue` behavior when an Agents run reaches its turn limit.
+- Removes the stale `.deepcode/AGENTS.md`; the root `AGENTS.md` is the single repository guide.
 
 ## Validation
 
@@ -112,9 +117,9 @@ git diff --check
 
 Results at completion:
 
-- 375 tests passed
+- 379 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed
 - Production dependency audit reported zero vulnerabilities
-- ESLint reported no errors; one pre-existing unused-variable warning remains in `src/ui/PromptInput.tsx`
+- ESLint reported no errors or warnings

@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  MaxTurnsExceededError,
   ModelRefusalError,
   RunContext,
   RunState,
@@ -135,9 +136,45 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
     try {
       result = await runtime.run(input, context, controller.signal, agentSession);
     } catch (error) {
+      if (error instanceof MaxTurnsExceededError) {
+        if (error.state) await agentSession.replaceItems(error.state.history);
+        const usage = error.state ? agentUsageToModelUsage(error.state.usage) : null;
+        const latestRequestTokens = error.state?.usage.requestUsageEntries?.at(-1)?.totalTokens;
+        deps.updateEntry(sessionId, (entry) => ({
+          ...entry,
+          assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
+          toolCalls: null,
+          usage: accumulateUsage(entry.usage, usage),
+          usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
+          activeTokens: latestRequestTokens ?? usage?.total_tokens ?? entry.activeTokens,
+          status: "completed",
+          failReason: null,
+          updateTime: new Date().toISOString(),
+        }));
+        deps.onAssistantMessage(
+          deps.buildAssistant(
+            sessionId,
+            "The AI agent has taken several steps but hasn't reached a conclusion yet. Run `/continue` to keep going.",
+            null
+          ),
+          false
+        );
+        return;
+      }
       if (!(error instanceof ModelRefusalError)) throw error;
       refusal = error.refusal || refusal || "The model refused the request.";
       const refusalText = refusal;
+      if (error.state) {
+        // The SDK raises before refusal output enters state.history, so retain the exact provider item separately.
+        const refusalItems = error.state._lastTurnResponse?.output ?? [
+          {
+            role: "assistant" as const,
+            status: "completed" as const,
+            content: [{ type: "refusal" as const, refusal: refusalText }],
+          },
+        ];
+        await agentSession.replaceItems([...error.state.history, ...refusalItems]);
+      }
       if (!deps.listMessages(sessionId).some((message) => hasRefusal(message, refusalText))) {
         const message = deps.buildAssistant(sessionId, "", null, pendingReasoning, refusalText);
         deps.appendMessage(sessionId, message);
@@ -242,7 +279,7 @@ async function buildRunInput(
   const turnMessages = latestUserIndex >= 0 ? messages.slice(latestUserIndex) : [];
   const persistedItems = await agentSession.getItems();
   if (!persistedItems.length) {
-    await agentSession.replaceHistoryWithCompaction(
+    await agentSession.replaceItems(
       buildAgentInputItems(
         options.continueExisting ? messages : historyMessages,
         options.provider.supportsImages,

@@ -129,6 +129,9 @@ Image support defaults to enabled and can be overridden by a model profile.
 
 Compatible endpoints default to no image support because their capabilities are unknown.
 
+When a compatible model profile declares `reasoningEfforts`, the selected effort is forwarded through the same
+provider-neutral `modelSettings.reasoning` field used by the native OpenAI adapter.
+
 ### DeepSeek
 
 `src/providers/deepseek-adapter.ts` is the only generic runtime module that imports `@ai-sdk/deepseek`.
@@ -193,6 +196,15 @@ const result = await this.runner.run(this.agent, input, {
 
 There is no separate manual loop repeatedly calling Chat Completions.
 
+## Auxiliary model calls
+
+Some tool features need a short model call outside the main coding turn. Edit uses one to repair escaping-only
+string mismatches, and the default WebSearch flow uses one to choose or translate the search language.
+
+Those calls go through `generateProviderText()` in `src/providers/generate-text.ts`. The helper resolves the current
+provider profile and runs a one-turn, tool-free Agents `Runner`. It therefore uses the selected Chat Completions or
+Responses mode instead of calling either API directly. DeepSeek and future adapters follow the same boundary.
+
 ## Tool integration
 
 Existing tool definitions are collected with:
@@ -249,6 +261,10 @@ A turn performs these steps:
 6. Run the agent with streaming and cancellation.
 7. Persist an interruption or update the completed response, reasoning, usage, and active token count.
 
+If the configured turn limit is reached, the run-state history is written atomically to `FileAgentSession`, the
+session remains completed rather than failed, and the UI offers `/continue`. Continuing starts another bounded run
+with the prior function calls and results intact.
+
 ## Session history
 
 Two related histories are maintained.
@@ -279,6 +295,10 @@ Two related histories are maintained.
 This preserves provider response items, reasoning, function calls, tool results, and response associations between turns.
 
 `src/session/agent-history.ts` converts existing application messages into Agents items when an older session does not yet have SDK history. Subsequent turns append native SDK items instead of reconstructing all history.
+
+Handled terminal conditions are persisted at the same boundary. Refusals retain their native response item, and
+turn-limit exhaustion retains the complete run history so the next `/continue` request resumes rather than replaying
+the original prompt.
 
 Provider capabilities are consulted during conversion. Images are omitted when `supportsImages` is false.
 

@@ -267,8 +267,8 @@ test("SessionManager replays normal assistant messages without reasoning content
 });
 
 test("SessionManager normalizes legacy sessions without activeTokens to zero", () => {
-  const workspace = createTempDir("deepcode-legacy-active-tokens-workspace-");
-  const home = createTempDir("deepcode-legacy-active-tokens-home-");
+  const workspace = createTempDir("doku-legacy-active-tokens-workspace-");
+  const home = createTempDir("doku-legacy-active-tokens-home-");
   setHomeDir(home);
 
   const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
@@ -299,8 +299,8 @@ test("SessionManager normalizes legacy sessions without activeTokens to zero", (
 });
 
 test("SessionManager keeps usagePerModel null until response usage is available", async () => {
-  const workspace = createTempDir("deepcode-null-usage-per-model-workspace-");
-  const home = createTempDir("deepcode-null-usage-per-model-home-");
+  const workspace = createTempDir("doku-null-usage-per-model-workspace-");
+  const home = createTempDir("doku-null-usage-per-model-home-");
   setHomeDir(home);
 
   const manager = createMockedClientSessionManager(workspace, [{ choices: [{ message: { content: "no usage" } }] }]);
@@ -312,8 +312,8 @@ test("SessionManager keeps usagePerModel null until response usage is available"
 });
 
 test("SessionManager marks skills loaded from existing session messages", async () => {
-  const workspace = createTempDir("deepcode-loaded-skills-workspace-");
-  const home = createTempDir("deepcode-loaded-skills-home-");
+  const workspace = createTempDir("doku-loaded-skills-workspace-");
+  const home = createTempDir("doku-loaded-skills-home-");
   setHomeDir(home);
 
   const skillDir = path.join(home, ".agents", "skills", "example-starter");
@@ -359,8 +359,8 @@ test("SessionManager marks skills loaded from existing session messages", async 
 });
 
 test("SessionManager lists project skills from .agents with legacy .doku compatibility", async () => {
-  const workspace = createTempDir("deepcode-project-skills-workspace-");
-  const home = createTempDir("deepcode-project-skills-home-");
+  const workspace = createTempDir("doku-project-skills-workspace-");
+  const home = createTempDir("doku-project-skills-home-");
   setHomeDir(home);
 
   const userSkillDir = path.join(home, ".agents", "skills", "shared");
@@ -399,7 +399,7 @@ test("SessionManager lists project skills from .agents with legacy .doku compati
 });
 
 test("SessionManager dispose disconnects MCP servers", async () => {
-  const workspace = createTempDir("deepcode-mcp-dispose-workspace-");
+  const workspace = createTempDir("doku-mcp-dispose-workspace-");
   const serverPath = path.join(workspace, "mcp-server.cjs");
   fs.writeFileSync(
     serverPath,
@@ -545,7 +545,7 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager refreshes cached MCP tool definitions after server crash", async () => {
-  const workspace = createTempDir("deepcode-mcp-crash-cache-workspace-");
+  const workspace = createTempDir("doku-mcp-crash-cache-workspace-");
   const serverPath = path.join(workspace, "mcp-server-crash.cjs");
   fs.writeFileSync(
     serverPath,
@@ -599,7 +599,7 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager reports configured MCP servers as starting before initialization", () => {
-  const workspace = createTempDir("deepcode-mcp-configured-workspace-");
+  const workspace = createTempDir("doku-mcp-configured-workspace-");
   const manager = new SessionManager({
     projectRoot: workspace,
     createOpenAIClient: () => ({
@@ -633,7 +633,7 @@ test("SessionManager reports configured MCP servers as starting before initializ
 });
 
 test("SessionManager reports MCP startup connection failure", async () => {
-  const workspace = createTempDir("deepcode-mcp-failure-workspace-");
+  const workspace = createTempDir("doku-mcp-failure-workspace-");
   const serverPath = path.join(workspace, "mcp-server-fail.cjs");
   fs.writeFileSync(serverPath, 'process.stderr.write("mcp startup boom"); process.exit(7);', "utf8");
 
@@ -651,7 +651,7 @@ test(
   "SessionManager adds -y when launching MCP servers through npx",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-mcp-npx-workspace-");
+    const workspace = createTempDir("doku-mcp-npx-workspace-");
     const argsPath = path.join(workspace, "args.json");
     const fakeNpxPath = path.join(workspace, "npx");
     fs.writeFileSync(
@@ -695,16 +695,16 @@ rl.on("line", (line) => {
 );
 
 test("createSession stores /init and sends the active .doku project AGENTS path to the LLM", async () => {
-  const workspace = createTempDir("deepcode-init-deepcode-workspace-");
-  const home = createTempDir("deepcode-init-deepcode-home-");
+  const workspace = createTempDir("doku-init-doku-workspace-");
+  const home = createTempDir("doku-init-doku-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
   fs.mkdirSync(path.join(workspace, ".doku"), { recursive: true });
-  fs.writeFileSync(path.join(workspace, ".doku", "AGENTS.md"), "deepcode project instructions", "utf8");
+  fs.writeFileSync(path.join(workspace, ".doku", "AGENTS.md"), "doku project instructions", "utf8");
   fs.writeFileSync(path.join(workspace, "AGENTS.md"), "root project instructions", "utf8");
 
-  const manager = createSessionManager(workspace, "machine-id-init-deepcode");
+  const manager = createSessionManager(workspace, "machine-id-init-doku");
   (manager as any).activateSession = async () => {};
 
   const sessionId = await manager.createSession({ text: "/init" });
@@ -722,13 +722,13 @@ test("createSession stores /init and sends the active .doku project AGENTS path 
   assert.equal(userMessage?.content, "/init");
   assert.match(openAIUserMessage?.content ?? "", /Update \.\/.doku\/AGENTS\.md/);
   assert.doesNotMatch(openAIUserMessage?.content ?? "", /Update \.\/AGENTS\.md/);
-  assert.ok(systemContents.includes("deepcode project instructions"));
+  assert.ok(systemContents.includes("doku project instructions"));
   assert.ok(!systemContents.includes("root project instructions"));
 });
 
 test("createSession appends default system prompts in prefix-cache-friendly order", async () => {
-  const workspace = createTempDir("deepcode-system-order-workspace-");
-  const home = createTempDir("deepcode-system-order-home-");
+  const workspace = createTempDir("doku-system-order-workspace-");
+  const home = createTempDir("doku-system-order-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -875,8 +875,8 @@ test("replySession does not auto-match extra skills when a skill is explicitly s
 });
 
 test("replySession stores /init and sends the active root project AGENTS path to the LLM", async () => {
-  const workspace = createTempDir("deepcode-init-root-workspace-");
-  const home = createTempDir("deepcode-init-root-home-");
+  const workspace = createTempDir("doku-init-root-workspace-");
+  const home = createTempDir("doku-init-root-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -902,8 +902,8 @@ test("replySession stores /init and sends the active root project AGENTS path to
 });
 
 test("createSession stores /init and sends generate prompt when no project AGENTS file is effective", async () => {
-  const workspace = createTempDir("deepcode-init-generate-workspace-");
-  const home = createTempDir("deepcode-init-generate-home-");
+  const workspace = createTempDir("doku-init-generate-workspace-");
+  const home = createTempDir("doku-init-generate-home-");
   setHomeDir(home);
   globalThis.fetch = (async () => ({ ok: true, text: async () => "" }) as Response) as typeof fetch;
 
@@ -928,8 +928,8 @@ test("createSession stores /init and sends generate prompt when no project AGENT
 });
 
 test("createSession reports a new prompt with the machineId token", async () => {
-  const workspace = createTempDir("deepcode-session-workspace-");
-  const home = createTempDir("deepcode-session-home-");
+  const workspace = createTempDir("doku-session-workspace-");
+  const home = createTempDir("doku-session-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -961,8 +961,8 @@ test("createSession reports a new prompt with the machineId token", async () => 
 });
 
 test("replySession reports a new prompt with the machineId token", async () => {
-  const workspace = createTempDir("deepcode-reply-workspace-");
-  const home = createTempDir("deepcode-reply-home-");
+  const workspace = createTempDir("doku-reply-workspace-");
+  const home = createTempDir("doku-reply-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -993,8 +993,8 @@ test("replySession reports a new prompt with the machineId token", async () => {
 });
 
 test("reporting a new prompt does not warn when the background request fails", async () => {
-  const workspace = createTempDir("deepcode-report-failure-workspace-");
-  const home = createTempDir("deepcode-report-failure-home-");
+  const workspace = createTempDir("doku-report-failure-workspace-");
+  const home = createTempDir("doku-report-failure-home-");
   setHomeDir(home);
 
   const warnings: unknown[][] = [];
@@ -1018,8 +1018,8 @@ test(
   "SessionManager notifies successful completion with session context",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-notify-success-workspace-");
-    const home = createTempDir("deepcode-notify-success-home-");
+    const workspace = createTempDir("doku-notify-success-workspace-");
+    const home = createTempDir("doku-notify-success-home-");
     setHomeDir(home);
 
     const notifyOutput = path.join(workspace, "notify.jsonl");
@@ -1046,8 +1046,8 @@ test(
   "SessionManager notifies failed completion with failure context",
   { skip: process.platform === "win32" },
   async () => {
-    const workspace = createTempDir("deepcode-notify-failure-workspace-");
-    const home = createTempDir("deepcode-notify-failure-home-");
+    const workspace = createTempDir("doku-notify-failure-workspace-");
+    const home = createTempDir("doku-notify-failure-home-");
     setHomeDir(home);
 
     const notifyOutput = path.join(workspace, "notify.jsonl");
@@ -1077,8 +1077,8 @@ test(
 );
 
 test("replySession continues without appending /continue as a user message", async () => {
-  const workspace = createTempDir("deepcode-continue-workspace-");
-  const home = createTempDir("deepcode-continue-home-");
+  const workspace = createTempDir("doku-continue-workspace-");
+  const home = createTempDir("doku-continue-home-");
   setHomeDir(home);
 
   const fetchCalls: Array<{ input: string | URL; init?: RequestInit }> = [];
@@ -1124,8 +1124,8 @@ test("replySession records the current file-history branch head as checkpointHas
     return;
   }
 
-  const workspace = createTempDir("deepcode-checkpoint-hash-workspace-");
-  const home = createTempDir("deepcode-checkpoint-hash-home-");
+  const workspace = createTempDir("doku-checkpoint-hash-workspace-");
+  const home = createTempDir("doku-checkpoint-hash-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-checkpoint-hash");
@@ -1146,8 +1146,8 @@ test("createSession initializes file-history repo and session branch", async (t)
     return;
   }
 
-  const workspace = createTempDir("deepcode-file-history-init-workspace-");
-  const home = createTempDir("deepcode-file-history-init-home-");
+  const workspace = createTempDir("doku-file-history-init-workspace-");
+  const home = createTempDir("doku-file-history-init-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-file-history-init");
@@ -1178,8 +1178,8 @@ test("Write tool advances file-history while preserving the user prompt checkpoi
     return;
   }
 
-  const workspace = createTempDir("deepcode-write-checkpoint-workspace-");
-  const home = createTempDir("deepcode-write-checkpoint-home-");
+  const workspace = createTempDir("doku-write-checkpoint-workspace-");
+  const home = createTempDir("doku-write-checkpoint-home-");
   setHomeDir(home);
 
   const filePath = path.join(workspace, "index.html");
@@ -1222,9 +1222,9 @@ test("Write checkpoints restore tool-touched files outside the workspace and lea
     return;
   }
 
-  const workspace = createTempDir("deepcode-write-outside-workspace-");
-  const outsideDir = createTempDir("deepcode-write-outside-target-");
-  const home = createTempDir("deepcode-write-outside-home-");
+  const workspace = createTempDir("doku-write-outside-workspace-");
+  const outsideDir = createTempDir("doku-write-outside-target-");
+  const home = createTempDir("doku-write-outside-home-");
   setHomeDir(home);
 
   const outsideFilePath = path.join(outsideDir, "outside.txt");
@@ -1265,8 +1265,8 @@ test("Write checkpoints restore tool-touched files outside the workspace and lea
 });
 
 test("missing git executable does not block sessions or Write tool calls", async () => {
-  const workspace = createTempDir("deepcode-no-git-write-workspace-");
-  const home = createTempDir("deepcode-no-git-write-home-");
+  const workspace = createTempDir("doku-no-git-write-workspace-");
+  const home = createTempDir("doku-no-git-write-home-");
   setHomeDir(home);
 
   const originalPath = process.env.PATH;
@@ -1312,8 +1312,8 @@ test("missing git executable does not block sessions or Write tool calls", async
 });
 
 test("restoreSessionConversation truncates messages before the selected user prompt", async () => {
-  const workspace = createTempDir("deepcode-undo-conversation-workspace-");
-  const home = createTempDir("deepcode-undo-conversation-home-");
+  const workspace = createTempDir("doku-undo-conversation-workspace-");
+  const home = createTempDir("doku-undo-conversation-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-undo-conversation");
@@ -1357,8 +1357,8 @@ test("restoreSessionCode restores project files from the recorded Git checkpoint
     return;
   }
 
-  const workspace = createTempDir("deepcode-undo-code-workspace-");
-  const home = createTempDir("deepcode-undo-code-home-");
+  const workspace = createTempDir("doku-undo-code-workspace-");
+  const home = createTempDir("doku-undo-code-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "machine-id-undo-code");
@@ -1380,8 +1380,8 @@ test("restoreSessionCode restores project files from the recorded Git checkpoint
 });
 
 test("replySession /continue runs trailing pending tool calls before requesting another response", async () => {
-  const workspace = createTempDir("deepcode-continue-tool-workspace-");
-  const home = createTempDir("deepcode-continue-tool-home-");
+  const workspace = createTempDir("doku-continue-tool-workspace-");
+  const home = createTempDir("doku-continue-tool-home-");
   setHomeDir(home);
 
   const responses = [
@@ -1432,8 +1432,8 @@ test("replySession /continue runs trailing pending tool calls before requesting 
 });
 
 test("replySession preserves raw session messages when a previous tool call is pending", async () => {
-  const workspace = createTempDir("deepcode-pending-tool-workspace-");
-  const home = createTempDir("deepcode-pending-tool-home-");
+  const workspace = createTempDir("doku-pending-tool-workspace-");
+  const home = createTempDir("doku-pending-tool-home-");
   setHomeDir(home);
 
   globalThis.fetch = (async () =>
@@ -1790,8 +1790,8 @@ test("Write tool params prefer file_path even when content appears first", () =>
 });
 
 test("LLM tool calls with an empty id receive a generated 32 character id", async () => {
-  const workspace = createTempDir("deepcode-tool-call-id-workspace-");
-  const home = createTempDir("deepcode-tool-call-id-home-");
+  const workspace = createTempDir("doku-tool-call-id-workspace-");
+  const home = createTempDir("doku-tool-call-id-home-");
   setHomeDir(home);
 
   const plan = "## Task List\n\n- [ ] Inspect current behavior";
@@ -1941,8 +1941,8 @@ test("buildOpenAIMessages ignores tool messages that appear before their assista
 });
 
 test("SessionManager accumulates response usage while active tokens track the latest response", async () => {
-  const workspace = createTempDir("deepcode-usage-workspace-");
-  const home = createTempDir("deepcode-usage-home-");
+  const workspace = createTempDir("doku-usage-workspace-");
+  const home = createTempDir("doku-usage-home-");
   setHomeDir(home);
 
   const responses = [
@@ -2011,8 +2011,8 @@ test("SessionManager appends new turns to SDK session history without rebuilding
 });
 
 test("SessionManager stores usage per model across model changes", async () => {
-  const workspace = createTempDir("deepcode-usage-per-model-workspace-");
-  const home = createTempDir("deepcode-usage-per-model-home-");
+  const workspace = createTempDir("doku-usage-per-model-workspace-");
+  const home = createTempDir("doku-usage-per-model-home-");
   setHomeDir(home);
 
   let currentModel = "deepseek-v4-pro";
@@ -2073,8 +2073,8 @@ test("SessionManager stores usage per model across model changes", async () => {
 });
 
 test("SessionManager resets active tokens to latest post-compaction response usage", async () => {
-  const workspace = createTempDir("deepcode-compact-usage-workspace-");
-  const home = createTempDir("deepcode-compact-usage-home-");
+  const workspace = createTempDir("doku-compact-usage-workspace-");
+  const home = createTempDir("doku-compact-usage-home-");
   setHomeDir(home);
 
   const responses = [
@@ -2115,8 +2115,8 @@ test("SessionManager resets active tokens to latest post-compaction response usa
 });
 
 test("SessionManager streams chat completions and counts reasoning progress", async () => {
-  const workspace = createTempDir("deepcode-stream-workspace-");
-  const home = createTempDir("deepcode-stream-home-");
+  const workspace = createTempDir("doku-stream-workspace-");
+  const home = createTempDir("doku-stream-home-");
   setHomeDir(home);
 
   const progressEvents: Array<{
@@ -2251,8 +2251,8 @@ test("SessionManager resumes AskUserQuestion after restart and persists the answ
 });
 
 test("SessionManager persists session and user message before skill matching is cancelled", async () => {
-  const workspace = createTempDir("deepcode-skill-abort-workspace-");
-  const home = createTempDir("deepcode-skill-abort-home-");
+  const workspace = createTempDir("doku-skill-abort-workspace-");
+  const home = createTempDir("doku-skill-abort-home-");
   setHomeDir(home);
 
   const skillDir = path.join(home, ".agents", "skills", "demo");
@@ -2293,8 +2293,8 @@ test("SessionManager persists session and user message before skill matching is 
 });
 
 test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () => {
-  const workspace = createTempDir("deepcode-api-abort-workspace-");
-  const home = createTempDir("deepcode-api-abort-home-");
+  const workspace = createTempDir("doku-api-abort-workspace-");
+  const home = createTempDir("doku-api-abort-home-");
   setHomeDir(home);
 
   let manager: SessionManager;
@@ -2344,7 +2344,7 @@ test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () =
 });
 
 test("SessionManager marks MCP server as failed on single failed attempt (no auto-retry)", async () => {
-  const workspace = createTempDir("deepcode-mcp-fail-noworkspace-");
+  const workspace = createTempDir("doku-mcp-fail-noworkspace-");
   const serverPath = path.join(workspace, "mcp-server-fail.cjs");
   fs.writeFileSync(serverPath, "process.exit(7);", "utf8");
 
@@ -2360,7 +2360,7 @@ test("SessionManager marks MCP server as failed on single failed attempt (no aut
 });
 
 test("SessionManager reconnect succeeds on previously failed server", async () => {
-  const workspace = createTempDir("deepcode-mcp-reconn-ok-workspace-");
+  const workspace = createTempDir("doku-mcp-reconn-ok-workspace-");
   const serverPath = path.join(workspace, "mcp-server-ok.cjs");
   fs.writeFileSync(
     serverPath,
@@ -2399,8 +2399,8 @@ rl.on("line", (line) => {
 });
 
 test("SessionManager adjusts the active Bash timeout control and session metadata", async () => {
-  const workspace = createTempDir("deepcode-bash-timeout-session-");
-  const home = createTempDir("deepcode-bash-timeout-home-");
+  const workspace = createTempDir("doku-bash-timeout-session-");
+  const home = createTempDir("doku-bash-timeout-home-");
   setHomeDir(home);
 
   const manager = createSessionManager(workspace, "");
