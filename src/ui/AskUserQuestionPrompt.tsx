@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useWindowSize } from "ink";
 import type { AskUserQuestionAnswers, AskUserQuestionItem } from "./askUserQuestion";
 import { useTerminalInput } from "./PromptInput";
 
@@ -19,6 +19,7 @@ type OptionEntry = {
 };
 
 export function AskUserQuestionPrompt({ questions, onSubmit, onCancel }: Props): React.ReactElement | null {
+  const { columns } = useWindowSize();
   const [questionIndex, setQuestionIndex] = useState(0);
   const [cursorIndex, setCursorIndex] = useState(0);
   const [answers, setAnswers] = useState<AskUserQuestionAnswers>({});
@@ -194,7 +195,7 @@ export function AskUserQuestionPrompt({ questions, onSubmit, onCancel }: Props):
                   borderStyle="single"
                   borderColor={isCursor ? "cyanBright" : "gray"}
                   paddingX={1}
-                  width={64}
+                  width={Math.max(20, Math.min(64, columns - 8))}
                 >
                   {otherText ? (
                     <Text color="white">

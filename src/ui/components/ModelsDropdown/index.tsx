@@ -3,8 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import DropdownMenu from "../../DropdownMenu";
 import type { ModelConfigSelection, ProviderProfile, ReasoningEffort } from "../../../settings";
-
-type ModelStep = "provider" | "model" | "custom" | "thinking";
+import { modelPickerBackAction, type ModelPickerStep } from "../../model-picker-state";
 
 type ThinkingModeOption = {
   label: string;
@@ -85,10 +84,6 @@ type Props = {
   onStatusMessage?: (message: string | null) => void;
 };
 
-export function handleCustomModelInput(key: { escape?: boolean }, onClose: () => void): void {
-  if (key.escape) onClose();
-}
-
 const ModelsDropdown: React.FC<Props> = ({
   open,
   modelConfig,
@@ -102,7 +97,7 @@ const ModelsDropdown: React.FC<Props> = ({
     const ids = Object.keys(providers);
     return ids.length > 0 ? ids : [modelConfig.provider ?? "custom"];
   }, [modelConfig.provider, providers]);
-  const [step, setStep] = useState<ModelStep | null>(null);
+  const [step, setStep] = useState<ModelPickerStep | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [pendingProvider, setPendingProvider] = useState(modelConfig.provider ?? providerIds[0]!);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
@@ -111,6 +106,7 @@ const ModelsDropdown: React.FC<Props> = ({
   const models = suggestedModels(pendingProvider, profile, currentProvider, modelConfig.model);
   const modelOptions = [...models, CUSTOM_MODEL_KEY];
   const thinkingOptions = getThinkingOptions(profile, pendingModel ?? undefined);
+  const menuWidth = Math.max(20, width - 4);
 
   useEffect(() => {
     if (!open) {
@@ -147,6 +143,21 @@ const ModelsDropdown: React.FC<Props> = ({
       });
   }
 
+  function goBack(): void {
+    if (!step) return;
+    const action = modelPickerBackAction(step);
+    if (action.kind === "close") {
+      onClose();
+      return;
+    }
+    setStep(action.step);
+    if (action.step === "provider") {
+      setActiveIndex(Math.max(0, providerIds.indexOf(pendingProvider)));
+      return;
+    }
+    setActiveIndex(Math.max(0, modelOptions.indexOf(pendingModel ?? modelConfig.model)));
+  }
+
   useInput(
     (input, key) => {
       if (!step || step === "custom") return;
@@ -167,14 +178,16 @@ const ModelsDropdown: React.FC<Props> = ({
         } else {
           applySelection();
         }
-      } else if (key.tab || key.escape) onClose();
+      } else if (key.escape) goBack();
+      else if (key.tab) onClose();
     },
     { isActive: open && step !== "custom" }
   );
 
   useInput(
     (_input, key) => {
-      handleCustomModelInput(key, onClose);
+      if (key.escape) goBack();
+      else if (key.tab) onClose();
     },
     { isActive: open && step === "custom" }
   );
@@ -183,8 +196,9 @@ const ModelsDropdown: React.FC<Props> = ({
 
   if (step === "custom") {
     return (
-      <Box flexDirection="column" width={width}>
+      <Box flexDirection="column" width={menuWidth}>
         <Text bold>Enter Model ID</Text>
+        <Text dimColor>{pendingProvider} / custom model</Text>
         <TextInput
           placeholder="provider/model-name"
           onSubmit={(value) => {
@@ -192,7 +206,7 @@ const ModelsDropdown: React.FC<Props> = ({
             if (model) showThinking(model);
           }}
         />
-        <Text dimColor>Enter continue · Esc cancel</Text>
+        <Text dimColor>Enter continue · Esc back · Tab cancel</Text>
       </Box>
     );
   }
@@ -221,9 +235,17 @@ const ModelsDropdown: React.FC<Props> = ({
 
   return (
     <DropdownMenu
-      width={width}
-      title={step === "provider" ? "Select Provider" : step === "model" ? "Select Model" : "Select Reasoning"}
-      helpText="Space/Enter select · Esc cancel"
+      width={menuWidth}
+      title={
+        step === "provider"
+          ? `Select Provider · current ${currentProvider}`
+          : step === "model"
+            ? `Select Model · ${pendingProvider}`
+            : `Select Reasoning · ${pendingProvider}/${pendingModel ?? modelConfig.model}`
+      }
+      helpText={
+        step === "provider" ? "Space/Enter select · Esc/Tab cancel" : "Space/Enter select · Esc back · Tab cancel"
+      }
       items={items}
       activeIndex={activeIndex}
       activeColor="#0ea5e9"

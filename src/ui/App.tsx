@@ -45,11 +45,10 @@ import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
 import { buildChatStatus } from "./chat-status";
+import { transitionView, type AppView } from "./view-state";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
-
-type View = "chat" | "session-list" | "undo" | "mcp-status" | "web-search-setup";
 
 type AppProps = {
   projectRoot: string;
@@ -68,7 +67,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const writeRef = useRef(write);
   const lastRenderedColumnsRef = useRef<number | null>(null);
   const messagesRef = useRef<SessionMessage[]>([]);
-  const [view, setView] = useState<View>("chat");
+  const [view, setView] = useState<AppView>("chat");
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
@@ -87,6 +86,11 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [nowTick, setNowTick] = useState(0);
   const [mcpStatuses, setMcpStatuses] = useState<ReturnType<typeof sessionManager.getMcpStatus>>([]);
   const [showProcessStdout, setShowProcessStdout] = useState(false);
+
+  const openSecondaryView = useCallback((nextView: Exclude<AppView, "chat">): void => {
+    setShowWelcome(false);
+    setView((current) => transitionView(current, { type: "open", view: nextView }));
+  }, []);
 
   rawModeRef.current = mode;
   messagesRef.current = messages;
@@ -133,10 +137,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         buf.set(pid, current + text.slice(0, available));
       },
       onNeedsWebSearchSetup: () => {
-        setView("web-search-setup");
+        openSecondaryView("web-search-setup");
       },
     });
-  }, [projectRoot]);
+  }, [openSecondaryView, projectRoot]);
+
+  const closeSecondaryView = useCallback((): void => {
+    setView((current) => transitionView(current, { type: "close" }));
+    setShowWelcome(!sessionManager.getActiveSessionId());
+  }, [sessionManager]);
 
   useEffect(() => {
     if (!busy) {
@@ -227,15 +236,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         return;
       }
       if (submission.command === "resume") {
-        setShowWelcome(false);
         refreshSessionsList();
-        setView("session-list");
+        openSecondaryView("session-list");
         return;
       }
       if (submission.command === "continue" && isCurrentSessionEmpty(sessionManager)) {
-        setShowWelcome(false);
         refreshSessionsList();
-        setView("session-list");
+        openSecondaryView("session-list");
         return;
       }
       if (submission.command === "undo") {
@@ -244,20 +251,17 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           setErrorLine("No active session to undo.");
           return;
         }
-        setShowWelcome(false);
         setUndoTargets(sessionManager.listUndoTargets(activeSessionId));
-        setView("undo");
+        openSecondaryView("undo");
         return;
       }
       if (submission.command === "mcp") {
-        setShowWelcome(false);
         setMcpStatuses(sessionManager.getMcpStatus());
-        setView("mcp-status");
+        openSecondaryView("mcp-status");
         return;
       }
       if (submission.command === "setup-websearch") {
-        setShowWelcome(false);
-        setView("web-search-setup");
+        openSecondaryView("web-search-setup");
         return;
       }
 
@@ -297,7 +301,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         setRunningProcesses(null);
       }
     },
-    [exit, onRestart, sessionManager, refreshSkills, refreshSessionsList]
+    [exit, onRestart, openSecondaryView, sessionManager, refreshSkills, refreshSessionsList]
   );
 
   const handleInterrupt = useCallback(() => {
@@ -408,7 +412,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     const existing = readSettings() ?? {};
     const envKey = provider === "tavily" ? "TAVILY_API_KEY" : "FIRECRAWL_API_KEY";
     writeSettings({ ...existing, webSearchProvider: provider, env: { ...existing.env, [envKey]: apiKey } });
-    setView("chat");
+    closeSecondaryView();
   }
 
   const handleSelectSession = useCallback(
@@ -422,7 +426,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       setMessages([]);
       setShowWelcome(false);
       setWelcomeNonce((n) => n + 1);
-      setView("chat");
+      closeSecondaryView();
       // Load messages after the reset so all static items are rendered.
       setTimeout(() => {
         setMessages(loadVisibleMessages(sessionManager, sessionId));
@@ -433,7 +437,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       setActiveEntry(session);
       await refreshSkills(sessionId);
     },
-    [sessionManager, refreshSkills]
+    [closeSecondaryView, sessionManager, refreshSkills]
   );
 
   const handleUndoRestore = useCallback(
@@ -441,8 +445,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const sessionId = sessionManager.getActiveSessionId();
       if (!sessionId) {
         setErrorLine("No active session to undo.");
-        setView("chat");
-        setShowWelcome(true);
+        closeSecondaryView();
         return;
       }
 
@@ -465,14 +468,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
       refreshSessionsList();
       await refreshSkills(sessionId);
-      setView("chat");
+      closeSecondaryView();
       setErrorLine(errors.length > 0 ? errors.join(" ") : null);
       if (conversationRestored) {
         setPromptDraft(buildPromptDraftFromSessionMessage(target.message, Date.now()));
       }
       reloadActiveSessionView(sessionId);
     },
-    [reloadActiveSessionView, refreshSessionsList, refreshSkills, sessionManager]
+    [closeSecondaryView, reloadActiveSessionView, refreshSessionsList, refreshSkills, sessionManager]
   );
 
   const handleRawModeChange = useCallback(
@@ -696,28 +699,27 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         <SessionList
           sessions={sessions}
           onSelect={(id) => void handleSelectSession(id)}
-          onCancel={() => setView("chat")}
+          onCancel={closeSecondaryView}
         />
       ) : view === "undo" ? (
         <UndoSelector
           targets={undoTargets}
           onSelect={(target, restoreMode) => void handleUndoRestore(target, restoreMode)}
           onCancel={() => {
-            setView("chat");
-            setShowWelcome(true);
+            closeSecondaryView();
           }}
         />
       ) : view === "mcp-status" ? (
         <McpStatusList
           statuses={mcpStatuses}
-          onCancel={() => setView("chat")}
+          onCancel={closeSecondaryView}
           onReconnect={(name) => {
             const latest = resolveCurrentSettings(projectRoot);
             void sessionManager.reconnectMcpServer(name, latest.mcpServers?.[name]);
           }}
         />
       ) : view === "web-search-setup" ? (
-        <WebSearchSetupScreen onComplete={handleWebSearchSetupComplete} onCancel={() => setView("chat")} />
+        <WebSearchSetupScreen onComplete={handleWebSearchSetupComplete} onCancel={closeSecondaryView} />
       ) : shouldShowQuestionPrompt && pendingQuestion && !busy ? (
         <AskUserQuestionPrompt
           questions={pendingQuestion.questions}

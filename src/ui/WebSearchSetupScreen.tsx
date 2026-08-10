@@ -33,21 +33,31 @@ const PROVIDER_KEY_HINTS: Record<WebSearchProvider, string> = {
 export function WebSearchSetupScreen({ onComplete, onCancel }: WebSearchSetupScreenProps): React.ReactElement {
   const [step, setStep] = useState<Step>("provider");
   const [provider, setProvider] = useState<WebSearchProvider>("tavily");
+  const [error, setError] = useState<string | null>(null);
 
   useInput((_input, key) => {
     if (key.escape) {
-      onCancel();
+      if (step === "api-key") {
+        setError(null);
+        setStep("provider");
+      } else {
+        onCancel();
+      }
     }
   });
 
   function handleProviderSelect(value: string): void {
     setProvider(value as WebSearchProvider);
+    setError(null);
     setStep("api-key");
   }
 
   function handleApiKeySubmit(value: string): void {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      setError("Enter an API key to continue.");
+      return;
+    }
     onComplete({ provider, apiKey: trimmed });
   }
 
@@ -55,7 +65,7 @@ export function WebSearchSetupScreen({ onComplete, onCancel }: WebSearchSetupScr
     <Box flexDirection="column" paddingX={2} marginTop={1} gap={1}>
       <Text bold>Web Search Setup</Text>
       <Text dimColor>Settings will be saved to ~/.doku/settings.json</Text>
-      <Text dimColor>Press Escape to cancel</Text>
+      <Text dimColor>{step === "provider" ? "Enter select · Esc cancel" : "Enter save · Esc back"}</Text>
 
       {step === "provider" && (
         <Box flexDirection="column" gap={1} marginTop={1}>
@@ -73,6 +83,7 @@ export function WebSearchSetupScreen({ onComplete, onCancel }: WebSearchSetupScr
           <PasswordInput placeholder={PROVIDER_KEY_HINTS[provider]} onSubmit={handleApiKeySubmit} />
         </Box>
       )}
+      {error ? <Text color="red">{error}</Text> : null}
     </Box>
   );
 }

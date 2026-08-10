@@ -189,7 +189,7 @@ function ServerListView({
     >
       <Box flexDirection="column" borderStyle="round" borderDimColor flexGrow={1} overflow="hidden">
         {/* Header row */}
-        <Box paddingX={1} gap={1}>
+        <Box paddingX={1} gap={1} flexDirection={columns < 80 ? "column" : "row"}>
           <Text bold color="#0ea5e9">
             Manage MCP servers
           </Text>

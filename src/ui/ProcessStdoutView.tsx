@@ -131,7 +131,7 @@ export const ProcessStdoutView = React.memo(function ProcessStdoutView({
   );
 
   return (
-    <Box flexDirection="column" width={screenWidth} minWidth={80} height={panelHeight} overflow="hidden">
+    <Box flexDirection="column" width={screenWidth} height={panelHeight} overflow="hidden">
       <Box borderStyle="single" borderBottom={true} borderLeft={false} borderRight={false} borderTop={false}>
         <Text bold>📟 Process Output</Text>
         <Text dimColor>{` (${formatTimeoutHint(
