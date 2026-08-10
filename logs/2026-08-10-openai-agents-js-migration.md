@@ -82,6 +82,7 @@ Session responsibilities were moved into focused modules:
 | `src/session/legacy-history.ts`      | Existing transcript migration and compatibility   |
 | `src/session/tool-presentation.ts`   | Tool result presentation metadata                 |
 | `src/session/types.ts`               | Shared session types                              |
+| `src/ui/setup-settings.ts`           | Setup result persistence                          |
 
 All TypeScript and TSX sources are formatted with the repository Prettier configuration.
 
@@ -109,6 +110,8 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Persists balanced canonical history when cancellation or provider errors interrupt a run.
 - Resolves named-provider credentials from project and user settings with documented precedence.
 - Recovers cleanly when a malformed JSONL tail is followed by a new session record.
+- Resets API mode to the selected provider profile when `/model` switches providers.
+- Preserves configured provider metadata during setup without shadowing fresh built-in profiles.
 - Removes the stale nested repository guide; the root `AGENTS.md` is authoritative.
 
 ## Validation
@@ -126,7 +129,7 @@ git diff --check
 
 Results at completion:
 
-- 385 tests passed
+- 389 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed

@@ -402,6 +402,13 @@ export function applyModelConfigSelection(
   }
 
   if (selectedProvider) next.provider = selectedProvider;
+  if (selectedProvider && selectedProvider !== current.provider) {
+    const selectedProfile =
+      selected.providers?.[selectedProvider] ??
+      current.providers?.[selectedProvider] ??
+      next.providers?.[selectedProvider];
+    next.apiMode = selectedProfile?.apiMode ?? (selectedProfile?.type === "openai" ? "auto" : "chat_completions");
+  }
 
   next.thinkingEnabled = selected.thinkingEnabled;
   if (selected.thinkingEnabled) {

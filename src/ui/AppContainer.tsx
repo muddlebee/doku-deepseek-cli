@@ -4,6 +4,7 @@ import { App } from "./App";
 import { RawModeProvider } from "./contexts/RawModeContext";
 import { SetupScreen, type SetupResult } from "./SetupScreen";
 import { readSettings, resolveCurrentSettings, writeSettings } from "./App";
+import { buildSetupSettings } from "./setup-settings";
 
 const AppContainer: React.FC<{
   projectRoot: string;
@@ -16,22 +17,7 @@ const AppContainer: React.FC<{
 
   function handleSetupComplete(result: SetupResult): void {
     const existing = readSettings() ?? {};
-    writeSettings({
-      ...existing,
-      settingsVersion: 2,
-      provider: result.provider,
-      model: result.model,
-      apiMode: result.apiMode,
-      providers: {
-        ...existing.providers,
-        [result.provider]: {
-          type: result.providerType,
-          baseURL: result.baseURL,
-          apiMode: result.apiMode,
-        },
-      },
-      env: { ...existing.env, API_KEY: result.apiKey, BASE_URL: result.baseURL },
-    });
+    writeSettings(buildSetupSettings(existing, result));
     setSetupDone(true);
   }
 

@@ -358,6 +358,32 @@ test("applyModelConfigSelection leaves settings untouched when the effective sel
   assert.equal(result.settings.model, undefined);
 });
 
+test("applyModelConfigSelection resets the API mode for the selected provider", () => {
+  const providers = {
+    openai: { type: "openai" as const, apiMode: "responses" as const },
+    deepseek: { type: "deepseek" as const, apiMode: "chat_completions" as const },
+  };
+  const result = applyModelConfigSelection(
+    { provider: "openai", apiMode: "responses" },
+    {
+      provider: "openai",
+      providers,
+      model: "gpt-5.6-sol",
+      thinkingEnabled: true,
+      reasoningEffort: "low",
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      thinkingEnabled: true,
+      reasoningEffort: "high",
+    }
+  );
+
+  assert.equal(result.settings.provider, "deepseek");
+  assert.equal(result.settings.apiMode, "chat_completions");
+});
+
 test("formatDurationSeconds preserves sub-second precision and trims trailing zeros", () => {
   assert.equal(formatDurationSeconds(0), "0");
   assert.equal(formatDurationSeconds(1250), "1");
