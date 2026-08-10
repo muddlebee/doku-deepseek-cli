@@ -5,6 +5,9 @@ dist/
 .vscode/
 *.tgz
 *.log
+.env
+.env.*
+!.env.example
 .deepcode/
 .crush/
 

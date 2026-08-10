@@ -158,6 +158,16 @@ Set to `true` to enable detailed debug logging (default `false`), useful for tro
 
 Environment variables are a common way to configure applications, especially for sensitive information (such as api-key) or settings that may change between environments.
 
+The project-root `.env` file is loaded automatically using Node.js dotenv syntax. Existing shell variables override values with the same name from `.env`. For OpenAI, the minimal configuration is:
+
+```dotenv
+OPENAI_API_KEY=sk-...
+DOKU_PROVIDER=openai
+DOKU_MODEL=gpt-5.6-sol
+```
+
+You can also use `DOKU_API_KEY` instead of the provider-specific key. `.env` and `.env.*` files are ignored by Git, except `.env.example`.
+
 ### Priority Principle
 
 Environment variable priority follows the logic of “the more specific and localized the configuration, the higher the priority”, and the override rule of “env files protect existing environment by default, system variables override env files”. (The `env` object in settings.json can be thought of as a type of env file.)

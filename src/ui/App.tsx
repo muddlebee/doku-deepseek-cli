@@ -24,6 +24,7 @@ import {
   type ResolvedDeepcodingSettings,
   resolveSettingsSources,
 } from "../settings";
+import { loadProjectEnv } from "../common/project-env";
 import { PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
 import { MessageView, RawModeExitPrompt } from "./components";
 import { SessionList } from "./SessionList";
@@ -861,6 +862,7 @@ export function writeModelConfigSelection(
 }
 
 export function resolveCurrentSettings(projectRoot: string = process.cwd()): ResolvedDeepcodingSettings {
+  const processEnv = { ...loadProjectEnv(projectRoot), ...process.env };
   return resolveSettingsSources(
     readSettings(),
     readProjectSettings(projectRoot),
@@ -868,7 +870,7 @@ export function resolveCurrentSettings(projectRoot: string = process.cwd()): Res
       model: DEFAULT_MODEL,
       baseURL: DEFAULT_BASE_URL,
     },
-    process.env
+    processEnv
   );
 }
 

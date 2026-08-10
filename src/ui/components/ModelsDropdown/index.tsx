@@ -13,7 +13,7 @@ type ThinkingModeOption = {
 };
 
 export const MODEL_COMMAND_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"] as const;
-export const OPENAI_MODEL_SUGGESTIONS = ["gpt-5.4-mini", "gpt-5.6-sol"] as const;
+export const OPENAI_MODEL_SUGGESTIONS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
 const CUSTOM_MODEL_KEY = "__custom_model__";
 
 export const MODEL_COMMAND_THINKING_OPTIONS: ThinkingModeOption[] = [

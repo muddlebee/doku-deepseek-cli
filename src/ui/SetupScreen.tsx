@@ -33,7 +33,7 @@ const PROVIDER_DEFAULTS: Record<SetupProvider, Omit<SetupResult, "provider" | "a
   openai: {
     providerType: "openai",
     baseURL: "https://api.openai.com/v1",
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6-sol",
     apiMode: "auto",
   },
   deepseek: {

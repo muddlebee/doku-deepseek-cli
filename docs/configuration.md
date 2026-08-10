@@ -136,6 +136,16 @@ MCP（Model Context Protocol）服务器配置。值是键值对，键为服务�
 
 ## 环境变量优先级
 
+项目根目录的 `.env` 文件会使用 Node.js dotenv 语法自动加载。已有的 Shell 环境变量会覆盖 `.env` 中的同名值。OpenAI 的最小配置如下：
+
+```dotenv
+OPENAI_API_KEY=sk-...
+DOKU_PROVIDER=openai
+DOKU_MODEL=gpt-5.6-sol
+```
+
+也可以使用 `DOKU_API_KEY` 代替提供商专用变量。Git 会忽略 `.env` 和 `.env.*`，但保留 `.env.example`。
+
 环境变量是配置应用程序的常用方式，尤其适用于敏感信息（如 api-key）或可能在不同环境之间更改的设置。
 
 ### 优先级原则

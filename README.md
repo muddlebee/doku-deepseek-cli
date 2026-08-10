@@ -50,7 +50,7 @@ Create `~/.doku/settings.json` (the first-run setup can create this for you):
 {
   "settingsVersion": 2,
   "provider": "openai",
-  "model": "gpt-5.4-mini",
+  "model": "gpt-5.6-sol",
   "apiMode": "auto",
   "env": { "API_KEY": "sk-..." }
 }
@@ -73,7 +73,7 @@ For project-level settings, create `./.doku/settings.json` in your project root.
 You can also use environment variables — any `DOKU_*` env var maps to the corresponding setting:
 
 ```bash
-DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.4-mini doku
+DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.6-sol doku
 ```
 
 ## Slash Commands

@@ -50,7 +50,7 @@ doku
 {
   "settingsVersion": 2,
   "provider": "openai",
-  "model": "gpt-5.4-mini",
+  "model": "gpt-5.6-sol",
   "apiMode": "auto",
   "env": { "API_KEY": "sk-..." }
 }
@@ -61,7 +61,7 @@ doku
 也可以使用环境变量——任意 `DOKU_*` 环境变量都会映射到对应配置项：
 
 ```bash
-DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.4-mini doku
+DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.6-sol doku
 ```
 
 ## 斜杠命令
