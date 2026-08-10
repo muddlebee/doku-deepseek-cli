@@ -566,7 +566,8 @@ test("an explicit provider profile is not routed through a legacy base URL", () 
     },
     null,
     { model: "deepseek-chat", baseURL: "https://api.deepseek.com" },
-    TEST_PROCESS_ENV
+    { OPENAI_API_KEY: "openai-key" }
   );
   assert.equal(resolved.baseURL, "https://api.openai.com/v1");
+  assert.equal(resolved.apiKey, "openai-key");
 });

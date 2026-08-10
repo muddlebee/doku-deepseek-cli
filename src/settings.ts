@@ -287,6 +287,10 @@ export function resolveSettingsSources(
     defaults.baseURL;
   const apiKeyEnv = trimString(providerProfile.apiKeyEnv);
   const providerApiKey = apiKeyEnv ? trimString(systemEnv[apiKeyEnv]) || trimString(processEnv[apiKeyEnv]) : "";
+  const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
+  const apiKey =
+    trimString(systemEnv.API_KEY) ||
+    (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
 
   const thinkingEnabled =
     parseBoolean(systemEnv.THINKING_ENABLED) ??
@@ -335,7 +339,7 @@ export function resolveSettingsSources(
     apiMode,
     providers,
     env,
-    apiKey: trimString(env.API_KEY) || providerApiKey || undefined,
+    apiKey: apiKey || undefined,
     baseURL,
     model,
     thinkingEnabled,
