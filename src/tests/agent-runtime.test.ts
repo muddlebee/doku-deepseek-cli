@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Usage, type Model, type ModelRequest, type ResponseStreamEvent } from "@openai/agents";
 import { AgentRuntime } from "../agent/runtime";
+import { buildAgentToolOutput } from "../session/tool-coordinator";
 
 class TextModel implements Model {
   async getResponse(_request: ModelRequest) {
@@ -166,6 +167,92 @@ test("AgentRuntime treats mutations as barriers between parallel-safe tool batch
   gates.get("after")?.();
   const result = await run;
   assert.equal(result.finalOutput, "done");
+});
+
+test("image follow-ups become structured Agents tool output", () => {
+  assert.deepEqual(
+    buildAgentToolOutput("File loaded.", [
+      {
+        role: "system",
+        content: "Use the loaded image.",
+        contentParams: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }],
+      },
+    ]),
+    [
+      { type: "text", text: "File loaded.\nUse the loaded image." },
+      { type: "image", image: "data:image/png;base64,AAAA", detail: "auto" },
+    ]
+  );
+});
+
+test("AgentRuntime sends structured image tool output to the next model request", async () => {
+  const requests: ModelRequest[] = [];
+  const model: Model = {
+    async getResponse() {
+      throw new Error("not used");
+    },
+    async *getStreamedResponse(request) {
+      requests.push(request);
+      const output =
+        requests.length === 1
+          ? [
+              {
+                type: "function_call" as const,
+                callId: "read-image",
+                name: "Read",
+                arguments: JSON.stringify({ file_path: "/tmp/pixel.png" }),
+                status: "completed" as const,
+              },
+            ]
+          : [
+              {
+                role: "assistant" as const,
+                type: "message" as const,
+                status: "completed" as const,
+                phase: "final_answer" as const,
+                content: [{ type: "output_text" as const, text: "I can see the image." }],
+              },
+            ];
+      yield {
+        type: "response_done",
+        response: {
+          id: `image-response-${requests.length}`,
+          usage: { requests: 1, inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          output,
+        },
+      };
+    },
+  };
+  const runtime = new AgentRuntime({
+    provider: { id: "fake", model, supportsImages: true, close: async () => {} },
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "Read",
+          description: "Read image",
+          parameters: {
+            type: "object",
+            properties: { file_path: { type: "string" } },
+            required: ["file_path"],
+          },
+        },
+      },
+    ],
+    executeTool: async () => [
+      { type: "text", text: "File loaded." },
+      { type: "image", image: "data:image/png;base64,AAAA", detail: "auto" },
+    ],
+  });
+
+  const result = await runtime.run("inspect image", { sessionId: "image-tool-test" });
+
+  assert.equal(result.finalOutput, "I can see the image.");
+  assert.equal(requests.length, 2);
+  const secondInput = JSON.stringify(requests[1]?.input);
+  assert.match(secondInput, /function_call_result/);
+  assert.match(secondInput, /input_image/);
+  assert.match(secondInput, /data:image\/png;base64,AAAA/);
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

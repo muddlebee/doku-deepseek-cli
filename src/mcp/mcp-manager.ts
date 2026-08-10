@@ -387,7 +387,9 @@ export class McpManager {
       }
       this.onToolsListChanged?.();
     } catch (error) {
-      if (!this.disposed && this.servers.get(name) === server) this.markServerFailed(name, error);
+      if (!this.disposed && this.servers.get(name) === server && this.isConnectionError(error)) {
+        this.markServerFailed(name, error);
+      }
     } finally {
       this.refreshingServers.delete(name);
     }

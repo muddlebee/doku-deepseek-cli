@@ -9,7 +9,12 @@ import {
   type AgentInputItem,
   type RunToolApprovalItem,
 } from "@openai/agents";
-import { AgentRuntime, type AgentRuntimeContext, type AgentToolInvocation } from "../agent/runtime";
+import {
+  AgentRuntime,
+  type AgentRuntimeContext,
+  type AgentToolInvocation,
+  type AgentToolOutput,
+} from "../agent/runtime";
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
 import { agentUsageToModelUsage, buildAgentInputItems, parseAgentStreamEvent } from "./agent-history";
@@ -42,7 +47,11 @@ export type AgentTurnDependencies = {
   ) => SessionMessage;
   onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
   appendTools: AppendTools;
-  executeTool: (sessionId: string, invocation: AgentToolInvocation) => Promise<string>;
+  executeTool: (
+    sessionId: string,
+    invocation: AgentToolInvocation,
+    supportsImages: boolean
+  ) => Promise<AgentToolOutput>;
   renderContent: (message: SessionMessage) => string;
   onProgress?: (progress: LlmStreamProgress) => void;
   isInterrupted: (sessionId: string) => boolean;
@@ -77,19 +86,21 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
 
   const progress = new StreamProgress(sessionId, deps.onProgress);
   let pendingReasoning = "";
+  let latestReasoning = "";
   let refusal: string | null = null;
   const runtime = new AgentRuntime({
     provider,
     tools: options.tools,
     maxTurns: options.maxTurns,
     tracingEnabled: options.tracingEnabled,
-    executeTool: (invocation) => deps.executeTool(sessionId, invocation),
+    executeTool: (invocation) => deps.executeTool(sessionId, invocation, provider.supportsImages),
     onAskUserAnswered: (callId, answer) => persistAskUserAnswer(sessionId, callId, answer, deps),
     onEvent: (event) => {
       const parsed = parseAgentStreamEvent(event);
       parsed.textDeltas.forEach((delta) => progress.update(delta));
       if (parsed.message) {
         refusal = parsed.message.refusal ?? refusal;
+        const completedReasoning = pendingReasoning;
         const message = deps.buildAssistant(
           sessionId,
           parsed.message.content,
@@ -99,6 +110,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
         );
         deps.appendMessage(sessionId, message);
         deps.onAssistantMessage(message, true);
+        if (completedReasoning) latestReasoning = completedReasoning;
         pendingReasoning = "";
       } else {
         pendingReasoning += parsed.reasoningDelta ?? "";
@@ -134,7 +146,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       const usage = error.state ? agentUsageToModelUsage(error.state.usage) : null;
       deps.updateEntry(sessionId, (entry) => ({
         ...entry,
-        assistantThinking: pendingReasoning || entry.assistantThinking,
+        assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
         assistantRefusal: refusalText,
         toolCalls: null,
         usage: accumulateUsage(entry.usage, usage),
@@ -159,7 +171,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
     deps.updateEntry(sessionId, (entry) => ({
       ...entry,
       assistantReply: finalOutput || entry.assistantReply,
-      assistantThinking: pendingReasoning || entry.assistantThinking,
+      assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
       assistantRefusal: refusal,
       toolCalls: null,
       usage: accumulateUsage(entry.usage, usage),

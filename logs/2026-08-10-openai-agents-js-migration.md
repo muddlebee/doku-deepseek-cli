@@ -90,6 +90,12 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Propagated turn cancellation into MCP calls while retaining the call timeout.
 - Refreshes MCP tool definitions when descriptions or schemas change without a rename.
 - Restored Escape cancellation while entering a custom model ID.
+- Delivers image `Read` follow-ups as structured Agents tool output and persists them in canonical SDK history.
+- Retains final-response reasoning in the session index.
+- Keeps MCP servers and cached definitions available after transient refresh failures.
+- Makes skill matching tolerant of fenced or explanatory JSON responses.
+- Prevents provider switching from selecting the previous provider's model.
+- Restricts reasoning choices to the selected model profile's declared capabilities.
 
 ## Validation
 
@@ -106,7 +112,7 @@ git diff --check
 
 Results at completion:
 
-- 363 tests passed
+- 375 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed

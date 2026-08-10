@@ -2,9 +2,7 @@ const PARALLEL_SAFE_TOOLS = new Set(["read", "Read", "Grep", "ListFiles", "WebSe
 
 type ScheduledTool = {
   parallel: boolean;
-  run: () => Promise<string>;
-  resolve: (value: string) => void;
-  reject: (error: unknown) => void;
+  run: () => Promise<void>;
 };
 
 export class AgentToolScheduler {
@@ -12,9 +10,18 @@ export class AgentToolScheduler {
   private activeReaders = 0;
   private writerActive = false;
 
-  schedule(toolName: string, run: () => Promise<string>): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.queue.push({ parallel: PARALLEL_SAFE_TOOLS.has(toolName), run, resolve, reject });
+  schedule<Result>(toolName: string, operation: () => Promise<Result>): Promise<Result> {
+    return new Promise<Result>((resolve, reject) => {
+      this.queue.push({
+        parallel: PARALLEL_SAFE_TOOLS.has(toolName),
+        run: async () => {
+          try {
+            resolve(await operation());
+          } catch (error) {
+            reject(error);
+          }
+        },
+      });
       this.drain();
     });
   }
@@ -43,10 +50,6 @@ export class AgentToolScheduler {
   }
 
   private async execute(item: ScheduledTool): Promise<void> {
-    try {
-      item.resolve(await item.run());
-    } catch (error) {
-      item.reject(error);
-    }
+    await item.run();
   }
 }

@@ -8,7 +8,7 @@ import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
 import { McpManager } from "./mcp/mcp-manager";
 import type { McpServerConfig } from "./settings";
 import type { ApiMode, ProviderProfile } from "./settings";
-import type { AgentToolInvocation } from "./agent/runtime";
+import type { AgentToolInvocation, AgentToolOutput } from "./agent/runtime";
 import { ProviderRegistry } from "./providers/registry";
 import { buildLegacyChatHistory, getTrailingPendingToolCalls } from "./session/legacy-history";
 import { FileSessionStore } from "./session/file-session-store";
@@ -459,7 +459,7 @@ export class SessionManager {
           onAssistantMessage: this.onAssistantMessage,
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
-          executeTool: (id, invocation) => this.executeAgentTool(id, invocation),
+          executeTool: (id, invocation, supportsImages) => this.executeAgentTool(id, invocation, supportsImages),
           renderContent: (message) => this.renderOpenAIMessageContent(message),
           onProgress: this.onLlmStreamProgress,
           isInterrupted: (id) => this.isInterrupted(id),
@@ -484,8 +484,12 @@ export class SessionManager {
     }
   }
 
-  private executeAgentTool(sessionId: string, invocation: AgentToolInvocation): Promise<string> {
-    return this.toolCoordinator.executeAgentTool(sessionId, invocation);
+  private executeAgentTool(
+    sessionId: string,
+    invocation: AgentToolInvocation,
+    supportsImages: boolean
+  ): Promise<AgentToolOutput> {
+    return this.toolCoordinator.executeAgentTool(sessionId, invocation, supportsImages);
   }
 
   private getPausedRunStatePath(sessionId: string): string {

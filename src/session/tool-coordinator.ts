@@ -1,4 +1,4 @@
-import type { AgentToolInvocation } from "../agent/runtime";
+import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
 import type { ToolExecutor } from "../tools/executor";
 import { findToolFunction } from "./legacy-history";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
@@ -23,7 +23,11 @@ export type ToolCoordinatorDependencies = {
 export class SessionToolCoordinator {
   constructor(private readonly deps: ToolCoordinatorDependencies) {}
 
-  async executeAgentTool(sessionId: string, invocation: AgentToolInvocation): Promise<string> {
+  async executeAgentTool(
+    sessionId: string,
+    invocation: AgentToolInvocation,
+    supportsImages: boolean
+  ): Promise<AgentToolOutput> {
     const toolCall = {
       id: invocation.callId,
       type: "function" as const,
@@ -32,20 +36,21 @@ export class SessionToolCoordinator {
     const assistant = this.deps.buildAssistant(sessionId, "", [toolCall]);
     this.deps.appendMessage(sessionId, assistant);
     this.deps.emitMessage(assistant, true);
-    await this.append(sessionId, [toolCall], invocation.signal);
+    const execution = await this.append(sessionId, [toolCall], invocation.signal, false, supportsImages);
     const result = [...this.deps.listMessages(sessionId)].reverse().find((message) => {
       const params = message.messageParams as { tool_call_id?: unknown } | null;
       return message.role === "tool" && params?.tool_call_id === invocation.callId;
     });
-    return result?.content ?? `Tool ${invocation.name} completed.`;
+    return execution.agentOutput ?? result?.content ?? `Tool ${invocation.name} completed.`;
   }
 
   async append(
     sessionId: string,
     toolCalls: unknown[],
     signal?: AbortSignal,
-    pendingApproval = false
-  ): Promise<{ waitingForUser: boolean }> {
+    pendingApproval = false,
+    includeAgentImages = false
+  ): Promise<{ waitingForUser: boolean; agentOutput?: AgentToolOutput }> {
     const executions = await this.deps.executor.executeToolCalls(sessionId, toolCalls, {
       signal,
       onProcessStart: (pid, command) => this.deps.processes.add(sessionId, pid, command),
@@ -60,6 +65,7 @@ export class SessionToolCoordinator {
     if (this.deps.isInterrupted(sessionId)) return { waitingForUser: false };
 
     let waitingForUser = false;
+    let agentOutput: AgentToolOutput | undefined;
     const followUps: SessionMessage[] = [];
     for (const execution of executions) {
       waitingForUser ||= execution.result.awaitUserResponse === true;
@@ -73,8 +79,34 @@ export class SessionToolCoordinator {
           followUps.push(this.deps.buildSystem(sessionId, followUp.content, followUp.contentParams ?? null));
         }
       }
+      if (includeAgentImages) {
+        agentOutput = buildAgentToolOutput(execution.content, execution.result.followUpMessages ?? []);
+      }
     }
     followUps.forEach((message) => this.deps.appendMessage(sessionId, message));
-    return { waitingForUser };
+    return { waitingForUser, ...(agentOutput ? { agentOutput } : {}) };
   }
+}
+
+export function buildAgentToolOutput(
+  result: string,
+  followUps: Array<{ role: "system"; content: string; contentParams?: unknown | null }>
+): AgentToolOutput {
+  const images = followUps.flatMap((followUp) => getImageUrls(followUp.contentParams));
+  if (!images.length) return result;
+  const explanation = followUps
+    .map((followUp) => followUp.content)
+    .filter(Boolean)
+    .join("\n");
+  return [
+    { type: "text", text: explanation ? `${result}\n${explanation}` : result },
+    ...images.map((image) => ({ type: "image" as const, image, detail: "auto" as const })),
+  ];
+}
+
+function getImageUrls(contentParams: unknown): string[] {
+  if (!Array.isArray(contentParams)) return [];
+  return contentParams
+    .map((part) => (part as { image_url?: { url?: unknown } }).image_url?.url)
+    .filter((url): url is string => typeof url === "string" && url.length > 0);
 }

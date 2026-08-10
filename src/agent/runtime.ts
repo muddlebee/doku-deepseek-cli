@@ -25,12 +25,16 @@ export type AgentToolInvocation = {
   signal?: AbortSignal;
 };
 
+export type AgentToolOutput =
+  | string
+  | Array<{ type: "text"; text: string } | { type: "image"; image: string; detail?: "low" | "high" | "auto" }>;
+
 export type AgentRuntimeOptions = {
   provider: ResolvedProvider;
   tools: ToolDefinition[];
   maxTurns?: number;
   tracingEnabled?: boolean;
-  executeTool: (invocation: AgentToolInvocation) => Promise<string>;
+  executeTool: (invocation: AgentToolInvocation) => Promise<AgentToolOutput>;
   onAskUserAnswered?: (callId: string, answer: string) => void;
   onEvent?: (event: RunStreamEvent) => void;
 };

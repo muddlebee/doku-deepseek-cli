@@ -29,9 +29,21 @@ const OPENAI_THINKING_OPTIONS: ThinkingModeOption[] = [
   { label: "No reasoning", thinkingEnabled: false },
 ];
 
-function getThinkingOptions(provider: ProviderProfile | undefined): ThinkingModeOption[] {
-  if (provider?.type === "deepseek") return MODEL_COMMAND_THINKING_OPTIONS;
-  return OPENAI_THINKING_OPTIONS;
+export function getThinkingOptions(provider: ProviderProfile | undefined, model?: string): ThinkingModeOption[] {
+  const configuredEfforts = model ? provider?.models?.[model]?.reasoningEfforts : undefined;
+  if (configuredEfforts === undefined) {
+    return provider?.type === "deepseek" ? MODEL_COMMAND_THINKING_OPTIONS : OPENAI_THINKING_OPTIONS;
+  }
+  if (configuredEfforts.length === 0) return [{ label: "No reasoning", thinkingEnabled: false }];
+  return [...new Set(configuredEfforts)].map((effort) =>
+    effort === "none"
+      ? { label: "No reasoning", thinkingEnabled: false }
+      : {
+          label: `${provider?.type === "deepseek" ? "Thinking mode" : "Reasoning"} [${effort}]`,
+          thinkingEnabled: true,
+          reasoningEffort: effort,
+        }
+  );
 }
 
 function getThinkingOptionIndex(
@@ -45,7 +57,12 @@ function getThinkingOptionIndex(
   return index >= 0 ? index : 0;
 }
 
-function suggestedModels(providerId: string, profile: ProviderProfile | undefined, currentModel: string): string[] {
+export function suggestedModels(
+  providerId: string,
+  profile: ProviderProfile | undefined,
+  currentProviderId: string,
+  currentModel: string
+): string[] {
   const configured = Object.keys(profile?.models ?? {});
   const builtins =
     profile?.type === "openai"
@@ -53,7 +70,8 @@ function suggestedModels(providerId: string, profile: ProviderProfile | undefine
       : profile?.type === "deepseek"
         ? [...MODEL_COMMAND_MODELS]
         : [];
-  return [...new Set([currentModel, ...configured, ...builtins].filter(Boolean))].map((model) =>
+  const current = providerId === currentProviderId ? [currentModel] : [];
+  return [...new Set([...current, ...configured, ...builtins].filter(Boolean))].map((model) =>
     model === CUSTOM_MODEL_KEY ? `${providerId}/${model}` : model
   );
 }
@@ -89,9 +107,10 @@ const ModelsDropdown: React.FC<Props> = ({
   const [pendingProvider, setPendingProvider] = useState(modelConfig.provider ?? providerIds[0]!);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const profile = providers[pendingProvider];
-  const models = suggestedModels(pendingProvider, profile, modelConfig.model);
+  const currentProvider = modelConfig.provider ?? providerIds[0]!;
+  const models = suggestedModels(pendingProvider, profile, currentProvider, modelConfig.model);
   const modelOptions = [...models, CUSTOM_MODEL_KEY];
-  const thinkingOptions = getThinkingOptions(profile);
+  const thinkingOptions = getThinkingOptions(profile, pendingModel ?? undefined);
 
   useEffect(() => {
     if (!open) {
@@ -108,7 +127,7 @@ const ModelsDropdown: React.FC<Props> = ({
   function showThinking(model: string): void {
     setPendingModel(model);
     setStep("thinking");
-    setActiveIndex(getThinkingOptionIndex(modelConfig, getThinkingOptions(providers[pendingProvider])));
+    setActiveIndex(getThinkingOptionIndex(modelConfig, getThinkingOptions(providers[pendingProvider], model)));
   }
 
   function applySelection(): void {

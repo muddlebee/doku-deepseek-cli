@@ -69,16 +69,54 @@ export async function identifyMatchingSkills(
     throwIfAborted(options.signal);
     const content = typeof response.finalOutput === "string" ? response.finalOutput : "";
     if (!content) return [];
-    const parsed = JSON.parse(content) as { skillNames?: unknown };
-    return Array.isArray(parsed.skillNames)
-      ? parsed.skillNames.filter((name): name is string => typeof name === "string")
-      : [];
+    return parseSkillMatchOutput(content);
   } catch (error) {
     if (isAbortLikeError(error) || options.signal?.aborted) throw error;
     return [];
   } finally {
     await runtime.close().catch(() => {});
   }
+}
+
+export function parseSkillMatchOutput(content: string): string[] {
+  const parsed = findJsonObject(content);
+  return Array.isArray(parsed?.skillNames)
+    ? parsed.skillNames.filter((name): name is string => typeof name === "string")
+    : [];
+}
+
+function findJsonObject(content: string): { skillNames?: unknown } | null {
+  for (let start = content.indexOf("{"); start >= 0; start = content.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < content.length; index += 1) {
+      const character = content[index]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const value = JSON.parse(content.slice(start, index + 1)) as unknown;
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            const record = value as { skillNames?: unknown };
+            if (Object.hasOwn(record, "skillNames")) return record;
+          }
+          break;
+        } catch {
+          break;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function buildMatcherPrompt(candidates: Array<{ name: string; description: string }>, webProvider?: string): string {
