@@ -44,6 +44,7 @@ export async function identifyMatchingSkills(
     baseURL: config.baseURL,
     apiMode: config.apiMode ?? settings.apiMode ?? profile.apiMode ?? "chat_completions",
     thinkingEnabled: false,
+    debugLogEnabled: config.debugLogEnabled,
     openAIClient: profile.type === "deepseek" ? undefined : config.client,
   });
   const runtime = new AgentRuntime({

@@ -2,6 +2,7 @@ import type { ProviderType } from "../settings";
 import { DeepSeekAdapter } from "./deepseek-adapter";
 import { OpenAIAdapter } from "./openai-adapter";
 import { OpenAICompatibleAdapter } from "./openai-compatible-adapter";
+import { withModelDebugLogging } from "./debug-model";
 import type { ProviderAdapter, ProviderAdapterOptions, ResolvedProvider } from "./types";
 
 export class ProviderRegistry {
@@ -20,7 +21,15 @@ export class ProviderRegistry {
   async resolve(options: ProviderAdapterOptions): Promise<ResolvedProvider> {
     const adapter = this.adapters.get(options.profile.type);
     if (!adapter) throw new Error(`Unsupported provider type: ${options.profile.type}`);
-    return adapter.resolve(options);
+    const resolved = await adapter.resolve(options);
+    return {
+      ...resolved,
+      model: withModelDebugLogging(resolved.model, {
+        model: options.model,
+        baseURL: options.baseURL,
+        enabled: options.debugLogEnabled,
+      }),
+    };
   }
 }
 

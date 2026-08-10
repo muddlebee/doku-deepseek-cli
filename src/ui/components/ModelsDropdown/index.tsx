@@ -67,6 +67,10 @@ type Props = {
   onStatusMessage?: (message: string | null) => void;
 };
 
+export function handleCustomModelInput(key: { escape?: boolean }, onClose: () => void): void {
+  if (key.escape) onClose();
+}
+
 const ModelsDropdown: React.FC<Props> = ({
   open,
   modelConfig,
@@ -147,6 +151,13 @@ const ModelsDropdown: React.FC<Props> = ({
       } else if (key.tab || key.escape) onClose();
     },
     { isActive: open && step !== "custom" }
+  );
+
+  useInput(
+    (_input, key) => {
+      handleCustomModelInput(key, onClose);
+    },
+    { isActive: open && step === "custom" }
   );
 
   if (!open || !step) return null;

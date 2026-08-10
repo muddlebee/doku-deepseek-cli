@@ -365,6 +365,7 @@ export class SessionManager {
       apiMode: configuredApiMode,
       maxTurns: configuredMaxTurns,
       tracingEnabled: configuredTracing,
+      debugLogEnabled,
     } = clientConfig;
     const resolvedSettings = this.getResolvedSettings();
     const providerId = configuredProvider ?? resolvedSettings.provider ?? "custom";
@@ -420,6 +421,7 @@ export class SessionManager {
         apiMode,
         thinkingEnabled,
         reasoningEffort,
+        debugLogEnabled,
         openAIClient: providerProfile.type === "deepseek" ? undefined : client,
       });
       const compactAtTokens = provider.compactAtTokens ?? getCompactPromptTokenThreshold(model);
@@ -452,8 +454,8 @@ export class SessionManager {
           updateEntry: (id, updater) => this.updateSessionEntry(id, updater),
           appendMessage: (id, message) => this.appendSessionMessage(id, message),
           saveMessages: (id, messages) => this.saveSessionMessages(id, messages),
-          buildAssistant: (id, content, toolCalls, reasoning) =>
-            this.buildAssistantMessage(id, content, toolCalls, reasoning),
+          buildAssistant: (id, content, toolCalls, reasoning, refusal) =>
+            this.buildAssistantMessage(id, content, toolCalls, reasoning, refusal),
           onAssistantMessage: this.onAssistantMessage,
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
@@ -516,6 +518,7 @@ export class SessionManager {
       apiMode: config.apiMode ?? resolvedSettings.apiMode ?? profile.apiMode ?? "chat_completions",
       thinkingEnabled: config.thinkingEnabled,
       reasoningEffort: config.reasoningEffort,
+      debugLogEnabled: config.debugLogEnabled,
       openAIClient: profile.type === "deepseek" ? undefined : config.client,
     });
     try {
@@ -731,9 +734,10 @@ export class SessionManager {
     sessionId: string,
     content: string | null,
     toolCalls: unknown[] | null,
-    reasoningContent?: string | null
+    reasoningContent?: string | null,
+    refusal?: string | null
   ): SessionMessage {
-    return this.messageFactory.assistant(sessionId, content, toolCalls, reasoningContent);
+    return this.messageFactory.assistant(sessionId, content, toolCalls, reasoningContent, refusal);
   }
 
   private normalizeLlmToolCalls(rawToolCalls: unknown[] | null | undefined): unknown[] | null {

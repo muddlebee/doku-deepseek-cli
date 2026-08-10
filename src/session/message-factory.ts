@@ -44,16 +44,18 @@ export class SessionMessageFactory {
     sessionId: string,
     content: string | null,
     toolCalls: unknown[] | null,
-    reasoningContent?: string | null
+    reasoningContent?: string | null,
+    refusal?: string | null
   ): SessionMessage {
     const hasReasoning = reasoningContent != null;
-    const messageParams: { tool_calls?: unknown[]; reasoning_content?: string } | null =
-      toolCalls || hasReasoning ? {} : null;
+    const messageParams: { tool_calls?: unknown[]; reasoning_content?: string; refusal?: string } | null =
+      toolCalls || hasReasoning || refusal ? {} : null;
     if (toolCalls) messageParams!.tool_calls = toolCalls;
     if (hasReasoning) messageParams!.reasoning_content = reasoningContent;
+    if (refusal) messageParams!.refusal = refusal;
     return this.base(sessionId, "assistant", content, {
       messageParams,
-      visible: Boolean((content || reasoningContent || "").trim()),
+      visible: Boolean((content || reasoningContent || refusal || "").trim()),
       meta: toolCalls ? { asThinking: true } : undefined,
     });
   }

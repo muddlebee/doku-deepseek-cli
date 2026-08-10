@@ -124,7 +124,11 @@ function getImageUrls(message: SessionMessage): string[] {
 }
 
 function appendAssistantItems(items: AgentInputItem[], message: SessionMessage): void {
-  const params = message.messageParams as { tool_calls?: unknown[]; reasoning_content?: unknown } | null;
+  const params = message.messageParams as {
+    tool_calls?: unknown[];
+    reasoning_content?: unknown;
+    refusal?: unknown;
+  } | null;
   if (typeof params?.reasoning_content === "string" && params.reasoning_content) {
     items.push({
       type: "reasoning",
@@ -132,8 +136,13 @@ function appendAssistantItems(items: AgentInputItem[], message: SessionMessage):
       rawContent: [{ type: "reasoning_text", text: params.reasoning_content }],
     });
   }
-  if (message.content) {
-    items.push({ role: "assistant", status: "completed", content: [{ type: "output_text", text: message.content }] });
+  const assistantContent: Array<{ type: "output_text"; text: string } | { type: "refusal"; refusal: string }> = [];
+  if (message.content) assistantContent.push({ type: "output_text", text: message.content });
+  if (typeof params?.refusal === "string" && params.refusal) {
+    assistantContent.push({ type: "refusal", refusal: params.refusal });
+  }
+  if (assistantContent.length) {
+    items.push({ role: "assistant", status: "completed", content: assistantContent });
   }
   for (const rawToolCall of params?.tool_calls ?? []) {
     const toolCall = rawToolCall as { id?: unknown; function?: { name?: unknown; arguments?: unknown } };

@@ -11,6 +11,7 @@ export type ProviderAdapterOptions = {
   apiMode: ApiMode;
   thinkingEnabled: boolean;
   reasoningEffort?: ReasoningEffort;
+  debugLogEnabled?: boolean;
   openAIClient?: OpenAI;
 };
 

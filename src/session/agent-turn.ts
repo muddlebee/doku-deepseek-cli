@@ -1,7 +1,14 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { RunContext, RunState, type Agent, type AgentInputItem, type RunToolApprovalItem } from "@openai/agents";
+import {
+  ModelRefusalError,
+  RunContext,
+  RunState,
+  type Agent,
+  type AgentInputItem,
+  type RunToolApprovalItem,
+} from "@openai/agents";
 import { AgentRuntime, type AgentRuntimeContext, type AgentToolInvocation } from "../agent/runtime";
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
@@ -30,7 +37,8 @@ export type AgentTurnDependencies = {
     sessionId: string,
     content: string | null,
     toolCalls: unknown[] | null,
-    reasoning?: string | null
+    reasoning?: string | null,
+    refusal?: string | null
   ) => SessionMessage;
   onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
   appendTools: AppendTools;
@@ -69,6 +77,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
 
   const progress = new StreamProgress(sessionId, deps.onProgress);
   let pendingReasoning = "";
+  let refusal: string | null = null;
   const runtime = new AgentRuntime({
     provider,
     tools: options.tools,
@@ -80,11 +89,13 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       const parsed = parseAgentStreamEvent(event);
       parsed.textDeltas.forEach((delta) => progress.update(delta));
       if (parsed.message) {
+        refusal = parsed.message.refusal ?? refusal;
         const message = deps.buildAssistant(
           sessionId,
-          parsed.message.content || parsed.message.refusal || "",
+          parsed.message.content,
           null,
-          pendingReasoning
+          pendingReasoning,
+          parsed.message.refusal
         );
         deps.appendMessage(sessionId, message);
         deps.onAssistantMessage(message, true);
@@ -108,7 +119,33 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
     const input = await buildRunInput(options, deps, runtime, agentSession, context, pausedState, pendingToolCalls);
 
     progress.start();
-    const result = await runtime.run(input, context, controller.signal, agentSession);
+    let result;
+    try {
+      result = await runtime.run(input, context, controller.signal, agentSession);
+    } catch (error) {
+      if (!(error instanceof ModelRefusalError)) throw error;
+      refusal = error.refusal || refusal || "The model refused the request.";
+      const refusalText = refusal;
+      if (!deps.listMessages(sessionId).some((message) => hasRefusal(message, refusalText))) {
+        const message = deps.buildAssistant(sessionId, "", null, pendingReasoning, refusalText);
+        deps.appendMessage(sessionId, message);
+        deps.onAssistantMessage(message, true);
+      }
+      const usage = error.state ? agentUsageToModelUsage(error.state.usage) : null;
+      deps.updateEntry(sessionId, (entry) => ({
+        ...entry,
+        assistantThinking: pendingReasoning || entry.assistantThinking,
+        assistantRefusal: refusalText,
+        toolCalls: null,
+        usage: accumulateUsage(entry.usage, usage),
+        usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
+        activeTokens: usage?.total_tokens ?? entry.activeTokens,
+        status: "failed",
+        failReason: refusalText,
+        updateTime: new Date().toISOString(),
+      }));
+      return;
+    }
     if (deps.isInterrupted(sessionId)) return;
     if (result.interruptions.length) {
       await persistInterruption(sessionId, result.state, result.interruptions[0], deps);
@@ -123,18 +160,23 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       ...entry,
       assistantReply: finalOutput || entry.assistantReply,
       assistantThinking: pendingReasoning || entry.assistantThinking,
-      assistantRefusal: null,
+      assistantRefusal: refusal,
       toolCalls: null,
       usage: accumulateUsage(entry.usage, usage),
       usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
       activeTokens: latestRequestTokens ?? usage?.total_tokens ?? entry.activeTokens,
-      status: "completed",
-      failReason: null,
+      status: refusal ? "failed" : "completed",
+      failReason: refusal,
       updateTime: new Date().toISOString(),
     }));
   } finally {
     progress.end();
   }
+}
+
+function hasRefusal(message: SessionMessage, refusal: string): boolean {
+  const params = message.messageParams as { refusal?: unknown } | null;
+  return message.role === "assistant" && params?.refusal === refusal;
 }
 
 export function removeAgentTurnState(sessionId: string, projectDir: string): void {

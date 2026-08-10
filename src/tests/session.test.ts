@@ -415,7 +415,7 @@ rl.on("line", (line) => {
     return;
   }
   if (request.method === "initialize") {
-    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
+    send({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {}, prompts: {}, resources: {} }, serverInfo: { name: "test", version: "1.0.0" } } });
     return;
   }
   if (request.method === "tools/list") {
@@ -436,6 +436,24 @@ rl.on("line", (line) => {
       return;
     }
     send({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: request.params.name + ":" + (request.params.arguments.text || "") }] } });
+    return;
+  }
+  if (request.method === "prompts/list") {
+    if (request.params && request.params.cursor === "prompts-page-2") {
+      send({ jsonrpc: "2.0", id: request.id, result: { prompts: [
+        { name: "review", description: "Review code" }
+      ] } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: { prompts: [
+      { name: "explain", description: "Explain code", arguments: [{ name: "topic", required: true }] }
+    ], nextCursor: "prompts-page-2" } });
+    return;
+  }
+  if (request.method === "prompts/get") {
+    send({ jsonrpc: "2.0", id: request.id, result: { messages: [
+      { role: "user", content: { type: "text", text: "Explain " + request.params.arguments.topic } }
+    ] } });
     return;
   }
   if (request.method === "resources/list") {
@@ -488,8 +506,8 @@ rl.on("line", (line) => {
       connected: true,
       toolCount: 3,
       tools: ["mcp__smoke__echo", "mcp__smoke__count", "mcp__smoke__hang"],
-      promptCount: 0,
-      prompts: [],
+      promptCount: 2,
+      prompts: ["mcp__smoke__explain", "mcp__smoke__review"],
       resourceCount: 2,
       resources: ["mcp__smoke__one", "mcp__smoke__two"],
     },
@@ -506,6 +524,17 @@ rl.on("line", (line) => {
     name: "mcp__smoke__one",
     output: "resource body",
   });
+  assert.deepEqual(await mcpManager.getMcpPrompt("mcp__smoke__explain", { topic: "sessions" }), {
+    ok: true,
+    name: "mcp__smoke__explain",
+    output: "[user] Explain sessions",
+  });
+  const abortController = new AbortController();
+  const cancelledCall = mcpManager.executeMcpTool("mcp__smoke__hang", {}, 60_000, abortController.signal);
+  abortController.abort(new Error("cancelled by user"));
+  const cancelledResult = await cancelledCall;
+  assert.equal(cancelledResult.ok, false);
+  assert.match(cancelledResult.error ?? "", /cancel|abort/i);
   const timedOutCall = await mcpManager.executeMcpTool("mcp__smoke__hang", {}, 20);
   assert.equal(timedOutCall.ok, false);
   assert.match(timedOutCall.error ?? "", /timed out|abort/i);

@@ -10,6 +10,7 @@ import {
 } from "@openai/agents";
 import type { ToolDefinition } from "../prompt";
 import type { ResolvedProvider } from "../providers/registry";
+import { AgentToolScheduler } from "./tool-scheduler";
 
 export type AgentRuntimeContext = {
   sessionId: string;
@@ -34,15 +35,13 @@ export type AgentRuntimeOptions = {
   onEvent?: (event: RunStreamEvent) => void;
 };
 
-const SERIAL_TOOLS = new Set(["bash", "write", "edit", "Bash", "Write", "Edit"]);
-
 export class AgentRuntime {
   private readonly provider: ResolvedProvider;
   private readonly runner: Runner;
   private readonly agent: Agent<AgentRuntimeContext>;
   private readonly maxTurns: number;
   private readonly onEvent?: (event: RunStreamEvent) => void;
-  private mutationQueue: Promise<void> = Promise.resolve();
+  private readonly toolScheduler = new AgentToolScheduler();
 
   constructor(options: AgentRuntimeOptions) {
     this.provider = options.provider;
@@ -87,18 +86,7 @@ export class AgentRuntime {
               callId: details?.toolCall?.callId || crypto.randomUUID().replaceAll("-", ""),
               signal: details?.signal,
             };
-            if (!SERIAL_TOOLS.has(invocation.name)) return options.executeTool(invocation);
-            let release!: () => void;
-            const previous = this.mutationQueue;
-            this.mutationQueue = new Promise<void>((resolve) => {
-              release = resolve;
-            });
-            await previous;
-            try {
-              return await options.executeTool(invocation);
-            } finally {
-              release();
-            }
+            return this.toolScheduler.schedule(invocation.name, () => options.executeTool(invocation));
           },
         });
       }),

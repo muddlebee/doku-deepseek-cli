@@ -4,6 +4,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { getDebugLogPath, logOpenAIChatCompletionDebug } from "../common/debug-logger";
+import { withModelDebugLogging } from "../providers/debug-model";
+import type { Model } from "@openai/agents";
 
 test("debug logger appends full entries without rotation", () => {
   const originalHome = process.env.HOME;
@@ -42,5 +44,54 @@ test("debug logger appends full entries without rotation", () => {
     } else {
       process.env.HOME = originalHome;
     }
+  }
+});
+
+test("model debug wrapper records streamed Agents requests and responses", async () => {
+  const originalHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-agent-debug-log-home-"));
+  process.env.HOME = home;
+  const model: Model = {
+    async getResponse() {
+      throw new Error("not used");
+    },
+    async *getStreamedResponse() {
+      yield {
+        type: "response_done",
+        response: {
+          id: "response-debug",
+          usage: { requests: 1, inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+          output: [],
+        },
+      };
+    },
+  };
+
+  try {
+    const wrapped = withModelDebugLogging(model, {
+      model: "debug-model",
+      baseURL: "https://example.test/v1",
+      enabled: true,
+    });
+    for await (const _event of wrapped.getStreamedResponse({
+      input: "hello",
+      modelSettings: {},
+      tools: [],
+      outputType: "text",
+      handoffs: [],
+      tracing: false,
+    })) {
+      // Consume the stream so the completion entry is written.
+    }
+
+    const entry = JSON.parse(fs.readFileSync(getDebugLogPath(), "utf8").trim()) as Record<string, any>;
+    assert.equal(entry.location, "agents:model.getStreamedResponse");
+    assert.equal(entry.model, "debug-model");
+    assert.equal(entry.request.input, "hello");
+    assert.equal(entry.responseChunks[0].response.id, "response-debug");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

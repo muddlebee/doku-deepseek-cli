@@ -81,6 +81,16 @@ Session responsibilities were moved into focused modules:
 
 All TypeScript and TSX sources are formatted with the repository Prettier configuration.
 
+## PR review hardening
+
+- Preserved provider refusal metadata and failed-session semantics.
+- Added provider-neutral Agents model request, stream, response, and error debug logging.
+- Added ordered tool scheduling: read-only batches remain parallel, while mutations and unknown tools act as barriers.
+- Restored MCP prompt discovery and retrieval through the SDK-managed MCP client.
+- Propagated turn cancellation into MCP calls while retaining the call timeout.
+- Refreshes MCP tool definitions when descriptions or schemas change without a rename.
+- Restored Escape cancellation while entering a custom model ID.
+
 ## Validation
 
 The migration and refactor were validated with:
@@ -96,7 +106,7 @@ git diff --check
 
 Results at completion:
 
-- 355 tests passed
+- 363 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed
