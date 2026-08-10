@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import { PasswordInput, Select, TextInput } from "@inkjs/ui";
 import { ThemedGradient } from "./ThemedGradient";
 import figlet from "figlet";
 import {
   buildSetupResult,
+  getSetupInputAction,
   maskSecret,
   nextSetupStep,
   previousSetupStep,
@@ -56,12 +57,18 @@ const INITIAL_DRAFT: SetupDraft = {
 };
 
 export function SetupScreen({ onComplete, notice }: SetupScreenProps): React.ReactElement {
+  const { exit } = useApp();
   const [step, setStep] = useState<SetupStep>("provider");
   const [draft, setDraft] = useState<SetupDraft>(INITIAL_DRAFT);
   const [error, setError] = useState<string | null>(null);
 
-  useInput((_input, key) => {
-    if (key.escape && step !== "provider") {
+  useInput((input, key) => {
+    const action = getSetupInputAction(input, key, step);
+    if (action === "exit") {
+      exit();
+      return;
+    }
+    if (action === "back") {
       setError(null);
       setStep(previousSetupStep(step, draft.provider));
     }

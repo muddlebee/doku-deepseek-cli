@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSetupResult, maskSecret, nextSetupStep, previousSetupStep, validateSetupValue } from "../ui/setup-flow";
+import {
+  buildSetupResult,
+  getSetupInputAction,
+  maskSecret,
+  nextSetupStep,
+  previousSetupStep,
+  validateSetupValue,
+} from "../ui/setup-flow";
 
 test("built-in providers move from credentials to review", () => {
   assert.equal(nextSetupStep("provider", "openai"), "api-key");
@@ -14,6 +21,12 @@ test("custom providers traverse endpoint, model, and API mode", () => {
   assert.equal(nextSetupStep("model", "custom"), "api-mode");
   assert.equal(nextSetupStep("api-mode", "custom"), "review");
   assert.equal(previousSetupStep("review", "custom"), "api-mode");
+});
+
+test("setup supports Back and Ctrl+C exit from every step", () => {
+  assert.equal(getSetupInputAction("c", { ctrl: true }, "provider"), "exit");
+  assert.equal(getSetupInputAction("", { escape: true }, "api-key"), "back");
+  assert.equal(getSetupInputAction("", { escape: true }, "provider"), null);
 });
 
 test("setup values produce actionable validation errors", () => {

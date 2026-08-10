@@ -23,7 +23,7 @@ Refine the existing terminal experience for reliable OpenAI and DeepSeek dogfood
 
 ## Verification
 
-- All 398 deterministic tests pass.
+- All 399 deterministic tests pass.
 - TypeScript, ESLint, Prettier, bundle generation, dependency audit, and diff checks pass; the production dependency audit reports zero vulnerabilities.
 - The live OpenAI runtime completed a first answer, context-dependent follow-up, Read tool call, AskUserQuestion pause and restart-resume, cancellation, and `/continue` recovery.
 - The live DeepSeek runtime completed the same matrix through the isolated DeepSeek adapter.

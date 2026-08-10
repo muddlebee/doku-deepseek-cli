@@ -59,6 +59,16 @@ export function previousSetupStep(step: SetupStep, provider: SetupProvider | nul
   return "provider";
 }
 
+export function getSetupInputAction(
+  input: string,
+  key: { ctrl?: boolean; escape?: boolean },
+  step: SetupStep
+): "exit" | "back" | null {
+  if (key.ctrl && input.toLowerCase() === "c") return "exit";
+  if (key.escape && step !== "provider") return "back";
+  return null;
+}
+
 export function validateSetupValue(step: SetupStep, value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) {
