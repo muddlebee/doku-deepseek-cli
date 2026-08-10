@@ -2,7 +2,6 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentInputItem, Session } from "@openai/agents";
-import { appendJsonLines } from "./jsonl";
 
 export type DokuAgentSessionRecord = {
   version: 2;
@@ -31,10 +30,12 @@ export class FileAgentSession implements Session {
   async addItems(items: AgentInputItem[]): Promise<void> {
     if (items.length === 0) return;
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const lines = items
+    const payload = items
       .map((item): DokuAgentSessionRecord => ({ version: 2, item }))
-      .map((record) => JSON.stringify(record));
-    appendJsonLines(this.filePath, lines);
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    const separator = this.needsRecordBoundary() ? "\n" : "";
+    fs.appendFileSync(this.filePath, `${separator}${payload}\n`, "utf8");
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
@@ -69,6 +70,20 @@ export class FileAgentSession implements Session {
       }
     }
     return items;
+  }
+
+  private needsRecordBoundary(): boolean {
+    if (!fs.existsSync(this.filePath)) return false;
+    const size = fs.statSync(this.filePath).size;
+    if (size === 0) return false;
+    const descriptor = fs.openSync(this.filePath, "r");
+    try {
+      const lastByte = Buffer.allocUnsafe(1);
+      fs.readSync(descriptor, lastByte, 0, 1, size - 1);
+      return lastByte[0] !== 0x0a;
+    } finally {
+      fs.closeSync(descriptor);
+    }
   }
 
   private writeItemsAtomically(items: AgentInputItem[]): void {

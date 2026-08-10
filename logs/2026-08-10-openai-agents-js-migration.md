@@ -68,7 +68,6 @@ Session responsibilities were moved into focused modules:
 | `src/session/agents-session.ts`      | Versioned SDK session persistence                 |
 | `src/session/agent-history.ts`       | Agent input and output history conversion         |
 | `src/session/file-session-store.ts`  | Session index and JSONL storage                   |
-| `src/session/jsonl.ts`               | Crash-safe JSONL append boundaries                |
 | `src/session/session-initializer.ts` | New-session creation and initial prompt history   |
 | `src/session/message-factory.ts`     | User, system, assistant, and tool messages        |
 | `src/session/tool-coordinator.ts`    | Tool execution and follow-up messages             |
@@ -110,7 +109,6 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Persists balanced canonical history when cancellation or provider errors interrupt a run.
 - Resolves named-provider credentials from project and user settings with documented precedence.
 - Recovers cleanly when a malformed JSONL tail is followed by a new session record.
-- Shares malformed-tail recovery across canonical agent history and display transcripts.
 - Removes the stale nested repository guide; the root `AGENTS.md` is authoritative.
 
 ## Validation
@@ -128,7 +126,7 @@ git diff --check
 
 Results at completion:
 
-- 386 tests passed
+- 385 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed
