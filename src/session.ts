@@ -15,7 +15,7 @@ import { identifyMatchingSkills } from "./session/skill-matcher";
 import { appendPromptSkills } from "./session/prompt-skills";
 import { SessionMessageFactory } from "./session/message-factory";
 import { notifyTaskCompletion, reportNewPrompt } from "./session/notifications";
-import { SessionProcessTracker } from "./session/process-tracker";
+import { hasProcessStopFailure, SessionProcessTracker } from "./session/process-tracker";
 import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
@@ -468,12 +468,16 @@ export class SessionManager {
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);
       const aborted = this.isAbortLikeError(error) || sessionController.signal.aborted;
-      this.updateSessionEntry(sessionId, (entry) => ({
-        ...entry,
-        status: aborted ? "interrupted" : "failed",
-        failReason: aborted ? "interrupted" : errMessage,
-        updateTime: new Date().toISOString(),
-      }));
+      this.updateSessionEntry(sessionId, (entry) =>
+        aborted && hasProcessStopFailure(entry)
+          ? { ...entry, status: "failed", updateTime: new Date().toISOString() }
+          : {
+              ...entry,
+              status: aborted ? "interrupted" : "failed",
+              failReason: aborted ? "interrupted" : errMessage,
+              updateTime: new Date().toISOString(),
+            }
+      );
       if (!aborted) this.emitRuntimeError(sessionId, errMessage);
     } finally {
       await provider?.close().catch(() => {});
@@ -585,7 +589,7 @@ export class SessionManager {
   }
 
   interruptSession(sessionId: string): void {
-    this.processTracker.killAll(sessionId);
+    const { failedPids } = this.processTracker.killAll(sessionId);
 
     const controller = this.sessionControllers.get(sessionId);
     if (controller) {
@@ -594,13 +598,18 @@ export class SessionManager {
     }
 
     const now = new Date().toISOString();
+    const failedProcessIds = new Set(failedPids.map(String));
+    const failure = failedPids.length > 0 ? `Failed to stop processes: ${failedPids.join(", ")}` : null;
     this.updateSessionEntry(sessionId, (entry) => ({
       ...entry,
-      status: "interrupted",
-      failReason: "interrupted",
-      processes: null,
+      status: failure ? "failed" : "interrupted",
+      failReason: failure ?? "interrupted",
+      processes: failure
+        ? new Map([...(entry.processes ?? [])].filter(([processId]) => failedProcessIds.has(processId)))
+        : null,
       updateTime: now,
     }));
+    if (failure) this.emitRuntimeError(sessionId, failure);
   }
 
   private isInterrupted(sessionId: string): boolean {

@@ -94,6 +94,8 @@ export function buildSetupResult(draft: SetupDraft): SetupResult | null {
 }
 
 export function maskSecret(value: string): string {
-  const suffix = value.trim().slice(-4);
-  return suffix ? `••••${suffix}` : "Not set";
+  const secret = value.trim();
+  if (!secret) return "Not set";
+  if (secret.length <= 4) return "••••";
+  return `••••${secret.slice(-4)}`;
 }

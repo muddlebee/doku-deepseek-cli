@@ -45,5 +45,7 @@ test("custom setup result keeps endpoint, model, and API mode", () => {
 
 test("setup masks credentials in its review", () => {
   assert.equal(maskSecret("sk-example-1234"), "••••1234");
+  assert.equal(maskSecret("abc"), "••••");
+  assert.equal(maskSecret("1234"), "••••");
   assert.equal(maskSecret(""), "Not set");
 });

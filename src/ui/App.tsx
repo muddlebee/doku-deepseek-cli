@@ -430,6 +430,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
       }
       sessionManager.setActiveSessionId(sessionId);
+      setErrorLine(null);
       // Clear first so <Static> resets its index to 0.
       setMessages([]);
       setShowWelcome(false);

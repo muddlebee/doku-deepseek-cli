@@ -6,6 +6,7 @@ import { SetupScreen, type SetupResult } from "./SetupScreen";
 import { readSettings, resolveCurrentSettings, writeSettings } from "./App";
 import { buildSetupSettings } from "./setup-settings";
 import { getConfigurationIssue } from "./configuration";
+import { ConfigurationIssueScreen } from "./ConfigurationIssueScreen";
 
 const AppContainer: React.FC<{
   projectRoot: string;
@@ -14,11 +15,28 @@ const AppContainer: React.FC<{
   onRestart: () => void;
 }> = ({ version, projectRoot, initialPrompt, onRestart }) => {
   const [setupIssue, setSetupIssue] = useState(() => getConfigurationIssue(resolveCurrentSettings(projectRoot)));
+  const [postSetupIssue, setPostSetupIssue] = useState<string | null>(null);
 
   function handleSetupComplete(result: SetupResult): void {
     const existing = readSettings() ?? {};
     writeSettings(buildSetupSettings(existing, result));
-    setSetupIssue(getConfigurationIssue(resolveCurrentSettings(projectRoot)));
+    const nextIssue = getConfigurationIssue(resolveCurrentSettings(projectRoot));
+    setSetupIssue(nextIssue);
+    setPostSetupIssue(nextIssue);
+  }
+
+  function retryConfiguration(): void {
+    const nextIssue = getConfigurationIssue(resolveCurrentSettings(projectRoot));
+    setSetupIssue(nextIssue);
+    setPostSetupIssue(nextIssue);
+  }
+
+  if (postSetupIssue) {
+    return (
+      <AppContext.Provider value={{ version }}>
+        <ConfigurationIssueScreen issue={postSetupIssue} onRetry={retryConfiguration} />
+      </AppContext.Provider>
+    );
   }
 
   if (setupIssue) {

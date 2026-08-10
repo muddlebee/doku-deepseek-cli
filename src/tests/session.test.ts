@@ -114,6 +114,37 @@ test("SessionManager emits provider failures as runtime notices", async () => {
   assert.match(notices.at(-1)?.content ?? "", /API key not found/);
 });
 
+test("SessionManager retains and reports processes that fail to stop", async () => {
+  const workspace = createTempDir("doku-failed-process-stop-workspace-");
+  const home = createTempDir("doku-failed-process-stop-home-");
+  setHomeDir(home);
+  const notices: SessionMessage[] = [];
+  const manager = new SessionManager({
+    projectRoot: workspace,
+    createOpenAIClient: () => ({
+      client: null,
+      model: "test-model",
+      baseURL: "https://api.example.com/v1",
+      thinkingEnabled: false,
+    }),
+    getResolvedSettings: () => ({ model: "test-model" }),
+    renderMarkdown: (text) => text,
+    onAssistantMessage: (message) => notices.push(message),
+  });
+  const sessionId = await manager.createSession({ text: "" });
+  (manager as any).processTracker.add(sessionId, 123, "sleep 10");
+  (manager as any).processTracker.killAll = () => ({ killedPids: [], failedPids: [123] });
+
+  manager.interruptSession(sessionId);
+
+  const session = manager.getSession(sessionId);
+  assert.equal(session?.status, "failed");
+  assert.equal(session?.failReason, "Failed to stop processes: 123");
+  assert.equal(session?.processes?.get("123")?.command, "sleep 10");
+  assert.equal(notices.at(-1)?.meta?.notice, "error");
+  assert.equal(notices.at(-1)?.content, "Failed to stop processes: 123");
+});
+
 test("SessionManager marks skills loaded from existing session messages", async () => {
   const workspace = createTempDir("doku-loaded-skills-workspace-");
   const home = createTempDir("doku-loaded-skills-home-");
