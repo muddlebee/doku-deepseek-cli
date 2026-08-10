@@ -547,6 +547,34 @@ test("resolveSettings supports named compatible provider profiles and DOKU overr
   assert.equal(resolved.tracingEnabled, true);
 });
 
+test("named provider credentials can be configured in settings env", () => {
+  const profile = {
+    provider: "gateway",
+    providers: {
+      gateway: {
+        type: "openai-compatible" as const,
+        baseURL: "https://gateway.example/v1",
+        apiKeyEnv: "GATEWAY_KEY",
+      },
+    },
+  };
+  const projectOverridesUser = resolveSettingsSources(
+    { ...profile, env: { GATEWAY_KEY: "user-key" } },
+    { env: { GATEWAY_KEY: "project-key" } },
+    { model: "custom-model", baseURL: "https://fallback.example/v1" },
+    {}
+  );
+  const processOverridesSettings = resolveSettingsSources(
+    { ...profile, env: { GATEWAY_KEY: "user-key" } },
+    { env: { GATEWAY_KEY: "project-key" } },
+    { model: "custom-model", baseURL: "https://fallback.example/v1" },
+    { GATEWAY_KEY: "process-key" }
+  );
+
+  assert.equal(projectOverridesUser.apiKey, "project-key");
+  assert.equal(processOverridesSettings.apiKey, "process-key");
+});
+
 test("provider-specific DOKU credentials are supported", () => {
   const resolved = resolveSettingsSources(
     { provider: "openai", model: "gpt-5" },

@@ -1,6 +1,3 @@
-import * as crypto from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import {
   MaxTurnsExceededError,
   ModelRefusalError,
@@ -12,6 +9,7 @@ import {
 } from "@openai/agents";
 import {
   AgentRuntime,
+  getAgentRuntimeState,
   type AgentRuntimeContext,
   type AgentToolInvocation,
   type AgentToolOutput,
@@ -20,11 +18,23 @@ import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
 import { agentUsageToModelUsage, buildAgentInputItems, parseAgentStreamEvent } from "./agent-history";
 import { FileAgentSession } from "./agents-session";
+import { completeAgentTurnAtLimit, handleAgentRefusal, recordAgentTurnUsage } from "./agent-turn-outcomes";
+import { AgentTurnProgress } from "./agent-turn-progress";
+import {
+  agentHistoryPath,
+  consumeResumedAnswer,
+  pausedAgentStatePath,
+  persistReplayableAgentHistory,
+  readPausedAgentState,
+  removePausedAgentState,
+} from "./agent-turn-state";
 import type { FileSessionStore } from "./file-session-store";
 import { getTrailingPendingToolCalls } from "./legacy-history";
 import { buildToolResultSnippet } from "./tool-presentation";
 import type { LlmStreamProgress, SessionEntry, SessionMessage } from "./types";
 import { accumulateUsage, accumulateUsagePerModel } from "./usage";
+
+export { agentHistoryPath as getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState } from "./agent-turn-state";
 
 type AppendTools = (
   sessionId: string,
@@ -56,6 +66,8 @@ export type AgentTurnDependencies = {
   renderContent: (message: SessionMessage) => string;
   onProgress?: (progress: LlmStreamProgress) => void;
   isInterrupted: (sessionId: string) => boolean;
+  getTools?: () => ToolDefinition[];
+  compactIfNeeded?: (activeTokens: number, signal?: AbortSignal) => Promise<void>;
 };
 
 export type AgentTurnOptions = {
@@ -85,42 +97,47 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
     }
   }
 
-  const progress = new StreamProgress(sessionId, deps.onProgress);
+  const progress = new AgentTurnProgress(sessionId, deps.onProgress);
   let pendingReasoning = "";
   let latestReasoning = "";
   let refusal: string | null = null;
-  const runtime = new AgentRuntime({
-    provider,
-    tools: options.tools,
-    maxTurns: options.maxTurns,
-    tracingEnabled: options.tracingEnabled,
-    executeTool: (invocation) => deps.executeTool(sessionId, invocation, provider.supportsImages),
-    onAskUserAnswered: (callId, answer) => persistAskUserAnswer(sessionId, callId, answer, deps),
-    onEvent: (event) => {
-      const parsed = parseAgentStreamEvent(event);
-      parsed.textDeltas.forEach((delta) => progress.update(delta));
-      if (parsed.message) {
-        refusal = parsed.message.refusal ?? refusal;
-        const completedReasoning = pendingReasoning;
-        const message = deps.buildAssistant(
-          sessionId,
-          parsed.message.content,
-          null,
-          pendingReasoning,
-          parsed.message.refusal
-        );
-        deps.appendMessage(sessionId, message);
-        deps.onAssistantMessage(message, true);
-        if (completedReasoning) latestReasoning = completedReasoning;
-        pendingReasoning = "";
-      } else {
-        pendingReasoning += parsed.reasoningDelta ?? "";
-      }
-    },
-  });
+  let resumedAnswerConsumed = false;
+  const createRuntime = () =>
+    new AgentRuntime({
+      provider,
+      tools: deps.getTools?.() ?? options.tools,
+      maxTurns: 1,
+      tracingEnabled: options.tracingEnabled,
+      executeTool: (invocation) => deps.executeTool(sessionId, invocation, provider.supportsImages),
+      onAskUserAnswered: (callId, answer) => {
+        resumedAnswerConsumed = true;
+        persistAskUserAnswer(sessionId, callId, answer, deps);
+      },
+      onEvent: (event) => {
+        const parsed = parseAgentStreamEvent(event);
+        parsed.textDeltas.forEach((delta) => progress.update(delta));
+        if (parsed.message) {
+          refusal = parsed.message.refusal ?? refusal;
+          const completedReasoning = pendingReasoning;
+          const message = deps.buildAssistant(
+            sessionId,
+            parsed.message.content,
+            null,
+            pendingReasoning,
+            parsed.message.refusal
+          );
+          deps.appendMessage(sessionId, message);
+          deps.onAssistantMessage(message, true);
+          if (completedReasoning) latestReasoning = completedReasoning;
+          pendingReasoning = "";
+        } else {
+          pendingReasoning += parsed.reasoningDelta ?? "";
+        }
+      },
+    });
 
   try {
-    const pausedState = readPausedState(sessionId, deps.store.projectDir);
+    const pausedState = readPausedAgentState(sessionId, deps.store.projectDir);
     const latestUser = [...deps.listMessages(sessionId)]
       .reverse()
       .find((message) => message.role === "user" && !message.compacted);
@@ -128,121 +145,102 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       sessionId,
       ...(pausedState && latestUser?.content ? { askUserAnswer: latestUser.content } : {}),
     };
-    const agentSession = new FileAgentSession(sessionId, agentSessionPath(sessionId, deps.store.projectDir));
-    const input = await buildRunInput(options, deps, runtime, agentSession, context, pausedState, pendingToolCalls);
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, deps.store.projectDir));
+    let runtime = createRuntime();
+    let input = await buildRunInput(options, deps, runtime, agentSession, context, pausedState, pendingToolCalls);
 
     progress.start();
-    let result;
-    try {
-      result = await runtime.run(input, context, controller.signal, agentSession);
-    } catch (error) {
-      if (error instanceof MaxTurnsExceededError) {
-        if (error.state) await agentSession.replaceItems(error.state.history);
-        const usage = error.state ? agentUsageToModelUsage(error.state.usage) : null;
-        const latestRequestTokens = error.state?.usage.requestUsageEntries?.at(-1)?.totalTokens;
+    const maxTurns = Math.max(1, options.maxTurns);
+    for (let turn = 1; turn <= maxTurns; turn += 1) {
+      try {
+        const result = await runtime.run(input, context, controller.signal, agentSession);
+        consumeResumedAnswer(sessionId, deps.store.projectDir, context, resumedAnswerConsumed);
+        resumedAnswerConsumed = false;
+
+        if (deps.isInterrupted(sessionId)) {
+          await persistReplayableAgentHistory(agentSession, result.state.history);
+          recordAgentTurnUsage(
+            sessionId,
+            options.model,
+            result.runContext.usage,
+            latestReasoning,
+            pendingReasoning,
+            deps
+          );
+          return;
+        }
+        if (result.interruptions.length) {
+          await persistInterruption(sessionId, result.state, result.interruptions[0], deps);
+          return;
+        }
+
+        removePausedAgentState(sessionId, deps.store.projectDir);
+        const usage = agentUsageToModelUsage(result.runContext.usage);
+        const latestRequestTokens = result.runContext.usage.requestUsageEntries?.at(-1)?.totalTokens;
+        const finalOutput = typeof result.finalOutput === "string" ? result.finalOutput : "";
         deps.updateEntry(sessionId, (entry) => ({
           ...entry,
+          assistantReply: finalOutput || entry.assistantReply,
           assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
+          assistantRefusal: refusal,
           toolCalls: null,
           usage: accumulateUsage(entry.usage, usage),
           usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
           activeTokens: latestRequestTokens ?? usage?.total_tokens ?? entry.activeTokens,
-          status: "completed",
-          failReason: null,
+          status: refusal ? "failed" : "completed",
+          failReason: refusal,
           updateTime: new Date().toISOString(),
         }));
-        deps.onAssistantMessage(
-          deps.buildAssistant(
-            sessionId,
-            "The AI agent has taken several steps but hasn't reached a conclusion yet. Run `/continue` to keep going.",
-            null
-          ),
-          false
-        );
         return;
-      }
-      if (!(error instanceof ModelRefusalError)) throw error;
-      refusal = error.refusal || refusal || "The model refused the request.";
-      const refusalText = refusal;
-      if (error.state) {
-        // The SDK raises before refusal output enters state.history, so retain the exact provider item separately.
-        const refusalItems = error.state._lastTurnResponse?.output ?? [
-          {
-            role: "assistant" as const,
-            status: "completed" as const,
-            content: [{ type: "refusal" as const, refusal: refusalText }],
-          },
-        ];
-        await agentSession.replaceItems([...error.state.history, ...refusalItems]);
-      }
-      if (!deps.listMessages(sessionId).some((message) => hasRefusal(message, refusalText))) {
-        const message = deps.buildAssistant(sessionId, "", null, pendingReasoning, refusalText);
-        deps.appendMessage(sessionId, message);
-        deps.onAssistantMessage(message, true);
-      }
-      const usage = error.state ? agentUsageToModelUsage(error.state.usage) : null;
-      deps.updateEntry(sessionId, (entry) => ({
-        ...entry,
-        assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
-        assistantRefusal: refusalText,
-        toolCalls: null,
-        usage: accumulateUsage(entry.usage, usage),
-        usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
-        activeTokens: usage?.total_tokens ?? entry.activeTokens,
-        status: "failed",
-        failReason: refusalText,
-        updateTime: new Date().toISOString(),
-      }));
-      return;
-    }
-    if (deps.isInterrupted(sessionId)) return;
-    if (result.interruptions.length) {
-      await persistInterruption(sessionId, result.state, result.interruptions[0], deps);
-      return;
-    }
+      } catch (error) {
+        const state = getAgentRuntimeState(error);
+        consumeResumedAnswer(sessionId, deps.store.projectDir, context, resumedAnswerConsumed);
+        resumedAnswerConsumed = false;
 
-    removePausedState(sessionId, deps.store.projectDir);
-    const usage = agentUsageToModelUsage(result.runContext.usage);
-    const latestRequestTokens = result.runContext.usage.requestUsageEntries?.at(-1)?.totalTokens;
-    const finalOutput = typeof result.finalOutput === "string" ? result.finalOutput : "";
-    deps.updateEntry(sessionId, (entry) => ({
-      ...entry,
-      assistantReply: finalOutput || entry.assistantReply,
-      assistantThinking: latestReasoning || pendingReasoning || entry.assistantThinking,
-      assistantRefusal: refusal,
-      toolCalls: null,
-      usage: accumulateUsage(entry.usage, usage),
-      usagePerModel: accumulateUsagePerModel(entry.usagePerModel, options.model, usage),
-      activeTokens: latestRequestTokens ?? usage?.total_tokens ?? entry.activeTokens,
-      status: refusal ? "failed" : "completed",
-      failReason: refusal,
-      updateTime: new Date().toISOString(),
-    }));
+        if (error instanceof MaxTurnsExceededError && state) {
+          await agentSession.replaceItems(state.history);
+          const activeTokens = recordAgentTurnUsage(
+            sessionId,
+            options.model,
+            state.usage,
+            latestReasoning,
+            pendingReasoning,
+            deps
+          );
+          if (turn === maxTurns) {
+            completeAgentTurnAtLimit(sessionId, deps);
+            return;
+          }
+          await deps.compactIfNeeded?.(activeTokens, controller.signal);
+          runtime = createRuntime();
+          input = [];
+          continue;
+        }
+
+        if (error instanceof ModelRefusalError) {
+          await handleAgentRefusal(
+            sessionId,
+            options.model,
+            error,
+            refusal,
+            latestReasoning,
+            pendingReasoning,
+            agentSession,
+            deps
+          );
+          return;
+        }
+
+        if (state) {
+          await persistReplayableAgentHistory(agentSession, state.history);
+          recordAgentTurnUsage(sessionId, options.model, state.usage, latestReasoning, pendingReasoning, deps);
+        }
+        throw error;
+      }
+    }
   } finally {
     progress.end();
   }
-}
-
-function hasRefusal(message: SessionMessage, refusal: string): boolean {
-  const params = message.messageParams as { refusal?: unknown } | null;
-  return message.role === "assistant" && params?.refusal === refusal;
-}
-
-export function removeAgentTurnState(sessionId: string, projectDir: string): void {
-  removePausedState(sessionId, projectDir);
-  try {
-    fs.unlinkSync(agentSessionPath(sessionId, projectDir));
-  } catch {
-    // The session may not have SDK history yet.
-  }
-}
-
-export function hasPausedAgentTurn(sessionId: string, projectDir: string): boolean {
-  return readPausedState(sessionId, projectDir) !== null;
-}
-
-export function getAgentHistoryPath(sessionId: string, projectDir: string): string {
-  return agentSessionPath(sessionId, projectDir);
 }
 
 async function buildRunInput(
@@ -323,7 +321,7 @@ async function persistInterruption(
   deps.onAssistantMessage(assistant, true);
   const execution = await deps.appendTools(sessionId, [toolCall], undefined, true);
   if (!execution.waitingForUser) throw new Error(`Tool approval is not supported for ${raw.name}.`);
-  deps.store.writeAtomic(pausedStatePath(sessionId, deps.store.projectDir), state.toString());
+  deps.store.writeAtomic(pausedAgentStatePath(sessionId, deps.store.projectDir), state.toString());
   deps.updateEntry(sessionId, (entry) => ({
     ...entry,
     toolCalls: [toolCall],
@@ -347,71 +345,4 @@ function persistAskUserAnswer(sessionId: string, callId: string, answer: string,
     };
   });
   if (changed) deps.saveMessages(sessionId, messages);
-}
-
-function readPausedState(sessionId: string, projectDir: string): string | null {
-  try {
-    return fs.readFileSync(pausedStatePath(sessionId, projectDir), "utf8");
-  } catch {
-    return null;
-  }
-}
-
-function removePausedState(sessionId: string, projectDir: string): void {
-  try {
-    fs.unlinkSync(pausedStatePath(sessionId, projectDir));
-  } catch {
-    // The run may not have been paused.
-  }
-}
-
-function pausedStatePath(sessionId: string, projectDir: string): string {
-  return path.join(projectDir, `${sessionId}.run-state.json`);
-}
-
-function agentSessionPath(sessionId: string, projectDir: string): string {
-  return path.join(projectDir, `${sessionId}.agent.jsonl`);
-}
-
-class StreamProgress {
-  private readonly requestId = crypto.randomUUID();
-  private readonly startedAt = new Date().toISOString();
-  private estimatedTokens = 0;
-  private started = false;
-
-  constructor(
-    private readonly sessionId: string,
-    private readonly emit?: (progress: LlmStreamProgress) => void
-  ) {}
-
-  start(): void {
-    this.started = true;
-    this.send("start");
-  }
-
-  update(text: string): void {
-    this.estimatedTokens += [...text].reduce((tokens, char) => tokens + (/[㐀-鿿豈-﫿]/u.test(char) ? 0.6 : 0.3), 0);
-    this.send("update");
-  }
-
-  end(): void {
-    if (this.started) this.send("end");
-  }
-
-  private send(phase: LlmStreamProgress["phase"]): void {
-    const tokens = Math.round(this.estimatedTokens);
-    this.emit?.({
-      requestId: this.requestId,
-      sessionId: this.sessionId,
-      startedAt: this.startedAt,
-      estimatedTokens: tokens,
-      formattedTokens:
-        tokens < 100
-          ? String(tokens)
-          : tokens < 10000
-            ? `${Number((tokens / 1000).toFixed(1))}k`
-            : `${Math.round(tokens / 1000)}k`,
-      phase,
-    });
-  }
 }

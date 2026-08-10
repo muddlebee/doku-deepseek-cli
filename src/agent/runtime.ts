@@ -39,6 +39,18 @@ export type AgentRuntimeOptions = {
   onEvent?: (event: RunStreamEvent) => void;
 };
 
+type RuntimeRunState = RunState<AgentRuntimeContext, Agent<AgentRuntimeContext>>;
+
+export function getAgentRuntimeState(error: unknown): RuntimeRunState | null {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) return null;
+  const state = (error as { state?: unknown }).state;
+  if (!state || typeof state !== "object") return null;
+  const candidate = state as { history?: unknown; usage?: unknown };
+  return Array.isArray(candidate.history) && candidate.usage && typeof candidate.usage === "object"
+    ? (state as RuntimeRunState)
+    : null;
+}
+
 export class AgentRuntime {
   private readonly provider: ResolvedProvider;
   private readonly runner: Runner;
@@ -114,13 +126,32 @@ export class AgentRuntime {
       maxTurns: this.maxTurns,
       session,
     });
-    for await (const event of result) this.onEvent?.(event);
-    await result.completed;
-    if (result.error) throw result.error;
+    try {
+      for await (const event of result) this.onEvent?.(event);
+      await result.completed;
+    } catch (error) {
+      throwWithRunState(error, result.state);
+    }
+    if (result.error) throwWithRunState(result.error, result.state);
     return result;
   }
 
   async close(): Promise<void> {
     await this.provider.close();
   }
+}
+
+function throwWithRunState(error: unknown, state: RuntimeRunState): never {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    try {
+      Object.defineProperty(error, "state", { value: state, configurable: true });
+    } catch {
+      // Some third-party errors are non-extensible; wrap those below.
+    }
+    if (getAgentRuntimeState(error)) throw error;
+  }
+  const wrapped = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+  wrapped.name = error instanceof Error ? error.name : "AgentRuntimeError";
+  Object.defineProperty(wrapped, "state", { value: state });
+  throw wrapped;
 }

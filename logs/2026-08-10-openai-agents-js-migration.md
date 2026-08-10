@@ -18,6 +18,7 @@ Replace the provider-specific agent loop with a provider-neutral harness based o
 - Disabled Agents tracing by default and made the maximum turn count configurable, with a default of 100.
 - Provider capabilities now control whether image inputs are included.
 - Long-running sessions compact through the same provider-neutral runtime.
+- Agent runs use one-model-turn boundaries so tool definitions can refresh and context can compact during long multi-tool runs.
 
 ## DeepSeek support
 
@@ -58,26 +59,29 @@ DeepSeek thinking configuration is sent through `providerOptions.deepseek`, incl
 
 Session responsibilities were moved into focused modules:
 
-| Module | Responsibility |
-| --- | --- |
-| `src/session/agent-turn.ts` | Agent execution, streaming, HITL pause and resume |
-| `src/session/agents-session.ts` | Versioned SDK session persistence |
-| `src/session/agent-history.ts` | Agent input and output history conversion |
-| `src/session/file-session-store.ts` | Session index and JSONL storage |
-| `src/session/session-initializer.ts` | New-session creation and initial prompt history |
-| `src/session/message-factory.ts` | User, system, assistant, and tool messages |
-| `src/session/tool-coordinator.ts` | Tool execution and follow-up messages |
-| `src/session/process-tracker.ts` | Process metadata and timeout controls |
-| `src/session/checkpoint-manager.ts` | File mutation checkpoints and restoration |
-| `src/session/compactor.ts` | Provider-neutral context compaction |
-| `src/session/skill-catalog.ts` | Skill discovery and normalization |
-| `src/session/skill-matcher.ts` | Model-assisted skill matching |
-| `src/session/prompt-skills.ts` | Skill prompt loading and insertion |
-| `src/session/notifications.ts` | Prompt telemetry and completion notifications |
-| `src/session/usage.ts` | Token usage aggregation |
-| `src/session/legacy-history.ts` | Existing transcript migration and compatibility |
-| `src/session/tool-presentation.ts` | Tool result presentation metadata |
-| `src/session/types.ts` | Shared session types |
+| Module                               | Responsibility                                    |
+| ------------------------------------ | ------------------------------------------------- |
+| `src/session/agent-turn.ts`          | Agent execution, streaming, HITL pause and resume |
+| `src/session/agent-turn-outcomes.ts` | Usage, refusal, and turn-limit outcomes           |
+| `src/session/agent-turn-progress.ts` | Streaming progress estimation                     |
+| `src/session/agent-turn-state.ts`    | Paused, interrupted, and canonical run state      |
+| `src/session/agents-session.ts`      | Versioned SDK session persistence                 |
+| `src/session/agent-history.ts`       | Agent input and output history conversion         |
+| `src/session/file-session-store.ts`  | Session index and JSONL storage                   |
+| `src/session/session-initializer.ts` | New-session creation and initial prompt history   |
+| `src/session/message-factory.ts`     | User, system, assistant, and tool messages        |
+| `src/session/tool-coordinator.ts`    | Tool execution and follow-up messages             |
+| `src/session/process-tracker.ts`     | Process metadata and timeout controls             |
+| `src/session/checkpoint-manager.ts`  | File mutation checkpoints and restoration         |
+| `src/session/compactor.ts`           | Provider-neutral context compaction               |
+| `src/session/skill-catalog.ts`       | Skill discovery and normalization                 |
+| `src/session/skill-matcher.ts`       | Model-assisted skill matching                     |
+| `src/session/prompt-skills.ts`       | Skill prompt loading and insertion                |
+| `src/session/notifications.ts`       | Prompt telemetry and completion notifications     |
+| `src/session/usage.ts`               | Token usage aggregation                           |
+| `src/session/legacy-history.ts`      | Existing transcript migration and compatibility   |
+| `src/session/tool-presentation.ts`   | Tool result presentation metadata                 |
+| `src/session/types.ts`               | Shared session types                              |
 
 All TypeScript and TSX sources are formatted with the repository Prettier configuration.
 
@@ -100,7 +104,12 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Forwards compatible-provider reasoning effort through Agents model settings.
 - Persists terminal refusal and turn-limit run history in canonical SDK sessions.
 - Restores bounded `/continue` behavior when an Agents run reaches its turn limit.
-- Removes the stale `.deepcode/AGENTS.md`; the root `AGENTS.md` is the single repository guide.
+- Refreshes active MCP tool snapshots between model requests in the same agent run.
+- Compacts between model requests when an internal tool cycle crosses the context threshold.
+- Persists balanced canonical history when cancellation or provider errors interrupt a run.
+- Resolves named-provider credentials from project and user settings with documented precedence.
+- Recovers cleanly when a malformed JSONL tail is followed by a new session record.
+- Removes the stale nested repository guide; the root `AGENTS.md` is authoritative.
 
 ## Validation
 
@@ -117,7 +126,7 @@ git diff --check
 
 Results at completion:
 
-- 379 tests passed
+- 385 tests passed
 - TypeScript passed
 - Prettier format check passed
 - Bundle passed

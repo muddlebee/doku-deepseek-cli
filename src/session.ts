@@ -424,27 +424,29 @@ export class SessionManager {
         debugLogEnabled,
         openAIClient: providerProfile.type === "deepseek" ? undefined : client,
       });
-      const compactAtTokens = provider.compactAtTokens ?? getCompactPromptTokenThreshold(model);
+      const activeProvider = provider;
+      const tracingEnabled = configuredTracing ?? resolvedSettings.tracingEnabled ?? false;
+      const compactAtTokens = activeProvider.compactAtTokens ?? getCompactPromptTokenThreshold(model);
       if (
         (this.getSession(sessionId)?.activeTokens ?? 0) >= compactAtTokens &&
         !hasPausedAgentTurn(sessionId, this.sessionStore.projectDir)
       ) {
         await this.compactSessionWithProvider(
           sessionId,
-          provider,
+          activeProvider,
           model,
-          configuredTracing ?? resolvedSettings.tracingEnabled ?? false,
+          tracingEnabled,
           sessionController.signal
         );
       }
       await runAgentTurn(
         {
           sessionId,
-          provider,
+          provider: activeProvider,
           model,
           tools: getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
           maxTurns: configuredMaxTurns ?? resolvedSettings.maxTurns ?? 100,
-          tracingEnabled: configuredTracing ?? resolvedSettings.tracingEnabled ?? false,
+          tracingEnabled,
           controller: sessionController,
           continueExisting,
         },
@@ -463,6 +465,13 @@ export class SessionManager {
           renderContent: (message) => this.renderOpenAIMessageContent(message),
           onProgress: this.onLlmStreamProgress,
           isInterrupted: (id) => this.isInterrupted(id),
+          getTools: () => getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
+          compactIfNeeded: async (activeTokens, signal) => {
+            if (activeTokens < compactAtTokens || hasPausedAgentTurn(sessionId, this.sessionStore.projectDir)) {
+              return;
+            }
+            await this.compactSessionWithProvider(sessionId, activeProvider, model, tracingEnabled, signal);
+          },
         }
       );
     } catch (error) {

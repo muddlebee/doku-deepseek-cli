@@ -2114,6 +2114,59 @@ test("SessionManager resets active tokens to latest post-compaction response usa
   assert.equal(usagePerModel.total_reqs, 3);
 });
 
+test("SessionManager compacts after an internal tool cycle crosses the context threshold", async () => {
+  const workspace = createTempDir("doku-in-run-compact-workspace-");
+  const home = createTempDir("doku-in-run-compact-home-");
+  setHomeDir(home);
+
+  const responses = [
+    createChatResponse("first turn", { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+    {
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "plan-before-compaction",
+                type: "function",
+                function: {
+                  name: "UpdatePlan",
+                  arguments: JSON.stringify({ plan: "- [ ] Finish the task" }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 139_990, completion_tokens: 10, total_tokens: 140_000 },
+    },
+    createChatResponse("compacted conversation", {
+      prompt_tokens: 100,
+      completion_tokens: 23,
+      total_tokens: 123,
+    }),
+    createChatResponse("finished after compaction", {
+      prompt_tokens: 5,
+      completion_tokens: 2,
+      total_tokens: 7,
+    }),
+  ];
+  const manager = createMockedClientSessionManager(workspace, responses);
+
+  const sessionId = await manager.createSession({ text: "start" });
+  await manager.replySession(sessionId, { text: "keep working" });
+
+  assert.equal(responses.length, 0);
+  assert.equal(manager.getSession(sessionId)?.activeTokens, 7);
+  assert.equal(manager.getSession(sessionId)?.assistantReply, "finished after compaction");
+  assert.ok(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.isSummary && message.content?.includes("compacted conversation"))
+  );
+});
+
 test("SessionManager streams chat completions and counts reasoning progress", async () => {
   const workspace = createTempDir("doku-stream-workspace-");
   const home = createTempDir("doku-stream-home-");

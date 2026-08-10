@@ -362,3 +362,463 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
     fs.rmSync(projectDir, { recursive: true, force: true });
   }
 });
+
+test("Agents turns refresh tools and compact between model requests", async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "doku-bounded-agent-turn-"));
+  const sessionId = "bounded-agent-session";
+  const now = new Date().toISOString();
+  let entry: SessionEntry = {
+    id: sessionId,
+    summary: "request",
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
+    toolCalls: null,
+    status: "processing",
+    failReason: null,
+    usage: null,
+    usagePerModel: null,
+    activeTokens: 0,
+    createTime: now,
+    updateTime: now,
+    processes: null,
+  };
+  const messages: SessionMessage[] = [
+    {
+      id: "user-message",
+      sessionId,
+      role: "user",
+      content: "inspect the project",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    },
+  ];
+  const requests: ModelRequest[] = [];
+  const model: Model = {
+    async getResponse() {
+      throw new Error("not used");
+    },
+    async *getStreamedResponse(request) {
+      requests.push(request);
+      yield {
+        type: "response_done",
+        response: {
+          id: `bounded-response-${requests.length}`,
+          usage: { requests: 1, inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+          output:
+            requests.length === 1
+              ? [
+                  {
+                    type: "function_call" as const,
+                    callId: "mcp-lookup-1",
+                    name: "mcp__server__lookup",
+                    arguments: JSON.stringify({ query: "README" }),
+                    status: "completed" as const,
+                  },
+                ]
+              : [
+                  {
+                    role: "assistant" as const,
+                    type: "message" as const,
+                    status: "completed" as const,
+                    phase: "final_answer" as const,
+                    content: [{ type: "output_text" as const, text: "Finished automatically." }],
+                  },
+                ],
+        },
+      };
+    },
+  };
+  const factory = new SessionMessageFactory(projectDir, process.cwd(), () => undefined);
+  let toolSnapshot = 0;
+  const compactedAt: number[] = [];
+  const mcpTool = (description: string) => ({
+    type: "function" as const,
+    function: {
+      name: "mcp__server__lookup",
+      description,
+      parameters: {
+        type: "object" as const,
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    },
+  });
+
+  try {
+    await runAgentTurn(
+      {
+        sessionId,
+        provider: { id: "test", model, supportsImages: false, close: async () => {} },
+        model: "test-model",
+        tools: [mcpTool("initial tool")],
+        maxTurns: 2,
+        tracingEnabled: false,
+        controller: new AbortController(),
+        continueExisting: false,
+      },
+      {
+        store: { projectDir } as never,
+        listMessages: () => messages,
+        updateEntry: (_id, updater) => {
+          entry = updater(entry);
+          return entry;
+        },
+        appendMessage: (_id, message) => messages.push(message),
+        saveMessages: (_id, nextMessages) => messages.splice(0, messages.length, ...nextMessages),
+        buildAssistant: (id, content, toolCalls, reasoning, refusal) =>
+          factory.assistant(id, content, toolCalls, reasoning, refusal),
+        onAssistantMessage: () => {},
+        appendTools: async () => ({ waitingForUser: false }),
+        executeTool: async () => "README contents",
+        renderContent: (message) => message.content ?? "",
+        isInterrupted: () => false,
+        getTools: () => [mcpTool(++toolSnapshot === 1 ? "initial tool" : "refreshed tool")],
+        compactIfNeeded: async (activeTokens) => {
+          compactedAt.push(activeTokens);
+        },
+      }
+    );
+
+    assert.equal(requests.length, 2);
+    assert.match(JSON.stringify(requests[1]?.input), /function_call_result/);
+    assert.match(JSON.stringify(requests[1]?.tools), /refreshed tool/);
+    assert.deepEqual(compactedAt, [6]);
+    assert.equal(entry.assistantReply, "Finished automatically.");
+    assert.equal(entry.usage?.total_tokens, 12);
+    assert.equal(entry.activeTokens, 6);
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("Agents turns replay completed tool work after a later model request fails", async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "doku-failed-agent-turn-"));
+  const sessionId = "failed-agent-session";
+  const now = new Date().toISOString();
+  let entry: SessionEntry = {
+    id: sessionId,
+    summary: "request",
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
+    toolCalls: null,
+    status: "processing",
+    failReason: null,
+    usage: null,
+    usagePerModel: null,
+    activeTokens: 0,
+    createTime: now,
+    updateTime: now,
+    processes: null,
+  };
+  const messages: SessionMessage[] = [
+    {
+      id: "first-user-message",
+      sessionId,
+      role: "user",
+      content: "read the project",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    },
+  ];
+  const requests: ModelRequest[] = [];
+  let recover = false;
+  const model: Model = {
+    async getResponse() {
+      throw new Error("not used");
+    },
+    async *getStreamedResponse(request) {
+      requests.push(request);
+      if (requests.length === 2 && !recover) throw new Error("provider disconnected");
+      yield {
+        type: "response_done",
+        response: {
+          id: `failure-response-${requests.length}`,
+          usage: { requests: 1, inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          output:
+            requests.length === 1
+              ? [
+                  {
+                    type: "function_call" as const,
+                    callId: "read-before-failure",
+                    name: "Read",
+                    arguments: JSON.stringify({ file_path: "README.md" }),
+                    status: "completed" as const,
+                  },
+                ]
+              : [
+                  {
+                    role: "assistant" as const,
+                    type: "message" as const,
+                    status: "completed" as const,
+                    phase: "final_answer" as const,
+                    content: [{ type: "output_text" as const, text: "Recovered." }],
+                  },
+                ],
+        },
+      };
+    },
+  };
+  const factory = new SessionMessageFactory(projectDir, process.cwd(), () => undefined);
+  const tool = {
+    type: "function" as const,
+    function: {
+      name: "Read",
+      description: "Read a file",
+      parameters: {
+        type: "object" as const,
+        properties: { file_path: { type: "string" } },
+        required: ["file_path"],
+      },
+    },
+  };
+  const dependencies = {
+    store: { projectDir } as never,
+    listMessages: () => messages,
+    updateEntry: (_id: string, updater: (current: SessionEntry) => SessionEntry) => {
+      entry = updater(entry);
+      return entry;
+    },
+    appendMessage: (_id: string, message: SessionMessage) => messages.push(message),
+    saveMessages: (_id: string, nextMessages: SessionMessage[]) => messages.splice(0, messages.length, ...nextMessages),
+    buildAssistant: (
+      id: string,
+      content: string | null,
+      toolCalls: unknown[] | null,
+      reasoning?: string | null,
+      refusal?: string | null
+    ) => factory.assistant(id, content, toolCalls, reasoning, refusal),
+    onAssistantMessage: () => {},
+    appendTools: async () => ({ waitingForUser: false }),
+    executeTool: async () => "README contents",
+    renderContent: (message: SessionMessage) => message.content ?? "",
+    isInterrupted: () => false,
+  };
+  const options = {
+    sessionId,
+    provider: { id: "test", model, supportsImages: false, close: async () => {} },
+    model: "test-model",
+    tools: [tool],
+    maxTurns: 3,
+    tracingEnabled: false,
+  };
+
+  try {
+    await assert.rejects(
+      runAgentTurn({ ...options, controller: new AbortController(), continueExisting: false }, dependencies),
+      /provider disconnected/
+    );
+
+    recover = true;
+    messages.push({
+      id: "second-user-message",
+      sessionId,
+      role: "user",
+      content: "continue normally",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    });
+    await runAgentTurn({ ...options, controller: new AbortController(), continueExisting: false }, dependencies);
+
+    assert.equal(entry.assistantReply, "Recovered.");
+    assert.match(JSON.stringify(requests.at(-1)?.input), /read-before-failure/);
+    assert.match(JSON.stringify(requests.at(-1)?.input), /function_call_result/);
+    assert.match(JSON.stringify(requests.at(-1)?.input), /continue normally/);
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("Agents turns balance interrupted tool calls before the next ordinary reply", async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "doku-interrupted-agent-turn-"));
+  const sessionId = "interrupted-agent-session";
+  const now = new Date().toISOString();
+  let entry: SessionEntry = {
+    id: sessionId,
+    summary: "request",
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
+    toolCalls: null,
+    status: "processing",
+    failReason: null,
+    usage: null,
+    usagePerModel: null,
+    activeTokens: 0,
+    createTime: now,
+    updateTime: now,
+    processes: null,
+  };
+  const messages: SessionMessage[] = [
+    {
+      id: "first-user-message",
+      sessionId,
+      role: "user",
+      content: "run a slow command",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    },
+  ];
+  const requests: ModelRequest[] = [];
+  let toolStarted = false;
+  let activeController = new AbortController();
+  const model: Model = {
+    async getResponse() {
+      throw new Error("not used");
+    },
+    async *getStreamedResponse(request) {
+      requests.push(request);
+      yield {
+        type: "response_done",
+        response: {
+          id: `interrupted-response-${requests.length}`,
+          usage: { requests: 1, inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+          output:
+            requests.length === 1
+              ? [
+                  {
+                    type: "function_call" as const,
+                    callId: "slow-command",
+                    name: "Bash",
+                    arguments: JSON.stringify({ command: "sleep 30" }),
+                    status: "completed" as const,
+                  },
+                ]
+              : [
+                  {
+                    role: "assistant" as const,
+                    type: "message" as const,
+                    status: "completed" as const,
+                    phase: "final_answer" as const,
+                    content: [{ type: "output_text" as const, text: "Continued safely." }],
+                  },
+                ],
+        },
+      };
+    },
+  };
+  const factory = new SessionMessageFactory(projectDir, process.cwd(), () => undefined);
+  const dependencies = {
+    store: { projectDir } as never,
+    listMessages: () => messages,
+    updateEntry: (_id: string, updater: (current: SessionEntry) => SessionEntry) => {
+      entry = updater(entry);
+      return entry;
+    },
+    appendMessage: (_id: string, message: SessionMessage) => messages.push(message),
+    saveMessages: (_id: string, nextMessages: SessionMessage[]) => messages.splice(0, messages.length, ...nextMessages),
+    buildAssistant: (
+      id: string,
+      content: string | null,
+      toolCalls: unknown[] | null,
+      reasoning?: string | null,
+      refusal?: string | null
+    ) => factory.assistant(id, content, toolCalls, reasoning, refusal),
+    onAssistantMessage: () => {},
+    appendTools: async () => ({ waitingForUser: false }),
+    executeTool: async (_id: string, invocation: { signal?: AbortSignal }) => {
+      toolStarted = true;
+      await new Promise<void>((resolve, reject) => {
+        if (invocation.signal?.aborted) {
+          reject(abortError());
+          return;
+        }
+        invocation.signal?.addEventListener("abort", () => reject(abortError()), { once: true });
+      });
+      return "unreachable";
+    },
+    renderContent: (message: SessionMessage) => message.content ?? "",
+    isInterrupted: () => activeController.signal.aborted,
+  };
+  const options = {
+    sessionId,
+    provider: { id: "test", model, supportsImages: false, close: async () => {} },
+    model: "test-model",
+    tools: [
+      {
+        type: "function" as const,
+        function: {
+          name: "Bash",
+          description: "Run a command",
+          parameters: {
+            type: "object" as const,
+            properties: { command: { type: "string" } },
+            required: ["command"],
+          },
+        },
+      },
+    ],
+    maxTurns: 3,
+    tracingEnabled: false,
+  };
+
+  try {
+    const interruptedRun = runAgentTurn(
+      { ...options, controller: activeController, continueExisting: false },
+      dependencies
+    );
+    await waitFor(() => toolStarted);
+    activeController.abort();
+    await interruptedRun.catch(() => {});
+
+    const persisted = fs.readFileSync(path.join(projectDir, `${sessionId}.agent.jsonl`), "utf8");
+    assert.match(persisted, /slow-command/);
+    assert.match(persisted, /function_call_result/);
+    assert.match(persisted, /"status":"incomplete"/);
+
+    activeController = new AbortController();
+    messages.push({
+      id: "second-user-message",
+      sessionId,
+      role: "user",
+      content: "continue with something else",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    });
+    await runAgentTurn(
+      { ...options, controller: activeController, continueExisting: false },
+      { ...dependencies, executeTool: async () => "unused" }
+    );
+
+    assert.equal(entry.assistantReply, "Continued safely.");
+    assert.match(JSON.stringify(requests.at(-1)?.input), /function_call_result/);
+    assert.match(JSON.stringify(requests.at(-1)?.input), /continue with something else/);
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+function abortError(): Error {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("Timed out waiting for the agent turn.");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

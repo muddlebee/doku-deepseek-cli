@@ -286,7 +286,12 @@ export function resolveSettingsSources(
     trimString(providerProfile.baseURL) ||
     defaults.baseURL;
   const apiKeyEnv = trimString(providerProfile.apiKeyEnv);
-  const providerApiKey = apiKeyEnv ? trimString(systemEnv[apiKeyEnv]) || trimString(processEnv[apiKeyEnv]) : "";
+  const providerApiKey = apiKeyEnv
+    ? trimString(systemEnv[apiKeyEnv]) ||
+      trimString(processEnv[apiKeyEnv]) ||
+      trimString(projectEnv[apiKeyEnv]) ||
+      trimString(userEnv[apiKeyEnv])
+    : "";
   const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
   const apiKey =
     trimString(systemEnv.API_KEY) ||

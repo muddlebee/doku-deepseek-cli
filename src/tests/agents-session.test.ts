@@ -41,3 +41,15 @@ test("FileAgentSession reads legacy and v2 records together", async () => {
     ["legacy", "new"]
   );
 });
+
+test("FileAgentSession separates new records from a malformed unterminated tail", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "doku-agent-session-torn-tail-"));
+  const file = path.join(root, "session.jsonl");
+  fs.writeFileSync(file, '{"version":2,"item":{"role":"assistant"', "utf8");
+
+  const session = new FileAgentSession("torn-tail", file);
+  await session.addItems([{ role: "user", content: "survives" }]);
+
+  assert.deepEqual(await session.getItems(), [{ role: "user", content: "survives" }]);
+  assert.match(fs.readFileSync(file, "utf8"), /assistant"\n\{"version":2/);
+});
