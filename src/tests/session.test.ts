@@ -89,6 +89,31 @@ test("SessionManager keeps usagePerModel null until response usage is available"
   assert.equal(manager.getSession(sessionId)?.usagePerModel, null);
 });
 
+test("SessionManager emits provider failures as runtime notices", async () => {
+  const workspace = createTempDir("doku-runtime-notice-workspace-");
+  const home = createTempDir("doku-runtime-notice-home-");
+  setHomeDir(home);
+  const notices: SessionMessage[] = [];
+  const manager = new SessionManager({
+    projectRoot: workspace,
+    createOpenAIClient: () => ({
+      client: null,
+      model: "test-model",
+      baseURL: "https://api.example.com/v1",
+      thinkingEnabled: false,
+    }),
+    getResolvedSettings: () => ({ model: "test-model" }),
+    renderMarkdown: (text) => text,
+    onAssistantMessage: (message) => notices.push(message),
+  });
+
+  await manager.createSession({ text: "" });
+
+  assert.equal(notices.at(-1)?.role, "system");
+  assert.equal(notices.at(-1)?.meta?.notice, "error");
+  assert.match(notices.at(-1)?.content ?? "", /API key not found/);
+});
+
 test("SessionManager marks skills loaded from existing session messages", async () => {
   const workspace = createTempDir("doku-loaded-skills-workspace-");
   const home = createTempDir("doku-loaded-skills-home-");

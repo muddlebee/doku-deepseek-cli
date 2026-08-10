@@ -255,6 +255,9 @@ export function renderMessageToStdout(message: SessionMessage, mode: RawMode): s
   }
 
   if (message.role === "system") {
+    if (message.meta?.notice === "error") {
+      return chalk.red(`Error: ${message.content || "Unknown provider error"}`);
+    }
     if (message.meta?.isModelChange) {
       return chalk(`> ${message.content}`);
     }

@@ -28,6 +28,7 @@ export {
   removeCurrentSlashToken,
   isClearImageAttachmentsShortcut,
   getPromptReturnKeyAction,
+  getPromptFooterHints,
   renderBufferWithCursor,
   buildInitPromptSubmission,
   buildSkillPromptSubmission,

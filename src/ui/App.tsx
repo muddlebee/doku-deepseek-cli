@@ -102,6 +102,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       getResolvedSettings: () => resolveCurrentSettings(projectRoot),
       renderMarkdown: (text) => text,
       onAssistantMessage: (message: SessionMessage) => {
+        if (message.meta?.notice === "error") {
+          if (rawModeRef.current === RawMode.Raw) {
+            process.stdout.write(`\n${renderMessageToStdout(message, rawModeRef.current)}\n\n`);
+          } else {
+            setErrorLine(message.content || "Unknown provider error");
+          }
+          return;
+        }
         setMessages((prev) => [...prev, message]);
         if (rawModeRef.current === RawMode.Raw) {
           process.stdout.write("\n");

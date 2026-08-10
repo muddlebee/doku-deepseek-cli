@@ -381,6 +381,7 @@ export class SessionManager {
         failReason: "API key not found",
         updateTime: now,
       }));
+      this.emitRuntimeError(sessionId, "API key not found. Configure ~/.doku/settings.json or ./.doku/settings.json.");
       this.maybeNotifyTaskCompletion(sessionId, notify, startedAt, env);
       return;
     }
@@ -473,6 +474,7 @@ export class SessionManager {
         failReason: aborted ? "interrupted" : errMessage,
         updateTime: new Date().toISOString(),
       }));
+      if (!aborted) this.emitRuntimeError(sessionId, errMessage);
     } finally {
       await provider?.close().catch(() => {});
       if (this.sessionControllers.get(sessionId) === sessionController) this.sessionControllers.delete(sessionId);
@@ -603,6 +605,10 @@ export class SessionManager {
 
   private isInterrupted(sessionId: string): boolean {
     return !this.sessionControllers.has(sessionId);
+  }
+
+  private emitRuntimeError(sessionId: string, content: string): void {
+    this.onAssistantMessage(this.buildSystemMessage(sessionId, content, null, true, { notice: "error" }), false);
   }
 
   adjustActiveBashTimeout(deltaMs: number): BashTimeoutAdjustment | null {

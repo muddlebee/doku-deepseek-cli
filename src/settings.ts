@@ -91,6 +91,8 @@ export type ModelConfigSelection = {
 
 export type SettingsProcessEnv = Record<string, string | undefined>;
 
+const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
+
 function resolveReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value))
     ? (value as ReasoningEffort)
@@ -122,6 +124,22 @@ function resolveApiMode(value: unknown): ApiMode | undefined {
 function positiveInteger(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveApiKeySource(input: {
+  apiKey: string;
+  environmentApiKey: string;
+  environmentProviderApiKey: string;
+  preferredProviderApiKey: string;
+  explicitProvider: boolean;
+}): "environment" | "settings" | undefined {
+  if (!input.apiKey) return undefined;
+  if (input.environmentApiKey) return "environment";
+  if (input.explicitProvider && input.environmentProviderApiKey) return "environment";
+  if (!input.explicitProvider && !input.preferredProviderApiKey && input.environmentProviderApiKey) {
+    return "environment";
+  }
+  return "settings";
 }
 
 function inferProvider(model: string, baseURL: string): string {
@@ -256,24 +274,30 @@ export function resolveSettingsSources(
     ...systemEnv,
   };
 
-  const model =
+  const configuredModel =
     trimString(systemEnv.MODEL) ||
     trimString(projectSettings?.model) ||
     trimString(projectEnv.MODEL) ||
     trimString(userSettings?.model) ||
-    trimString(userEnv.MODEL) ||
-    defaults.model;
+    trimString(userEnv.MODEL);
 
-  const configuredBaseURL = trimString(env.BASE_URL) || defaults.baseURL;
+  const explicitProvider =
+    trimString(systemEnv.PROVIDER) || trimString(projectSettings?.provider) || trimString(userSettings?.provider);
+  const configuredBaseURL = trimString(env.BASE_URL);
+  const hasOpenAIKey = Boolean(trimString(systemEnv.OPENAI_API_KEY) || trimString(processEnv.OPENAI_API_KEY));
+  const hasDeepSeekKey = Boolean(trimString(systemEnv.DEEPSEEK_API_KEY) || trimString(processEnv.DEEPSEEK_API_KEY));
+  const credentialInferredProvider =
+    !explicitProvider && !configuredModel && !configuredBaseURL && hasOpenAIKey && !hasDeepSeekKey ? "openai" : "";
+  const model = configuredModel || (credentialInferredProvider === "openai" ? DEFAULT_OPENAI_MODEL : defaults.model);
+  const effectiveConfiguredBaseURL = configuredBaseURL || defaults.baseURL;
   const providers = {
-    ...builtinProviders(configuredBaseURL),
+    ...builtinProviders(effectiveConfiguredBaseURL),
     ...(userSettings?.providers ?? {}),
     ...(projectSettings?.providers ?? {}),
   };
-  const explicitProvider =
-    trimString(systemEnv.PROVIDER) || trimString(projectSettings?.provider) || trimString(userSettings?.provider);
-  const requestedProvider = explicitProvider || inferProvider(model, configuredBaseURL);
-  const provider = providers[requestedProvider] ? requestedProvider : inferProvider(model, configuredBaseURL);
+  const requestedProvider =
+    explicitProvider || credentialInferredProvider || inferProvider(model, effectiveConfiguredBaseURL);
+  const provider = providers[requestedProvider] ? requestedProvider : inferProvider(model, effectiveConfiguredBaseURL);
   const providerProfile = providers[provider] ?? providers.custom;
   const apiMode =
     resolveApiMode(systemEnv.API_MODE) ??
@@ -294,9 +318,16 @@ export function resolveSettingsSources(
   const providerApiKey = environmentProviderApiKey || settingsProviderApiKey;
   const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
   const environmentApiKey = trimString(systemEnv.API_KEY);
-  const apiKey =
-    environmentApiKey || (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
-  const apiKeySource = environmentApiKey || environmentProviderApiKey ? "environment" : apiKey ? "settings" : undefined;
+  const preferredProviderApiKey = explicitProvider ? providerApiKey : configuredApiKey;
+  const fallbackApiKey = explicitProvider ? configuredApiKey : providerApiKey;
+  const apiKey = environmentApiKey || preferredProviderApiKey || fallbackApiKey;
+  const apiKeySource = resolveApiKeySource({
+    apiKey,
+    environmentApiKey,
+    environmentProviderApiKey,
+    preferredProviderApiKey,
+    explicitProvider: Boolean(explicitProvider),
+  });
 
   const thinkingEnabled =
     parseBoolean(systemEnv.THINKING_ENABLED) ??

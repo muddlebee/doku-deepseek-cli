@@ -92,6 +92,13 @@ export function MessageView({ message, collapsed, width = 80 }: MessageViewProps
   }
 
   if (message.role === "system") {
+    if (message.meta?.notice === "error") {
+      return (
+        <Box marginY={0} marginLeft={1} marginBottom={1}>
+          <Text color="red">Error: {message.content || "Unknown provider error"}</Text>
+        </Box>
+      );
+    }
     // Render model change messages in the same style as user commands.
     if (message.meta?.isModelChange) {
       return (

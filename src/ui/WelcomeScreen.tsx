@@ -23,7 +23,7 @@ const SHORTCUT_TIPS = [
   { label: "Ctrl+V", description: "Paste an image from the clipboard" },
   { label: "Esc", description: "Interrupt the current model turn" },
   { label: "/", description: "Open the skills and commands menu" },
-  { label: "Ctrl+D twice", description: "Quit" },
+  { label: "Ctrl+C twice", description: "Quit" },
 ];
 
 const LOGO = figlet.textSync("doku", { font: "Slant" });
@@ -46,7 +46,7 @@ export function WelcomeScreen({ projectRoot, settings, skills, width }: WelcomeS
       </Box>
 
       {/* Version + settings — one line */}
-      {layout === "compact" ? (
+      {layout !== "full" ? (
         <Box flexDirection="column" marginTop={1}>
           <Box gap={1}>
             <Badge color="cyan">v{version || "unknown"}</Badge>
@@ -83,8 +83,10 @@ export function WelcomeScreen({ projectRoot, settings, skills, width }: WelcomeS
   );
 }
 
-export function getWelcomeLayout(width: number): "compact" | "full" {
-  return width < 80 ? "compact" : "full";
+export function getWelcomeLayout(width: number): "compact" | "standard" | "full" {
+  if (width < 80) return "compact";
+  if (width < 120) return "standard";
+  return "full";
 }
 
 export function truncateMiddle(value: string, maxLength: number): string {

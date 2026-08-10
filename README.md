@@ -101,7 +101,7 @@ DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.6-sol doku
 | `Esc` | Interrupt current model turn |
 | `@` | Mention a file |
 | `/` | Open commands menu |
-| `Ctrl+D` twice | Quit |
+| `Ctrl+C` twice | Quit |
 
 ## Providers and Models
 
@@ -165,6 +165,8 @@ npm run check
 # Tests
 npm test
 ```
+
+See the [CLI dogfooding guide](docs/dogfooding.md) for the OpenAI and DeepSeek end-to-end matrix.
 
 ## Contributing
 

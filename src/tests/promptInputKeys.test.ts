@@ -12,6 +12,7 @@ import {
   formatImageAttachmentStatus,
   formatSelectedSkillsStatus,
   getPromptCursorPlacement,
+  getPromptFooterHints,
   getPromptReturnKeyAction,
   isClearImageAttachmentsShortcut,
   parseTerminalInput,
@@ -339,4 +340,14 @@ test("getPromptCursorPlacement accounts for multiline buffer rows", () => {
   assert.deepEqual(placement, { rowsUp: 3, column: 7 });
   const middle = getPromptCursorPlacement({ text: "hello\nworld", cursor: 2 }, 80, 2, "Enter send");
   assert.deepEqual(middle, { rowsUp: 4, column: 4 });
+});
+
+test("prompt footer keeps only essential hints in narrow terminals", () => {
+  assert.deepEqual(getPromptFooterHints(60), [
+    { k: "enter", d: "send" },
+    { k: "/", d: "commands" },
+    { k: "ctrl+c", d: "exit" },
+  ]);
+  assert.equal(getPromptFooterHints(80).length, 5);
+  assert.equal(getPromptFooterHints(120).length, 5);
 });

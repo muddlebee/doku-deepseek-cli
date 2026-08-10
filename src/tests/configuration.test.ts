@@ -29,3 +29,10 @@ test("configuration preflight identifies invalid environment base URLs", () => {
   });
   assert.match(getConfigurationIssue(settings) ?? "", /Fix DOKU_BASE_URL/);
 });
+
+test("configuration preflight rejects unsupported DeepSeek API modes", () => {
+  const settings = resolveSettings({ provider: "deepseek", env: { API_KEY: "sk-test" } }, defaults, {
+    DOKU_API_MODE: "responses",
+  });
+  assert.match(getConfigurationIssue(settings) ?? "", /requires Chat Completions/);
+});

@@ -33,12 +33,14 @@ test("buildWelcomeTips includes built-in slash commands and loaded skills", () =
   assert.ok(labels.includes("/new"));
   assert.ok(labels.includes("/loaded"));
   assert.equal(labels.includes("/fresh"), false);
+  assert.ok(labels.includes("Ctrl+C twice"));
 });
 
 test("welcome layout switches cleanly at supported terminal widths", () => {
   assert.equal(getWelcomeLayout(60), "compact");
   assert.equal(getWelcomeLayout(79), "compact");
-  assert.equal(getWelcomeLayout(80), "full");
+  assert.equal(getWelcomeLayout(80), "standard");
+  assert.equal(getWelcomeLayout(119), "standard");
   assert.equal(getWelcomeLayout(120), "full");
 });
 
