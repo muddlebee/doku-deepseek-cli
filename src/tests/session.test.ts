@@ -7,6 +7,7 @@ import * as path from "path";
 import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
+import { hasProcessStopFailure } from "../session/process-tracker";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleWarn = console.warn;
@@ -143,6 +144,7 @@ test("SessionManager retains and reports processes that fail to stop", async () 
   assert.equal(session?.processes?.get("123")?.command, "sleep 10");
   assert.equal(notices.at(-1)?.meta?.notice, "error");
   assert.equal(notices.at(-1)?.content, "Failed to stop processes: 123");
+  assert.equal(hasProcessStopFailure({ ...session!, processes: null }), true);
 });
 
 test("SessionManager marks skills loaded from existing session messages", async () => {

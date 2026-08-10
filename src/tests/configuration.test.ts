@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSettings } from "../settings";
 import { getConfigurationIssue } from "../ui/configuration";
+import { getConfigurationIssueAction } from "../ui/ConfigurationIssueScreen";
 
 const defaults = { model: "gpt-5.6-sol", baseURL: "https://api.openai.com/v1" };
 
@@ -35,4 +36,10 @@ test("configuration preflight rejects unsupported DeepSeek API modes", () => {
     DOKU_API_MODE: "responses",
   });
   assert.match(getConfigurationIssue(settings) ?? "", /requires Chat Completions/);
+});
+
+test("configuration retry screen supports retry and Ctrl+C exit", () => {
+  assert.equal(getConfigurationIssueAction("r", {}), "retry");
+  assert.equal(getConfigurationIssueAction("c", { ctrl: true }), "exit");
+  assert.equal(getConfigurationIssueAction("c", {}), null);
 });

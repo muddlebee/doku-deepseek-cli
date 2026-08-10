@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 
 type Props = {
   issue: string;
@@ -7,8 +7,12 @@ type Props = {
 };
 
 export function ConfigurationIssueScreen({ issue, onRetry }: Props): React.ReactElement {
-  useInput((input) => {
-    if (input.toLowerCase() === "r") onRetry();
+  const { exit } = useApp();
+
+  useInput((input, key) => {
+    const action = getConfigurationIssueAction(input, key);
+    if (action === "retry") onRetry();
+    if (action === "exit") exit();
   });
 
   return (
@@ -23,4 +27,10 @@ export function ConfigurationIssueScreen({ issue, onRetry }: Props): React.React
       <Text>Fix the controlling source, then press R to retry · Ctrl+C exit</Text>
     </Box>
   );
+}
+
+export function getConfigurationIssueAction(input: string, key: { ctrl?: boolean }): "retry" | "exit" | null {
+  if (key.ctrl && input.toLowerCase() === "c") return "exit";
+  if (input.toLowerCase() === "r") return "retry";
+  return null;
 }

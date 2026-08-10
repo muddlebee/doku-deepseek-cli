@@ -90,7 +90,7 @@ export class SessionProcessTracker {
 }
 
 export function hasProcessStopFailure(entry: SessionEntry): boolean {
-  return Boolean(entry.processes?.size && entry.failReason?.startsWith("Failed to stop processes:"));
+  return Boolean(entry.failReason?.startsWith("Failed to stop processes:"));
 }
 
 function key(sessionId: string, processId: string | number): string {
