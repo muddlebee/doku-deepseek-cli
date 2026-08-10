@@ -85,7 +85,6 @@ type Props = {
   screenWidth: number;
   promptHistory: string[];
   busy: boolean;
-  loadingText?: string | null;
   disabled?: boolean;
   placeholder?: string;
   runningProcesses?: SessionEntry["processes"];
@@ -140,7 +139,6 @@ export const PromptInput = React.memo(function PromptInput({
   screenWidth,
   promptHistory,
   busy,
-  loadingText,
   disabled,
   placeholder,
   runningProcesses,
@@ -946,8 +944,7 @@ export const PromptInput = React.memo(function PromptInput({
           </Box>
         ) : busy ? (
           <Box paddingX={2} gap={2} marginTop={0}>
-            <Text color="#6366f1">{loadingText || "Thinking..."}</Text>
-            <Text dimColor>{`esc interrupt${processOrPasteHint}`}</Text>
+            <Text dimColor>{`esc stop turn${processOrPasteHint}`}</Text>
           </Box>
         ) : (
           <Box paddingX={2} gap={3}>

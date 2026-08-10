@@ -18,7 +18,7 @@ export function buildLoadingText(input: LoadingTextInput): string {
   }
 
   if (!progress) {
-    return "Thinking...";
+    return "Sending request…";
   }
 
   const startedAt = parseTimestamp(progress.startedAt);

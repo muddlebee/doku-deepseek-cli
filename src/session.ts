@@ -381,14 +381,6 @@ export class SessionManager {
         failReason: "API key not found",
         updateTime: now,
       }));
-      this.onAssistantMessage(
-        this.buildAssistantMessage(
-          sessionId,
-          "API key not found. Please configure ~/.doku/settings.json or ./.doku/settings.json.",
-          null
-        ),
-        false
-      );
       this.maybeNotifyTaskCompletion(sessionId, notify, startedAt, env);
       return;
     }
@@ -481,9 +473,6 @@ export class SessionManager {
         failReason: aborted ? "interrupted" : errMessage,
         updateTime: new Date().toISOString(),
       }));
-      if (!aborted) {
-        this.onAssistantMessage(this.buildAssistantMessage(sessionId, `Request failed: ${errMessage}`, null), false);
-      }
     } finally {
       await provider?.close().catch(() => {});
       if (this.sessionControllers.get(sessionId) === sessionController) this.sessionControllers.delete(sessionId);
@@ -594,7 +583,7 @@ export class SessionManager {
   }
 
   interruptSession(sessionId: string): void {
-    const { killedPids, failedPids } = this.processTracker.killAll(sessionId);
+    this.processTracker.killAll(sessionId);
 
     const controller = this.sessionControllers.get(sessionId);
     if (controller) {
@@ -610,16 +599,6 @@ export class SessionManager {
       processes: null,
       updateTime: now,
     }));
-
-    const contentParts = ["Interrupted."];
-    if (killedPids.length > 0) {
-      contentParts.push(`Killed processes: ${killedPids.join(", ")}.`);
-    }
-    if (failedPids.length > 0) {
-      contentParts.push(`Failed to kill processes: ${failedPids.join(", ")}.`);
-    }
-
-    this.onAssistantMessage(this.buildUserMessage(sessionId, { text: contentParts.join(" ") }), false);
   }
 
   private isInterrupted(sessionId: string): boolean {

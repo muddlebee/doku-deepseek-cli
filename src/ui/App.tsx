@@ -12,7 +12,6 @@ import {
   type SessionEntry,
   SessionManager,
   type SessionMessage,
-  type SessionStatus,
   type SkillInfo,
   type UndoTarget,
   type UserPromptContent,
@@ -45,6 +44,7 @@ import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
+import { buildChatStatus } from "./chat-status";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -75,11 +75,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
   const [undoTargets, setUndoTargets] = useState<UndoTarget[]>([]);
   const [promptDraft, setPromptDraft] = useState<PromptDraft | null>(null);
-  const [statusLine, setStatusLine] = useState<string>("");
   const [errorLine, setErrorLine] = useState<string | null>(null);
   const [streamProgress, setStreamProgress] = useState<LlmStreamProgress | null>(null);
   const [runningProcesses, setRunningProcesses] = useState<SessionEntry["processes"]>(null);
-  const [activeStatus, setActiveStatus] = useState<SessionStatus | null>(null);
+  const [activeEntry, setActiveEntry] = useState<SessionEntry | null>(null);
   const [dismissedQuestionIds, setDismissedQuestionIds] = useState<Set<string>>(() => new Set());
   const [isExiting, setIsExiting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -106,9 +105,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         }
       },
       onSessionEntryUpdated: (entry) => {
-        setStatusLine(buildStatusLine(entry));
         setRunningProcesses(entry.processes);
-        setActiveStatus(entry.status);
+        setActiveEntry(entry);
       },
       onLlmStreamProgress: (progress) => {
         if (progress.phase === "end") {
@@ -217,10 +215,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           writeRef.current("\u001B[2J\u001B[3J\u001B[H");
           sessionManager.setActiveSessionId(null);
           setMessages([]);
-          setStatusLine("");
           setErrorLine(null);
           setRunningProcesses(null);
-          setActiveStatus(null);
+          setActiveEntry(null);
           setDismissedQuestionIds(new Set());
           setShowWelcome(true);
           setWelcomeNonce((n) => n + 1);
@@ -432,9 +429,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         setShowWelcome(true);
       }, 0);
       const session = sessionManager.getSession(sessionId);
-      setStatusLine(session ? buildStatusLine(session) : "");
       setRunningProcesses(session?.processes ?? null);
-      setActiveStatus(session?.status ?? null);
+      setActiveEntry(session);
       await refreshSkills(sessionId);
     },
     [sessionManager, refreshSkills]
@@ -583,12 +579,26 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       .filter((content) => content.length > 0);
   }, [messages]);
   const expandedThinkingId = findExpandedThinkingId(messages);
-  const pendingQuestion = useMemo(() => findPendingAskUserQuestion(messages, activeStatus), [activeStatus, messages]);
+  const pendingQuestion = useMemo(
+    () => findPendingAskUserQuestion(messages, activeEntry?.status ?? null),
+    [activeEntry?.status, messages]
+  );
   const shouldShowQuestionPrompt = Boolean(pendingQuestion && !dismissedQuestionIds.has(pendingQuestion.messageId));
   const loadingText = useMemo(
     () => (busy ? buildLoadingText({ progress: streamProgress, processes: runningProcesses, now: Date.now() }) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick forces periodic recalculation for spinner animation
     [busy, streamProgress, runningProcesses, nowTick]
+  );
+  const chatStatus = useMemo(
+    () =>
+      buildChatStatus({
+        error: errorLine,
+        waitingForUser: shouldShowQuestionPrompt,
+        busy,
+        loadingText,
+        entry: activeEntry,
+      }),
+    [activeEntry, busy, errorLine, loadingText, shouldShowQuestionPrompt]
   );
 
   const welcomeItem: SessionMessage = useMemo(
@@ -663,14 +673,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           );
         }}
       </Static>
-      {statusLine ? (
+      {view === "chat" && chatStatus.kind === "error" ? (
         <Box marginLeft={1}>
-          <Text dimColor>{statusLine}</Text>
+          <StatusMessage variant="error">{chatStatus.text}</StatusMessage>
         </Box>
-      ) : null}
-      {errorLine ? (
-        <Box marginLeft={1}>
-          <StatusMessage variant="error">{errorLine}</StatusMessage>
+      ) : view === "chat" ? (
+        <Box marginLeft={1} gap={1}>
+          <Text color={chatStatusColor(chatStatus.kind)}>{chatStatusSymbol(chatStatus.kind)}</Text>
+          <Text dimColor>{chatStatus.text}</Text>
         </Box>
       ) : null}
       {showProcessStdout ? (
@@ -722,7 +732,6 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           modelConfig={resolvedSettings}
           promptHistory={promptHistory}
           busy={busy}
-          loadingText={loadingText}
           runningProcesses={runningProcesses}
           promptDraft={promptDraft}
           onSubmit={handleSubmit}
@@ -798,16 +807,20 @@ function isCurrentSessionEmpty(sessionManager: SessionManager): boolean {
   return !activeSessionId || !sessionManager.getSession(activeSessionId);
 }
 
-function buildStatusLine(entry: SessionEntry): string {
-  const parts: string[] = [];
-  parts.push(`status: ${entry.status}`);
-  if (typeof entry.activeTokens === "number" && entry.activeTokens > 0) {
-    parts.push(`tokens: ${entry.activeTokens}`);
-  }
-  if (entry.failReason) {
-    parts.push(`fail: ${entry.failReason}`);
-  }
-  return parts.join(" · ");
+function chatStatusColor(kind: ReturnType<typeof buildChatStatus>["kind"]): string {
+  if (kind === "waiting") return "yellow";
+  if (kind === "tool" || kind === "complete") return "green";
+  if (kind === "reasoning") return "#6366f1";
+  return "gray";
+}
+
+function chatStatusSymbol(kind: ReturnType<typeof buildChatStatus>["kind"]): string {
+  if (kind === "waiting") return "?";
+  if (kind === "tool") return "◆";
+  if (kind === "reasoning") return "◎";
+  if (kind === "complete") return "✓";
+  if (kind === "stopped") return "■";
+  return "·";
 }
 
 export function readSettings(): DeepcodingSettings | null {
