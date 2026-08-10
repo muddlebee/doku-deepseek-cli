@@ -1734,16 +1734,39 @@ test("SessionManager resumes AskUserQuestion after restart and persists the answ
     ],
     usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
   };
-  const firstManager = createMockedClientSessionManager(workspace, [approvalResponse]);
-  const sessionId = await firstManager.createSession({ text: "choose" });
+  const firstManager = createMockedClientSessionManager(workspace, [approvalResponse], { supportsImages: true });
+  const sessionId = await firstManager.createSession({
+    text: "choose",
+    imageUrls: ["data:image/png;base64,paused-image"],
+  });
   assert.equal(firstManager.getSession(sessionId)?.status, "waiting_for_user");
+  const pausedStatePath = (firstManager as any).getPausedRunStatePath(sessionId) as string;
+  assert.match(fs.readFileSync(pausedStatePath, "utf8"), /input_image|paused-image/);
 
-  const resumedManager = createMockedClientSessionManager(workspace, [
-    createChatResponse("continued", { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 }),
-  ]);
+  let resumedRequest: Record<string, unknown> | null = null;
+  const resumedResponse = createChatResponse("continued", {
+    prompt_tokens: 3,
+    completion_tokens: 1,
+    total_tokens: 4,
+  });
+  const resumedManager = createMockedClientSessionManagerWithClient(
+    workspace,
+    {
+      chat: {
+        completions: {
+          create: async (request: Record<string, unknown>) => {
+            resumedRequest = request;
+            return createChatStreamFromResponse(resumedResponse);
+          },
+        },
+      },
+    },
+    { supportsImages: false }
+  );
   await resumedManager.replySession(sessionId, { text: "Yes" });
 
   assert.equal(resumedManager.getSession(sessionId)?.status, "completed");
+  assert.doesNotMatch(JSON.stringify(resumedRequest), /input_image|paused-image/);
   const result = resumedManager.listSessionMessages(sessionId).find((message) => {
     const params = message.messageParams as { tool_call_id?: unknown } | null;
     return message.role === "tool" && params?.tool_call_id === "ask-1";
@@ -2052,7 +2075,7 @@ function createNotifyingSessionManager(
 function createMockedClientSessionManager(
   projectRoot: string,
   responses: unknown[],
-  settings: { maxTurns?: number } = {}
+  settings: { maxTurns?: number; supportsImages?: boolean } = {}
 ): SessionManager {
   const client = {
     chat: {
@@ -2073,14 +2096,28 @@ function createMockedClientSessionManager(
       model: "test-model",
       baseURL: "https://api.deepseek.com",
       thinkingEnabled: false,
+      ...(settings.supportsImages == null
+        ? {}
+        : {
+            provider: "custom",
+            providerProfile: {
+              type: "openai-compatible" as const,
+              baseURL: "https://api.deepseek.com",
+              models: { "test-model": { supportsImages: settings.supportsImages } },
+            },
+          }),
     }),
-    getResolvedSettings: () => ({ model: "test-model", ...settings }),
+    getResolvedSettings: () => ({ model: "test-model", ...(settings.maxTurns ? { maxTurns: settings.maxTurns } : {}) }),
     renderMarkdown: (text) => text,
     onAssistantMessage: () => {},
   });
 }
 
-function createMockedClientSessionManagerWithClient(projectRoot: string, client: unknown): SessionManager {
+function createMockedClientSessionManagerWithClient(
+  projectRoot: string,
+  client: unknown,
+  options: { supportsImages?: boolean } = {}
+): SessionManager {
   return new SessionManager({
     projectRoot,
     createOpenAIClient: () => ({
@@ -2088,6 +2125,16 @@ function createMockedClientSessionManagerWithClient(projectRoot: string, client:
       model: "test-model",
       baseURL: "https://api.deepseek.com",
       thinkingEnabled: false,
+      ...(options.supportsImages == null
+        ? {}
+        : {
+            provider: "custom",
+            providerProfile: {
+              type: "openai-compatible" as const,
+              baseURL: "https://api.deepseek.com",
+              models: { "test-model": { supportsImages: options.supportsImages } },
+            },
+          }),
     }),
     getResolvedSettings: () => ({ model: "test-model" }),
     renderMarkdown: (text) => text,

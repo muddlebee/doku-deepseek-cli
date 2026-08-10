@@ -23,15 +23,12 @@ export function recordAgentTurnUsage(
   sessionId: string,
   model: string,
   agentUsage: Usage,
-  latestReasoning: string,
-  pendingReasoning: string,
   deps: Pick<OutcomeDependencies, "updateEntry">
 ): number {
   const usage = agentUsageToModelUsage(agentUsage);
   const latestRequestTokens = agentUsage.requestUsageEntries?.at(-1)?.totalTokens;
   const entry = deps.updateEntry(sessionId, (current) => ({
     ...current,
-    assistantThinking: latestReasoning || pendingReasoning || null,
     usage: accumulateUsage(current.usage, usage),
     usagePerModel: accumulateUsagePerModel(current.usagePerModel, model, usage),
     activeTokens: latestRequestTokens ?? usage?.total_tokens ?? current.activeTokens,

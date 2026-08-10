@@ -116,6 +116,8 @@ All TypeScript and TSX sources are formatted with the repository Prettier config
 - Removes the stale nested repository guide; the root `AGENTS.md` is authoritative.
 - Clears cached reply, reasoning, and refusal state when a turn completes without a final response.
 - Removes canonical image inputs before switching a session to a text-only provider.
+- Preserves the last completed reply and reasoning while a newer turn is interrupted.
+- Sanitizes images embedded in persisted approval state before resuming with a text-only provider.
 - Removes pre-release history migration code; canonical SDK history now accepts only its versioned record format.
 
 ## Validation

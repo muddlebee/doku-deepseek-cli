@@ -164,14 +164,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
 
         if (deps.isInterrupted(sessionId)) {
           await persistReplayableAgentHistory(agentSession, result.state.history);
-          recordAgentTurnUsage(
-            sessionId,
-            options.model,
-            result.runContext.usage,
-            latestReasoning,
-            pendingReasoning,
-            deps
-          );
+          recordAgentTurnUsage(sessionId, options.model, result.runContext.usage, deps);
           return;
         }
         if (result.interruptions.length) {
@@ -204,14 +197,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
 
         if (error instanceof MaxTurnsExceededError && state) {
           await agentSession.replaceItems(state.history);
-          const activeTokens = recordAgentTurnUsage(
-            sessionId,
-            options.model,
-            state.usage,
-            latestReasoning,
-            pendingReasoning,
-            deps
-          );
+          const activeTokens = recordAgentTurnUsage(sessionId, options.model, state.usage, deps);
           if (turn === maxTurns) {
             completeAgentTurnAtLimit(sessionId, deps);
             return;
@@ -238,7 +224,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
 
         if (state) {
           await persistReplayableAgentHistory(agentSession, state.history);
-          recordAgentTurnUsage(sessionId, options.model, state.usage, latestReasoning, pendingReasoning, deps);
+          recordAgentTurnUsage(sessionId, options.model, state.usage, deps);
         }
         throw error;
       }
@@ -264,6 +250,9 @@ async function buildRunInput(
       new RunContext(context),
       { contextStrategy: "replace" }
     );
+    if (!options.provider.supportsImages) {
+      await sanitizeResumedStateImages(state, agentSession);
+    }
     const approval = state.getInterruptions()[0];
     if (approval) state.approve(approval);
     return state;
@@ -311,6 +300,34 @@ async function buildRunInput(
   return persistedItems.length && pendingIndex >= 0
     ? buildAgentInputItems(messages.slice(pendingIndex), options.provider.supportsImages, deps.renderContent)
     : [];
+}
+
+async function sanitizeResumedStateImages(
+  state: RunState<AgentRuntimeContext, Agent<AgentRuntimeContext>>,
+  agentSession: FileAgentSession
+): Promise<void> {
+  let changed = false;
+  if (Array.isArray(state._originalInput)) {
+    const filtered = omitUnsupportedAgentImages(state._originalInput);
+    state._originalInput = filtered.items;
+    changed ||= filtered.changed;
+  }
+  if (state._currentTurnSessionHistoryTransactionInputItems) {
+    const filtered = omitUnsupportedAgentImages(state._currentTurnSessionHistoryTransactionInputItems);
+    state._currentTurnSessionHistoryTransactionInputItems = filtered.items;
+    changed ||= filtered.changed;
+  }
+  for (const item of state._generatedItems) {
+    if (!item.rawItem) continue;
+    const filtered = omitUnsupportedAgentImages([item.rawItem as AgentInputItem]);
+    if (!filtered.changed) continue;
+    item.rawItem = filtered.items[0] as typeof item.rawItem;
+    if ("output" in item && item.rawItem.type === "function_call_result") {
+      item.output = item.rawItem.output;
+    }
+    changed = true;
+  }
+  if (changed) await agentSession.replaceItems(state.history);
 }
 
 async function persistInterruption(
