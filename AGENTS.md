@@ -72,6 +72,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 
 - Use TypeScript ES modules; keep imports explicit.
 - Prefer small, focused functions; centralize filesystem path construction when a path is reused across files.
+- Keep changes modular and well-refactored; split growing responsibilities into focused modules rather than extending monolithic files.
 - Two-space indentation, Prettier-compatible formatting.
 - No comments unless the WHY is non-obvious. No docstrings. No trailing summary comments.
 - Standard technical English; no jargon or corporate-speak.

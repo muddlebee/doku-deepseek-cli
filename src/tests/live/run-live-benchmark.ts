@@ -33,6 +33,8 @@ type LiveSuiteReport = {
       toolLatencyMs: NumericSummary;
       llmRequestCount: NumericSummary;
       toolCallCount: NumericSummary;
+      filesReadCount: NumericSummary;
+      correctnessScore: NumericSummary;
       totalTokens: NumericSummary;
     };
   }>;
@@ -97,6 +99,8 @@ async function main(): Promise<void> {
       const toolLatencies = samples.map((sample) => sample.toolLatencyMs);
       const llmCalls = samples.map((sample) => sample.llmRequestCount);
       const toolCalls = samples.map((sample) => sample.toolCallCount);
+      const filesRead = samples.map((sample) => sample.filesRead.length);
+      const correctness = samples.map((sample) => (sample.ok ? sample.correctness.score : 0));
       const totalTokens = samples.map((sample) => sample.usage?.total_tokens ?? 0);
       return {
         scenarioId: scenario.id,
@@ -110,6 +114,8 @@ async function main(): Promise<void> {
           toolLatencyMs: summarizeNumbers(toolLatencies),
           llmRequestCount: summarizeNumbers(llmCalls),
           toolCallCount: summarizeNumbers(toolCalls),
+          filesReadCount: summarizeNumbers(filesRead),
+          correctnessScore: summarizeNumbers(correctness),
           totalTokens: summarizeNumbers(totalTokens),
         },
       };
@@ -180,6 +186,13 @@ function validateSuiteConfig(input: LiveSuiteConfig): LiveSuiteConfig {
     if (!Array.isArray(scenario.prompts) || scenario.prompts.length === 0) {
       throw new Error(`Invalid live scenario "${scenario.id}": prompts[] is required.`);
     }
+    if (
+      scenario.expectedAnswerTerms !== undefined &&
+      (!Array.isArray(scenario.expectedAnswerTerms) ||
+        scenario.expectedAnswerTerms.some((term) => typeof term !== "string" || !term))
+    ) {
+      throw new Error(`Invalid live scenario "${scenario.id}": expectedAnswerTerms must contain strings.`);
+    }
   }
   return input;
 }
@@ -228,11 +241,14 @@ function printSummary(report: LiveSuiteReport): void {
     const duration = scenario.summary.durationMs;
     const llm = scenario.summary.llmRequestCount;
     const tools = scenario.summary.toolCallCount;
+    const files = scenario.summary.filesReadCount;
+    const correctness = scenario.summary.correctnessScore;
     const tokens = scenario.summary.totalTokens;
     console.log(
       `- ${scenario.scenarioId}: completed=${scenario.summary.completed}/${report.runs}, ` +
         `duration median=${duration.median}ms (p95=${duration.p95}ms), ` +
         `llm calls median=${llm.median}, tool calls median=${tools.median}, ` +
+        `files read median=${files.median}, correctness median=${correctness.median}, ` +
         `tokens median=${tokens.median}`
     );
   }

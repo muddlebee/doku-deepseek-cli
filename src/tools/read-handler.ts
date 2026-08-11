@@ -47,6 +47,9 @@ type TextReadResult = {
   startLine: number;
   endLine: number;
   totalLines: number;
+  truncatedLines: number;
+  nextOffset: number | null;
+  complete: boolean;
   isPartialView: boolean;
   encoding: BufferEncoding;
   lineEndings: "LF" | "CRLF";
@@ -149,6 +152,7 @@ export async function handleReadTool(
         ok: true,
         name: "read",
         output,
+        metadata: { file_path: filePath, bytes: stat.size },
       };
     }
 
@@ -193,6 +197,7 @@ export async function handleReadTool(
         name: "read",
         output: `data:application/pdf;base64,${base64}`,
         metadata: {
+          file_path: filePath,
           mime: "application/pdf",
           encoding: "base64",
           bytes: buffer.length,
@@ -215,6 +220,7 @@ export async function handleReadTool(
         name: "read",
         output: "File loaded.",
         metadata: {
+          file_path: filePath,
           mime,
           bytes: buffer.length,
         },
@@ -256,20 +262,30 @@ export async function handleReadTool(
       textResult.endLine,
       textResult.output
     );
+    const metadata: Record<string, unknown> = {
+      file_path: filePath,
+      bytes: stat.size,
+      start_line: textResult.startLine,
+      end_line: textResult.endLine,
+      total_lines: textResult.totalLines,
+      truncated: !textResult.complete,
+      truncated_lines: textResult.truncatedLines,
+      complete: textResult.complete,
+      next_offset: textResult.nextOffset,
+    };
+    if (snippet) {
+      metadata.snippet = {
+        id: snippet.id,
+        filePath: snippet.filePath,
+        startLine: snippet.startLine,
+        endLine: snippet.endLine,
+      };
+    }
     return {
       ok: true,
       name: "read",
       output: textResult.output,
-      metadata: snippet
-        ? {
-            snippet: {
-              id: snippet.id,
-              filePath: snippet.filePath,
-              startLine: snippet.startLine,
-              endLine: snippet.endLine,
-            },
-          }
-        : undefined,
+      metadata,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -404,12 +420,18 @@ function readTextFile(filePath: string, offset: number | null, limit: number): T
   const metadata = readTextFileWithMetadata(filePath);
   const raw = metadata.content;
   if (!raw) {
+    if (offset !== null) {
+      throw new Error(`offset ${offset} exceeds total line count (0).`);
+    }
     return {
       content: "",
       output: "WARNING: File is empty.",
       startLine: offset ?? 1,
-      endLine: offset ?? 1,
+      endLine: 0,
       totalLines: 0,
+      truncatedLines: 0,
+      nextOffset: null,
+      complete: true,
       isPartialView: false,
       encoding: metadata.encoding,
       lineEndings: metadata.lineEndings,
@@ -419,14 +441,22 @@ function readTextFile(filePath: string, offset: number | null, limit: number): T
 
   const startLine = offset ?? 1;
   const { selectedLines, totalLines } = selectLines(raw, startLine, limit);
-  const endLine = selectedLines.length > 0 ? startLine + selectedLines.length - 1 : startLine;
+  if (offset !== null && offset > totalLines) {
+    throw new Error(`offset ${offset} exceeds total line count (${totalLines}).`);
+  }
+  const endLine = selectedLines.length > 0 ? startLine + selectedLines.length - 1 : Math.min(startLine - 1, totalLines);
+  const truncatedLines = selectedLines.filter((line) => line.length > MAX_LINE_LENGTH).length;
+  const reachedEnd = endLine >= totalLines;
   const isPartialView = startLine !== 1 || endLine < totalLines;
   return {
-    content: selectedLines.join("\n"),
+    content: selectedLines.join("\n") + (startLine === 1 && reachedEnd && raw.endsWith("\n") ? "\n" : ""),
     output: formatWithLineNumbers(selectedLines, startLine),
     startLine,
     endLine,
     totalLines,
+    truncatedLines,
+    nextOffset: reachedEnd ? null : endLine + 1,
+    complete: reachedEnd && truncatedLines === 0,
     isPartialView,
     encoding: metadata.encoding,
     lineEndings: metadata.lineEndings,
@@ -441,23 +471,18 @@ function selectLines(raw: string, startLine: number, limit: number): { selectedL
 
   for (let index = 0; index <= raw.length; index += 1) {
     const atEnd = index === raw.length;
-    if (!atEnd && raw[index] !== "\n") {
-      continue;
-    }
-
-    if (currentLine >= startLine && selectedLines.length < limit) {
+    if (!atEnd && raw[index] !== "\n") continue;
+    const isTerminalEmptyLine = atEnd && lineStartOffset === raw.length;
+    if (!isTerminalEmptyLine && currentLine >= startLine && selectedLines.length < limit) {
       selectedLines.push(raw.slice(lineStartOffset, index));
     }
-
-    if (atEnd) {
-      break;
+    if (!atEnd) {
+      currentLine += 1;
+      lineStartOffset = index + 1;
     }
-
-    currentLine += 1;
-    lineStartOffset = index + 1;
   }
 
-  return { selectedLines, totalLines: currentLine };
+  return { selectedLines, totalLines: currentLine - (raw.endsWith("\n") ? 1 : 0) };
 }
 
 function formatWithLineNumbers(lines: string[], startLineNumber: number): string {
