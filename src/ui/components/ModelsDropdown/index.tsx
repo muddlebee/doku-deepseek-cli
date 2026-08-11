@@ -214,6 +214,7 @@ const ModelsDropdown: React.FC<Props> = ({
         <TextInput
           defaultValue={customModel ?? ""}
           placeholder="provider/model-name"
+          onChange={setCustomModel}
           onSubmit={(value) => {
             const model = value.trim();
             if (model) {

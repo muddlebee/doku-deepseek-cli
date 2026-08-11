@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import type OpenAI from "openai";
+import { getWebSearchApiKeyEnv } from "../common/web-search-provider";
 import { generateProviderText } from "../providers/generate-text";
 import type { CreateOpenAIClient, ToolExecutionContext, ToolExecutionResult } from "./executor";
 
@@ -47,7 +48,7 @@ export async function handleWebSearchTool(
   const env = llmContext?.env ?? {};
 
   if (provider === "tavily") {
-    const apiKey = env.TAVILY_API_KEY?.trim();
+    const apiKey = env[getWebSearchApiKeyEnv("tavily")]?.trim();
     if (!apiKey) {
       context.onNeedsWebSearchSetup?.();
       return {
@@ -61,7 +62,7 @@ export async function handleWebSearchTool(
   }
 
   if (provider === "firecrawl") {
-    const apiKey = env.FIRECRAWL_API_KEY?.trim();
+    const apiKey = env[getWebSearchApiKeyEnv("firecrawl")]?.trim();
     if (!apiKey) {
       context.onNeedsWebSearchSetup?.();
       return {

@@ -145,6 +145,19 @@ test("SessionManager retains and reports processes that fail to stop", async () 
   assert.equal(notices.at(-1)?.meta?.notice, "error");
   assert.equal(notices.at(-1)?.content, "Failed to stop processes: 123");
   assert.equal(hasProcessStopFailure({ ...session!, processes: null }), true);
+
+  (manager as any).processTracker.remove(sessionId, 123);
+  (manager as any).processTracker.killAll = () => ({ killedPids: [], failedPids: [] });
+  manager.interruptSession(sessionId);
+  assert.equal(manager.getSession(sessionId)?.status, "failed");
+  assert.equal(manager.getSession(sessionId)?.failReason, "Failed to stop processes: 123");
+
+  (manager as any).processTracker.add(sessionId, 456, "sleep 20");
+  (manager as any).processTracker.killAll = () => ({ killedPids: [456], failedPids: [] });
+  manager.interruptSession(sessionId);
+  assert.equal(manager.getSession(sessionId)?.status, "interrupted");
+  assert.equal(manager.getSession(sessionId)?.failReason, "interrupted");
+  assert.equal(manager.getSession(sessionId)?.processes, null);
 });
 
 test("SessionManager marks skills loaded from existing session messages", async () => {

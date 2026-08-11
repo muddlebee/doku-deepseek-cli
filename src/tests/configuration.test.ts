@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSettings } from "../settings";
-import { getConfigurationIssue } from "../ui/configuration";
+import { getConfigurationIssue, getPostSetupConfigurationIssue } from "../ui/configuration";
 import { getConfigurationIssueAction } from "../ui/ConfigurationIssueScreen";
 
 const defaults = { model: "gpt-5.6-sol", baseURL: "https://api.openai.com/v1" };
@@ -51,4 +51,13 @@ test("configuration retry screen supports retry and Ctrl+C exit", () => {
   assert.equal(getConfigurationIssueAction("r", {}), "retry");
   assert.equal(getConfigurationIssueAction("c", { ctrl: true }), "exit");
   assert.equal(getConfigurationIssueAction("c", {}), null);
+});
+
+test("post-setup preflight reports an explicit credential override", () => {
+  const settings = resolveSettings(
+    { provider: "openai", credentialProvider: "openai", env: { API_KEY: "saved-key" } },
+    defaults,
+    { DOKU_OPENAI_API_KEY: "override-key" }
+  );
+  assert.match(getPostSetupConfigurationIssue(settings, "saved-key") ?? "", /DOKU_OPENAI_API_KEY/);
 });

@@ -24,7 +24,8 @@ export function ConfigurationIssueScreen({ issue, onRetry }: Props): React.React
       <Text dimColor>
         A project setting or DOKU_* environment variable may override the user settings saved by setup.
       </Text>
-      <Text>Fix the controlling source, then press R to retry · Ctrl+C exit</Text>
+      <Text>Fix the controlling source, then press R to retry.</Text>
+      <Text dimColor>Restart doku after changing shell environment variables · Ctrl+C exit</Text>
     </Box>
   );
 }

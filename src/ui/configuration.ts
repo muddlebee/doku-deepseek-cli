@@ -1,4 +1,5 @@
 import type { ResolvedDeepcodingSettings } from "../settings";
+import { getProviderApiKeyEnv } from "../common/provider-credentials";
 
 export function getConfigurationIssue(settings: ResolvedDeepcodingSettings): string | null {
   if (!settings.apiKey) {
@@ -22,6 +23,19 @@ export function getConfigurationIssue(settings: ResolvedDeepcodingSettings): str
   }
 
   return null;
+}
+
+export function getPostSetupConfigurationIssue(
+  settings: ResolvedDeepcodingSettings,
+  confirmedApiKey: string
+): string | null {
+  const issue = getConfigurationIssue(settings);
+  if (issue) return issue;
+  if (settings.apiKey === confirmedApiKey) return null;
+
+  const providerKey = getProviderApiKeyEnv(settings.provider, settings.providerProfile.apiKeyEnv);
+  const providerOverride = providerKey ? ` or DOKU_${providerKey}` : "";
+  return `A project setting or explicit DOKU credential override takes precedence over the key saved by setup. Update the controlling project setting or unset DOKU_API_KEY${providerOverride}, then restart doku.`;
 }
 
 function isSupportedProviderType(value: unknown): boolean {

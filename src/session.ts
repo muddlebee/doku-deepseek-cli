@@ -2,6 +2,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
 import { DEEPSEEK_V4_MODELS } from "./common/model-capabilities";
+import { getWebSearchApiKeyEnv } from "./common/web-search-provider";
 import { getTools, type ToolDefinition } from "./prompt";
 import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
 import { McpManager } from "./mcp/mcp-manager";
@@ -15,7 +16,7 @@ import { identifyMatchingSkills } from "./session/skill-matcher";
 import { appendPromptSkills } from "./session/prompt-skills";
 import { SessionMessageFactory } from "./session/message-factory";
 import { notifyTaskCompletion, reportNewPrompt } from "./session/notifications";
-import { hasProcessStopFailure, SessionProcessTracker } from "./session/process-tracker";
+import { formatProcessStopFailure, hasProcessStopFailure, SessionProcessTracker } from "./session/process-tracker";
 import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
@@ -560,8 +561,12 @@ export class SessionManager {
     const settings = this.getResolvedSettings();
     const { webSearchProvider, webSearchTool } = settings;
     if (webSearchTool) return "custom-script";
-    if (webSearchProvider === "tavily" && settings.env?.TAVILY_API_KEY?.trim()) return "tavily";
-    if (webSearchProvider === "firecrawl" && settings.env?.FIRECRAWL_API_KEY?.trim()) return "firecrawl";
+    if (
+      (webSearchProvider === "tavily" || webSearchProvider === "firecrawl") &&
+      settings.env?.[getWebSearchApiKeyEnv(webSearchProvider)]?.trim()
+    ) {
+      return webSearchProvider;
+    }
     return undefined;
   }
 
@@ -589,7 +594,7 @@ export class SessionManager {
   }
 
   interruptSession(sessionId: string): void {
-    const { failedPids } = this.processTracker.killAll(sessionId);
+    const { killedPids, failedPids } = this.processTracker.killAll(sessionId);
 
     const controller = this.sessionControllers.get(sessionId);
     if (controller) {
@@ -599,17 +604,23 @@ export class SessionManager {
 
     const now = new Date().toISOString();
     const failedProcessIds = new Set(failedPids.map(String));
-    const failure = failedPids.length > 0 ? `Failed to stop processes: ${failedPids.join(", ")}` : null;
-    this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      status: failure ? "failed" : "interrupted",
-      failReason: failure ?? "interrupted",
-      processes: failure
-        ? new Map([...(entry.processes ?? [])].filter(([processId]) => failedProcessIds.has(processId)))
-        : null,
-      updateTime: now,
-    }));
-    if (failure) this.emitRuntimeError(sessionId, failure);
+    const currentFailure = formatProcessStopFailure(failedPids);
+    this.updateSessionEntry(sessionId, (entry) => {
+      const preservePreviousFailure = killedPids.length === 0 && hasProcessStopFailure(entry);
+      const failure = currentFailure ?? (preservePreviousFailure ? entry.failReason : null);
+      return {
+        ...entry,
+        status: failure ? "failed" : "interrupted",
+        failReason: failure ?? "interrupted",
+        processes: currentFailure
+          ? new Map([...(entry.processes ?? [])].filter(([processId]) => failedProcessIds.has(processId)))
+          : failure
+            ? entry.processes
+            : null,
+        updateTime: now,
+      };
+    });
+    if (currentFailure) this.emitRuntimeError(sessionId, currentFailure);
   }
 
   private isInterrupted(sessionId: string): boolean {

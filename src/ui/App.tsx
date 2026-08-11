@@ -6,6 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createOpenAIClient } from "../common/openai-client";
+import { getWebSearchApiKeyEnv } from "../common/web-search-provider";
 import {
   type LlmStreamProgress,
   type MessageMeta,
@@ -418,7 +419,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     apiKey: string;
   }): void {
     const existing = readSettings() ?? {};
-    const envKey = provider === "tavily" ? "TAVILY_API_KEY" : "FIRECRAWL_API_KEY";
+    const envKey = getWebSearchApiKeyEnv(provider);
     writeSettings({ ...existing, webSearchProvider: provider, env: { ...existing.env, [envKey]: apiKey } });
     closeSecondaryView();
   }
