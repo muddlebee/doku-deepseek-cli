@@ -4,6 +4,7 @@ import ignore, { type Ignore } from "ignore";
 import type { ToolExecutionContext, ToolExecutionResult } from "./executor";
 
 const MAX_PAGE_SIZE = 500;
+const MAX_TRAVERSED_ENTRIES = 10_000;
 const DEFAULT_MAX_DEPTH = 5;
 
 type PathEntry = {
@@ -22,6 +23,11 @@ type ListFilesResult = {
   total: number;
   truncated: boolean;
   next_offset: number | null;
+};
+
+type TraversalState = {
+  visited: number;
+  truncated: boolean;
 };
 
 export async function handleListFilesTool(
@@ -73,6 +79,7 @@ export async function handleListFilesTool(
   }
 
   const entries: PathEntry[] = [];
+  const traversal: TraversalState = { visited: 0, truncated: false };
   const initialIgnoreScopes = loadAncestorIgnoreScopes(context.projectRoot, targetPath);
   walk({
     directory: targetPath,
@@ -84,17 +91,19 @@ export async function handleListFilesTool(
     matcher,
     ignoreScopes: initialIgnoreScopes,
     entries,
+    traversal,
   });
   entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
   const page = entries.slice(offset.value, offset.value + limit.value);
-  const truncated = offset.value + page.length < entries.length;
+  const hasMoreEntries = offset.value + page.length < entries.length;
+  const truncated = hasMoreEntries || traversal.truncated;
   const result: ListFilesResult = {
     files: page.filter((entry) => entry.kind === "file").map((entry) => entry.path),
     dirs: page.filter((entry) => entry.kind === "dir").map((entry) => entry.path),
     total: entries.length,
     truncated,
-    next_offset: truncated ? offset.value + page.length : null,
+    next_offset: hasMoreEntries ? offset.value + page.length : null,
   };
 
   return {
@@ -115,33 +124,46 @@ function walk(options: {
   matcher: ((candidate: string) => boolean) | null;
   ignoreScopes: IgnoreScope[];
   entries: PathEntry[];
+  traversal: TraversalState;
 }): void {
   const ignoreScopes = addIgnoreScope(options.directory, options.ignoreScopes);
-  let dirEntries: fs.Dirent[];
+  let directory: fs.Dir;
   try {
-    dirEntries = fs.readdirSync(options.directory, { withFileTypes: true });
+    directory = fs.opendirSync(options.directory);
   } catch {
     return;
   }
 
-  for (const entry of dirEntries) {
-    if (entry.name === ".git" || entry.name === "node_modules") continue;
-    if (!options.includeHidden && entry.name.startsWith(".")) continue;
+  try {
+    let entry: fs.Dirent | null;
+    while ((entry = directory.readSync()) !== null) {
+      if (options.traversal.visited >= MAX_TRAVERSED_ENTRIES) {
+        options.traversal.truncated = true;
+        return;
+      }
+      options.traversal.visited += 1;
 
-    const fullPath = path.join(options.directory, entry.name);
-    const kind = getEntryKind(fullPath, entry);
-    if (!kind) continue;
-    if (isIgnored(fullPath, kind === "dir", ignoreScopes)) continue;
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      if (!options.includeHidden && entry.name.startsWith(".")) continue;
 
-    const targetRelative = path.relative(options.targetPath, fullPath).replaceAll(path.sep, "/");
-    const projectRelative = path.relative(options.projectRoot, fullPath).replaceAll(path.sep, "/") || ".";
-    if (!options.matcher || options.matcher(targetRelative)) {
-      options.entries.push({ path: projectRelative, kind });
+      const fullPath = path.join(options.directory, entry.name);
+      const kind = getEntryKind(fullPath, entry);
+      if (!kind) continue;
+      if (isIgnored(fullPath, kind === "dir", ignoreScopes)) continue;
+
+      const targetRelative = path.relative(options.targetPath, fullPath).replaceAll(path.sep, "/");
+      const projectRelative = path.relative(options.projectRoot, fullPath).replaceAll(path.sep, "/") || ".";
+      if (!options.matcher || options.matcher(targetRelative)) {
+        options.entries.push({ path: projectRelative, kind });
+      }
+
+      if (kind === "dir" && !entry.isSymbolicLink() && options.depth < options.maxDepth) {
+        walk({ ...options, directory: fullPath, depth: options.depth + 1, ignoreScopes });
+        if (options.traversal.truncated) return;
+      }
     }
-
-    if (kind === "dir" && !entry.isSymbolicLink() && options.depth < options.maxDepth) {
-      walk({ ...options, directory: fullPath, depth: options.depth + 1, ignoreScopes });
-    }
+  } finally {
+    directory.closeSync();
   }
 }
 

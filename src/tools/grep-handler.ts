@@ -56,6 +56,11 @@ type SearchResults = {
   totalMatches: number;
 };
 
+type ContextLine = {
+  line: number;
+  content: string;
+};
+
 export async function handleGrepTool(
   args: Record<string, unknown>,
   context: ToolExecutionContext
@@ -98,7 +103,14 @@ export async function handleGrepTool(
   if (fileType) rgArgs.push("--type", fileType);
   rgArgs.push("--", pattern, toSearchArgument(searchPath, context.projectRoot));
 
-  const search = await runRipgrep(rgArgs, context.projectRoot, offset.value, limit.value, context.signal);
+  const search = await runRipgrep(
+    rgArgs,
+    context.projectRoot,
+    offset.value,
+    limit.value,
+    contextLines.value,
+    context.signal
+  );
   if (!search.ok) return { ok: false, name: "Grep", error: search.error };
 
   return buildResult(mode.value, search.value, offset.value, limit.value);
@@ -170,6 +182,7 @@ async function runRipgrep(
   projectRoot: string,
   offset: number,
   limit: number,
+  contextLines: number,
   signal?: AbortSignal
 ): Promise<{ ok: true; value: SearchResults } | { ok: false; error: string }> {
   return new Promise((resolve) => {
@@ -177,7 +190,7 @@ async function runRipgrep(
     const lines = readline.createInterface({ input: child.stdout });
     const matches: GrepMatch[] = [];
     const fileCounts = new Map<string, number>();
-    const pendingContext = new Map<string, string[]>();
+    const pendingContext = new Map<string, ContextLine[]>();
     const lastPagedMatches = new Map<string, GrepMatch[]>();
     let totalMatches = 0;
     let stderr = "";
@@ -222,10 +235,15 @@ async function runRipgrep(
       }
       if (message.type === "context") {
         const file = projectRelativePath(projectRoot, decodeRgText(message.data.path));
-        const context = clipContent(stripLineEnding(decodeRgText(message.data.lines)));
+        const context = {
+          line: message.data.line_number,
+          content: clipContent(stripLineEnding(decodeRgText(message.data.lines))),
+        };
         for (const match of lastPagedMatches.get(file) ?? []) {
-          match.context_after ??= [];
-          match.context_after.push(context);
+          if (context.line > match.end_line && context.line <= match.end_line + contextLines) {
+            match.context_after ??= [];
+            match.context_after.push(context.content);
+          }
         }
         const pending = pendingContext.get(file) ?? [];
         pending.push(context);
@@ -237,7 +255,12 @@ async function runRipgrep(
       const file = projectRelativePath(projectRoot, decodeRgText(message.data.path));
       const submatches = message.data.submatches.length > 0 ? message.data.submatches : [{ start: 0, end: 0 }];
       fileCounts.set(file, (fileCounts.get(file) ?? 0) + submatches.length);
-      const before = pendingContext.get(file) ?? [];
+      const before = (pendingContext.get(file) ?? [])
+        .filter(
+          (context) =>
+            context.line < message.data.line_number && context.line >= message.data.line_number - contextLines
+        )
+        .map((context) => context.content);
       pendingContext.set(file, []);
       const pagedForLine: GrepMatch[] = [];
       const rawLineText = decodeRgText(message.data.lines);
@@ -246,7 +269,7 @@ async function runRipgrep(
         const index = totalMatches;
         totalMatches += 1;
         if (index < offset || matches.length >= limit) continue;
-        const position = getPosition(rawLineText, message.data.line_number, submatch.start, submatch.end);
+        const position = getPosition(message.data.lines, message.data.line_number, submatch.start, submatch.end);
         const match: GrepMatch = {
           file,
           ...position,
@@ -273,17 +296,17 @@ async function runRipgrep(
   });
 }
 
-function getPosition(text: string, baseLine: number, start: number, end: number) {
-  const buffer = Buffer.from(text);
-  const startPrefix = buffer.subarray(0, start).toString("utf8");
-  const endPrefix = buffer.subarray(0, end).toString("utf8");
-  const startLineOffset = countNewlines(startPrefix);
-  const endLineOffset = countNewlines(endPrefix);
+function getPosition(value: RgText, baseLine: number, start: number, end: number) {
+  const buffer = decodeRgBytes(value);
+  const startLineOffset = countByte(buffer, 0, start, 0x0a);
+  const endLineOffset = countByte(buffer, 0, end, 0x0a);
+  const startLineBreak = start === 0 ? -1 : buffer.lastIndexOf(0x0a, start - 1);
+  const endLineBreak = end === 0 ? -1 : buffer.lastIndexOf(0x0a, end - 1);
   return {
     line: baseLine + startLineOffset,
-    column: Buffer.byteLength(startPrefix.slice(startPrefix.lastIndexOf("\n") + 1)) + 1,
+    column: start - startLineBreak,
     end_line: baseLine + endLineOffset,
-    end_column: Buffer.byteLength(endPrefix.slice(endPrefix.lastIndexOf("\n") + 1)) + 1,
+    end_column: end - endLineBreak,
   };
 }
 
@@ -296,7 +319,11 @@ function parseMessage(raw: string): RgMessage | null {
 }
 
 function decodeRgText(value: RgText): string {
-  return "text" in value ? value.text : Buffer.from(value.bytes, "base64").toString("utf8");
+  return decodeRgBytes(value).toString("utf8");
+}
+
+function decodeRgBytes(value: RgText): Buffer {
+  return "text" in value ? Buffer.from(value.text) : Buffer.from(value.bytes, "base64");
 }
 
 function projectRelativePath(projectRoot: string, rgPath: string): string {
@@ -319,8 +346,12 @@ function clipContent(value: string): string {
   return value.length > MAX_CONTENT_LENGTH ? value.slice(0, MAX_CONTENT_LENGTH) : value;
 }
 
-function countNewlines(value: string): number {
-  return (value.match(/\n/g) ?? []).length;
+function countByte(buffer: Buffer, start: number, end: number, byte: number): number {
+  let count = 0;
+  for (let index = start; index < end; index += 1) {
+    if (buffer[index] === byte) count += 1;
+  }
+  return count;
 }
 
 function isLiteralPattern(pattern: string): boolean {

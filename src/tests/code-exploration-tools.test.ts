@@ -141,6 +141,44 @@ test("Grep content mode reports occurrence positions, context, totals, and pagin
   assert.equal(secondPayload.next_offset, null);
 });
 
+test("Grep separates context around disjoint match groups", async () => {
+  const workspace = createWorkspace();
+  fs.writeFileSync(
+    path.join(workspace, "groups.txt"),
+    "before first\nmatch\nafter first\ngap\ngap\ngap\ngap\nbefore second\nmatch\nafter second\n",
+    "utf8"
+  );
+
+  const result = await handleGrepTool({ pattern: "match", context_lines: 1 }, context(workspace, "Grep"));
+  const payload = output(result) as {
+    matches: Array<{ context_before?: string[]; context_after?: string[] }>;
+  };
+
+  assert.deepEqual(payload.matches[0]?.context_before, ["before first"]);
+  assert.deepEqual(payload.matches[0]?.context_after, ["after first"]);
+  assert.deepEqual(payload.matches[1]?.context_before, ["before second"]);
+  assert.deepEqual(payload.matches[1]?.context_after, ["after second"]);
+});
+
+test("Grep computes byte positions from non-UTF-8 ripgrep payloads", async () => {
+  const workspace = createWorkspace();
+  fs.writeFileSync(path.join(workspace, "invalid.bin"), Buffer.from([0xff, 0x20, ...Buffer.from("alpha\n")]));
+
+  const result = await handleGrepTool({ pattern: "alpha" }, context(workspace, "Grep"));
+  const payload = output(result) as {
+    matches: Array<{ line: number; column: number; end_line: number; end_column: number }>;
+  };
+
+  assert.deepEqual(payload.matches[0], {
+    file: "invalid.bin",
+    line: 1,
+    column: 3,
+    end_line: 1,
+    end_column: 8,
+    content: "� alpha",
+  });
+});
+
 test("Grep files and count modes report mode-specific totals", async () => {
   const workspace = createWorkspace();
   fs.writeFileSync(path.join(workspace, "a.ts"), "hit hit\n", "utf8");
@@ -338,6 +376,26 @@ test("ListFiles paginates one combined sorted entry list before separating kinds
     truncated: false,
     next_offset: null,
   });
+});
+
+test("ListFiles bounds filesystem traversal independently of page size", async () => {
+  const workspace = createWorkspace();
+  for (let index = 0; index <= 10_000; index += 1) {
+    fs.writeFileSync(path.join(workspace, `entry-${index}.txt`), "", "utf8");
+  }
+
+  const result = await handleListFilesTool({ limit: 1 }, context(workspace, "ListFiles"));
+  const payload = output(result) as {
+    files: string[];
+    total: number;
+    truncated: boolean;
+    next_offset: number | null;
+  };
+
+  assert.equal(payload.files.length, 1);
+  assert.equal(payload.total, 10_000);
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.next_offset, 1);
 });
 
 function createWorkspace(): string {
