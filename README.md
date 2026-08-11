@@ -164,9 +164,12 @@ npm run check
 
 # Tests
 npm test
+
+# Deterministic Read/Grep/ListFiles benchmark (no network, API, or LLM)
+npm run benchmark:tools -- --samples 1 --scenario list-files-full-walk
 ```
 
-See the [CLI dogfooding guide](docs/dogfooding.md) for the OpenAI and DeepSeek end-to-end matrix.
+See the [tool-handler benchmark guide](docs/tool-handler-benchmarks.md) for workload and comparison guidance. See the [CLI dogfooding guide](docs/dogfooding.md) for the OpenAI and DeepSeek end-to-end matrix.
 
 ## Contributing
 
