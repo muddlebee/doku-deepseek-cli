@@ -359,9 +359,11 @@ test("ListFiles controls hidden entries, excludes .git, and does not traverse di
   const workspace = createWorkspace();
   fs.mkdirSync(path.join(workspace, ".hidden"));
   fs.mkdirSync(path.join(workspace, ".git"));
+  fs.mkdirSync(path.join(workspace, "node_modules", "package"), { recursive: true });
   fs.mkdirSync(path.join(workspace, "real"));
   fs.writeFileSync(path.join(workspace, ".hidden", "secret.ts"), "", "utf8");
   fs.writeFileSync(path.join(workspace, ".git", "config"), "", "utf8");
+  fs.writeFileSync(path.join(workspace, "node_modules", "package", "index.js"), "", "utf8");
   fs.writeFileSync(path.join(workspace, "real", "value.ts"), "", "utf8");
   fs.symlinkSync(path.join(workspace, "real"), path.join(workspace, "linked"), "dir");
 
@@ -395,6 +397,19 @@ test("ListFiles controls hidden entries, excludes .git, and does not traverse di
     truncated: false,
     next_offset: null,
   });
+
+  fs.symlinkSync(path.join(workspace, "node_modules"), path.join(workspace, "dependency-link"), "dir");
+  for (const requestedPath of ["node_modules", "node_modules/package", "dependency-link"]) {
+    const dependencyDirectory = await handleListFilesTool({ path: requestedPath }, context(workspace, "ListFiles"));
+    assert.deepEqual(output(dependencyDirectory), {
+      files: [],
+      dirs: [],
+      total: 0,
+      total_is_exact: true,
+      truncated: false,
+      next_offset: null,
+    });
+  }
 });
 
 test("ListFiles paginates one combined sorted entry list before separating kinds", async () => {
