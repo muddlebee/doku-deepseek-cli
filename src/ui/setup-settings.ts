@@ -12,6 +12,9 @@ export function buildSetupSettings(existing: DeepcodingSettings, result: SetupRe
       apiMode: result.apiMode,
     };
   }
+  const credentialEnv = existingProfile?.apiKeyEnv?.trim();
+  const env: Record<string, string> = { ...existing.env, API_KEY: result.apiKey, BASE_URL: result.baseURL };
+  if (credentialEnv) env[credentialEnv] = result.apiKey;
 
   return {
     ...existing,
@@ -20,6 +23,6 @@ export function buildSetupSettings(existing: DeepcodingSettings, result: SetupRe
     model: result.model,
     apiMode: result.apiMode,
     ...(Object.keys(providers).length ? { providers } : {}),
-    env: { ...existing.env, API_KEY: result.apiKey, BASE_URL: result.baseURL },
+    env,
   };
 }

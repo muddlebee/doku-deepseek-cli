@@ -33,6 +33,8 @@ test("setup preserves metadata on an existing provider profile", () => {
   });
   assert.equal(settings.providers?.openai?.baseURL, "https://api.openai.com/v1");
   assert.equal(settings.providers?.openai?.apiMode, "auto");
+  assert.equal(settings.env?.API_KEY, "sk-test");
+  assert.equal(settings.env?.OPENAI_GATEWAY_KEY, "sk-test");
 });
 
 test("setup does not shadow a fresh built-in provider profile", () => {
