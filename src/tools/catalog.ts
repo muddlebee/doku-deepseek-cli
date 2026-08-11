@@ -211,7 +211,7 @@ export const BUILT_IN_TOOL_CATALOG = [
       limit: { type: "integer", minimum: 1, maximum: 500, description: "Page size (1–500). Default 500." },
       cursor: {
         type: "string",
-        description: "Opaque traversal cursor. When provided, reset offset to 0.",
+        description: "Opaque, short-lived traversal cursor. When provided, reset offset to 0.",
       },
     },
     [],

@@ -325,6 +325,7 @@ test("ListFiles matches POSIX globs relative to the requested directory", async 
     files: ["src/nested/child.ts", "src/root.ts"],
     dirs: [],
     total: 2,
+    total_is_exact: true,
     truncated: false,
     next_offset: null,
   });
@@ -390,6 +391,7 @@ test("ListFiles controls hidden entries, excludes .git, and does not traverse di
     files: [],
     dirs: [],
     total: 0,
+    total_is_exact: true,
     truncated: false,
     next_offset: null,
   });
@@ -407,6 +409,7 @@ test("ListFiles paginates one combined sorted entry list before separating kinds
     files: ["b.txt"],
     dirs: ["a-dir"],
     total: 4,
+    total_is_exact: true,
     truncated: true,
     next_offset: 2,
   });
@@ -416,6 +419,7 @@ test("ListFiles paginates one combined sorted entry list before separating kinds
     files: ["d.txt"],
     dirs: ["c-dir"],
     total: 4,
+    total_is_exact: true,
     truncated: false,
     next_offset: null,
   });
@@ -423,14 +427,16 @@ test("ListFiles paginates one combined sorted entry list before separating kinds
 
 test("ListFiles bounds filesystem traversal independently of page size", async () => {
   const workspace = createWorkspace();
+  fs.mkdirSync(path.join(workspace, "bulk"));
   for (let index = 0; index <= 10_000; index += 1) {
-    fs.writeFileSync(path.join(workspace, `entry-${index}.txt`), "", "utf8");
+    fs.writeFileSync(path.join(workspace, "bulk", `entry-${index}.txt`), "", "utf8");
   }
 
-  const result = await handleListFilesTool({ limit: 1 }, context(workspace, "ListFiles"));
+  const result = await handleListFilesTool({ path: "bulk", limit: 1 }, context(workspace, "ListFiles"));
   const payload = output(result) as {
     files: string[];
     total: number;
+    total_is_exact: boolean;
     truncated: boolean;
     next_offset: number | null;
     next_cursor?: string;
@@ -438,24 +444,58 @@ test("ListFiles bounds filesystem traversal independently of page size", async (
 
   assert.equal(payload.files.length, 1);
   assert.equal(payload.total, 10_000);
+  assert.equal(payload.total_is_exact, false);
   assert.equal(payload.truncated, true);
-  assert.equal(payload.next_offset, 1);
+  assert.equal(payload.next_offset, null);
   assert.equal(typeof payload.next_cursor, "string");
 
-  const endOfBatch = output(
-    await handleListFilesTool({ offset: 9_999, limit: 1 }, context(workspace, "ListFiles"))
-  ) as { next_offset: number | null; next_cursor?: string };
-  assert.equal(endOfBatch.next_offset, null);
-  assert.equal(typeof endOfBatch.next_cursor, "string");
+  const files = new Set(payload.files);
+  const firstCursor = payload.next_cursor!;
+  const conflictingOptions = await handleListFilesTool(
+    { cursor: firstCursor, path: "." },
+    context(workspace, "ListFiles")
+  );
+  assert.equal(conflictingOptions.ok, false);
+  assert.match(conflictingOptions.error ?? "", /does not match/);
 
-  const continuation = output(
-    await handleListFilesTool({ cursor: endOfBatch.next_cursor, limit: 1 }, context(workspace, "ListFiles"))
-  ) as { files: string[]; total: number; truncated: boolean; next_offset: number | null; next_cursor?: string };
-  assert.equal(continuation.files.length, 1);
-  assert.equal(continuation.total, 10_001);
-  assert.equal(continuation.truncated, false);
-  assert.equal(continuation.next_offset, null);
-  assert.equal(continuation.next_cursor, undefined);
+  const cursorWithOffset = await handleListFilesTool(
+    { cursor: firstCursor, offset: 1 },
+    context(workspace, "ListFiles")
+  );
+  assert.equal(cursorWithOffset.ok, false);
+  assert.match(cursorWithOffset.error ?? "", /offset must be 0/);
+
+  let cursor = firstCursor;
+  let finalPayload = payload;
+  for (let page = 0; cursor && page < 25; page += 1) {
+    const continuation = output(
+      await handleListFilesTool({ cursor, limit: 500 }, context(workspace, "ListFiles"))
+    ) as typeof payload;
+    continuation.files.forEach((file) => files.add(file));
+    assert.equal(continuation.next_offset, null);
+    finalPayload = continuation;
+    cursor = continuation.next_cursor ?? "";
+  }
+
+  assert.equal(files.size, 10_001);
+  assert.equal(finalPayload.total, 10_001);
+  assert.equal(finalPayload.total_is_exact, true);
+  assert.equal(finalPayload.truncated, false);
+  assert.equal(finalPayload.next_cursor, undefined);
+
+  const reusedCursor = await handleListFilesTool({ cursor: firstCursor }, context(workspace, "ListFiles"));
+  assert.equal(reusedCursor.ok, false);
+  assert.match(reusedCursor.error ?? "", /invalid or expired/);
+
+  fs.unlinkSync(path.join(workspace, "bulk", "entry-10000.txt"));
+  const exactBoundary = output(
+    await handleListFilesTool({ path: "bulk", limit: 1 }, context(workspace, "ListFiles"))
+  ) as typeof payload;
+  assert.equal(exactBoundary.total, 10_000);
+  assert.equal(exactBoundary.total_is_exact, true);
+  assert.equal(exactBoundary.truncated, true);
+  assert.equal(exactBoundary.next_offset, 1);
+  assert.equal(exactBoundary.next_cursor, undefined);
 });
 
 function createWorkspace(): string {
