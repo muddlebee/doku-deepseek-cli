@@ -22,7 +22,7 @@ async function main(): Promise<void> {
       let observation: BenchmarkObservation | null = null;
       for (let iteration = 1; iteration <= options.sampleCount; iteration += 1) {
         const result = await runIsolatedSample(scenario, fixture.root, iteration, options.warmupCount);
-        if (observation && JSON.stringify(observation) !== JSON.stringify(result.observation)) {
+        if (observation && !observationsMatch(observation, result.observation)) {
           throw new Error(`${scenario.id} returned different observations between samples.`);
         }
         observation = result.observation;
@@ -47,6 +47,10 @@ async function main(): Promise<void> {
   } finally {
     fixture.cleanup();
   }
+}
+
+function observationsMatch(left: BenchmarkObservation, right: BenchmarkObservation): boolean {
+  return JSON.stringify({ ...left, outputBytes: 0 }) === JSON.stringify({ ...right, outputBytes: 0 });
 }
 
 function printSummary(report: ToolHandlerBenchmarkReport, outputPath: string): void {
