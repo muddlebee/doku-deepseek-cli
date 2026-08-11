@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { getDefaultSkillPrompt, getRuntimeContext, getSystemPrompt, getTools } from "../prompt";
+import { BUILT_IN_TOOL_CATALOG, getBuiltInToolExecutionClass, normalizeBuiltInToolName } from "../tools/catalog";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -17,6 +18,43 @@ test("getTools includes UpdatePlan with string plan schema", () => {
   assert.ok(tool);
   assert.deepEqual(tool.function.parameters.required, ["plan"]);
   assert.equal((tool.function.parameters.properties.plan as { type?: unknown }).type, "string");
+});
+
+test("built-in catalog supplies tool definitions, aliases, and execution classes", () => {
+  assert.deepEqual(
+    getTools().map((tool) => tool.function.name),
+    BUILT_IN_TOOL_CATALOG.map((tool) => tool.definition.function.name)
+  );
+  assert.equal(normalizeBuiltInToolName("Read"), "read");
+  assert.equal(normalizeBuiltInToolName("Write"), "write");
+  assert.equal(getBuiltInToolExecutionClass("Read"), "parallel");
+  assert.equal(getBuiltInToolExecutionClass("edit"), "serial");
+  assert.equal(getBuiltInToolExecutionClass("AskUserQuestion"), "blocking");
+});
+
+test("exploration tool schemas expose additive pagination and mode parameters", () => {
+  const grep = getTools().find((tool) => tool.function.name === "Grep");
+  const listFiles = getTools().find((tool) => tool.function.name === "ListFiles");
+  assert.ok(grep);
+  assert.ok(listFiles);
+  assert.deepEqual((grep.function.parameters.properties.output_mode as { enum?: unknown }).enum, [
+    "content",
+    "files_with_matches",
+    "count",
+  ]);
+  for (const property of ["offset", "limit", "multiline", "type"]) {
+    assert.ok(grep.function.parameters.properties[property]);
+  }
+  for (const property of ["include_hidden", "offset", "limit"]) {
+    assert.ok(listFiles.function.parameters.properties[property]);
+  }
+});
+
+test("tool prompt templates contain guidance without duplicate JSON schemas", () => {
+  const templateDir = path.join(repoRoot, "templates", "tools");
+  for (const fileName of fs.readdirSync(templateDir)) {
+    assert.equal(fs.readFileSync(path.join(templateDir, fileName), "utf8").includes("```json"), false, fileName);
+  }
 });
 
 test("getSystemPrompt always includes WebSearch docs", () => {

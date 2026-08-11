@@ -10,6 +10,7 @@ import { handleUpdatePlanTool } from "./update-plan-handler";
 import { handleWebSearchTool } from "./web-search-handler";
 import { handleWriteTool } from "./write-handler";
 import type { McpManager } from "../mcp/mcp-manager";
+import { BUILT_IN_TOOL_CATALOG, getBuiltInToolExecutionClass, normalizeBuiltInToolName } from "./catalog";
 
 export type CreateOpenAIClient = () => {
   client: OpenAI | null;
@@ -103,17 +104,6 @@ export type ToolHandler = (
   context: ToolExecutionContext
 ) => Promise<ToolExecutionResult>;
 
-const BUILT_IN_TOOL_NAME_ALIASES = new Map<string, string>([
-  ["Bash", "bash"],
-  ["Read", "read"],
-  ["Write", "write"],
-  ["Edit", "edit"],
-]);
-
-const BLOCKING_TOOL_NAMES = new Set(["AskUserQuestion"]);
-const SERIAL_TOOL_NAMES = new Set(["bash", "write", "edit"]);
-const PARALLEL_SAFE_TOOL_NAMES = new Set(["read", "Grep", "ListFiles", "WebSearch", "UpdatePlan"]);
-
 export type ToolCallExecution = {
   toolCallId: string;
   content: string;
@@ -149,7 +139,7 @@ export class ToolExecutor {
     // AskUserQuestion blocks on user input — the whole batch must run
     // sequentially so the UI can pause and wait for the response before
     // processing any subsequent tool calls.
-    const hasBlockingTool = parsedCalls.some((tc) => BLOCKING_TOOL_NAMES.has(tc.function.name));
+    const hasBlockingTool = parsedCalls.some((tc) => getBuiltInToolExecutionClass(tc.function.name) === "blocking");
     if (hasBlockingTool) {
       return this.executeSequentialToolCalls(sessionId, parsedCalls, hooks);
     }
@@ -231,11 +221,7 @@ export class ToolExecutor {
   }
 
   private canRunInParallel(toolName: string): boolean {
-    const normalizedName = BUILT_IN_TOOL_NAME_ALIASES.get(toolName) ?? toolName;
-    if (SERIAL_TOOL_NAMES.has(normalizedName)) {
-      return false;
-    }
-    return PARALLEL_SAFE_TOOL_NAMES.has(normalizedName);
+    return getBuiltInToolExecutionClass(toolName) === "parallel";
   }
 
   private registerToolHandlers(): void {
@@ -248,6 +234,12 @@ export class ToolExecutor {
     this.toolHandlers.set("WebSearch", handleWebSearchTool);
     this.toolHandlers.set("Grep", handleGrepTool);
     this.toolHandlers.set("ListFiles", handleListFilesTool);
+    for (const tool of BUILT_IN_TOOL_CATALOG) {
+      const name = tool.definition.function.name;
+      if (!this.toolHandlers.has(name)) {
+        throw new Error(`Built-in tool catalog has no handler for ${name}.`);
+      }
+    }
   }
 
   private parseToolCall(toolCall: unknown): ToolCall | null {
@@ -297,7 +289,7 @@ export class ToolExecutor {
       throw error;
     }
     const toolName = toolCall.function.name;
-    const handlerName = BUILT_IN_TOOL_NAME_ALIASES.get(toolName) ?? toolName;
+    const handlerName = normalizeBuiltInToolName(toolName);
     const handler = this.toolHandlers.get(handlerName);
     if (!handler) {
       // Try MCP tools

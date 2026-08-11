@@ -8,6 +8,7 @@
       "prompts": [
         "Without modifying any files and without asking follow-up questions, inspect this repository and explain how tool calls are parsed, scheduled, and executed. Focus on executor and session flow."
       ],
+      "expectedAnswerTerms": ["ToolExecutor", "AgentToolScheduler", "parallel"],
       "maxIterationsPerPrompt": 16,
       "timeoutMs": 180000
     },
@@ -17,7 +18,28 @@
       "prompts": [
         "Without modifying files and without asking follow-up questions, find where stale-file protection is enforced for read/edit/write flows and summarize the exact guard conditions."
       ],
+      "expectedAnswerTerms": ["hasFileChanged", "snippet", "full read"],
       "maxIterationsPerPrompt": 16,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "caller-discovery",
+      "description": "Discover direct callers and consumers of the tool catalog.",
+      "prompts": [
+        "Without modifying files, find the callers and runtime consumers of getTools and the built-in tool definitions. List the relevant files and explain each call path."
+      ],
+      "expectedAnswerTerms": ["getTools", "prompt.ts", "runtime"],
+      "maxIterationsPerPrompt": 16,
+      "timeoutMs": 180000
+    },
+    {
+      "id": "multi-module-provider-map",
+      "description": "Map a feature spanning provider, session, agent, and tool modules.",
+      "prompts": [
+        "Without modifying files, map how a configured provider becomes an agent turn that can execute a built-in tool. Trace the main types and functions across provider, session, agent runtime, and tool executor modules."
+      ],
+      "expectedAnswerTerms": ["ProviderRegistry", "AgentRuntime", "ToolExecutor"],
+      "maxIterationsPerPrompt": 20,
       "timeoutMs": 180000
     }
   ]

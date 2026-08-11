@@ -10,6 +10,7 @@ Usage:
 - Any lines longer than 2000 characters will be truncated
 - Results are returned using cat -n format, with line numbers starting at 1
 - Text reads return a snippet id in metadata. You can pass that snippet id to the Edit tool to constrain replacements to just that read range.
+- Text metadata reports the selected and total line ranges, byte size, truncation, and a one-based `next_offset` when more lines remain.
 <%_ if (supportsMultimodal) { _%>
 - This tool allows you to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Deepseek is a multimodal LLM.
 <%_ } else { _%>
@@ -21,32 +22,3 @@ Usage:
 - You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "properties": {
-    "file_path": {
-      "description": "The absolute path to the file to read",
-      "type": "string"
-    },
-    "offset": {
-      "description": "The line number to start reading from. Only provide if the file is too large to read at once",
-      "type": "number"
-    },
-    "limit": {
-      "description": "The number of lines to read. Only provide if the file is too large to read at once.",
-      "type": "number"
-    },
-    "pages": {
-      "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request.",
-      "type": "string"
-    }
-  },
-  "required": [
-    "file_path"
-  ],
-  "additionalProperties": false
-}
-```

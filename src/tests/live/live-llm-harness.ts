@@ -16,6 +16,7 @@ export type LiveScenario = {
   prompts: string[];
   maxIterationsPerPrompt?: number;
   timeoutMs?: number;
+  expectedAnswerTerms?: string[];
 };
 
 export type LiveHarnessOptions = {
@@ -37,6 +38,13 @@ export type LiveScenarioResult = {
   assistantMessageCount: number;
   toolCallCount: number;
   toolCallByName: Record<string, number>;
+  filesRead: string[];
+  correctness: {
+    passed: number;
+    total: number;
+    score: number;
+    missing: string[];
+  };
   usage: ModelUsage | null;
 };
 
@@ -76,6 +84,8 @@ export async function runLiveScenario(
       assistantMessageCount: 0,
       toolCallCount: 0,
       toolCallByName: {},
+      filesRead: [],
+      correctness: evaluateCorrectness("", scenario.expectedAnswerTerms),
       usage: null,
     };
   }
@@ -105,6 +115,8 @@ export async function runLiveScenario(
 
   const toolExecutor = new ToolExecutor(projectRoot, createClientSnapshot);
   const toolCallByName: Record<string, number> = {};
+  const filesRead = new Set<string>();
+  const assistantAnswers: string[] = [];
   let llmRequestCount = 0;
   let assistantMessageCount = 0;
   let toolCallCount = 0;
@@ -155,6 +167,7 @@ export async function runLiveScenario(
         assistantMessageCount += 1;
 
         if (!toolCalls) {
+          assistantAnswers.push(content);
           completedPrompt = true;
           break;
         }
@@ -170,6 +183,10 @@ export async function runLiveScenario(
           toolCallCount += 1;
           const toolName = execution.result.name;
           toolCallByName[toolName] = (toolCallByName[toolName] ?? 0) + 1;
+          const filePath = execution.result.metadata?.file_path;
+          if (execution.result.name === "read" && typeof filePath === "string") {
+            filesRead.add(path.relative(projectRoot, filePath).replaceAll(path.sep, "/") || ".");
+          }
           if (execution.result.awaitUserResponse) {
             throw new Error(`Scenario paused for AskUserQuestion in tool "${toolName}".`);
           }
@@ -210,7 +227,22 @@ export async function runLiveScenario(
     assistantMessageCount,
     toolCallCount,
     toolCallByName,
+    filesRead: [...filesRead].sort(),
+    correctness: evaluateCorrectness(assistantAnswers.join("\n"), scenario.expectedAnswerTerms),
     usage,
+  };
+}
+
+function evaluateCorrectness(answer: string, expectedTerms: string[] | undefined): LiveScenarioResult["correctness"] {
+  const terms = expectedTerms ?? [];
+  const normalizedAnswer = answer.toLowerCase();
+  const missing = terms.filter((term) => !normalizedAnswer.includes(term.toLowerCase()));
+  const passed = terms.length - missing.length;
+  return {
+    passed,
+    total: terms.length,
+    score: terms.length > 0 ? passed / terms.length : 1,
+    missing,
   };
 }
 

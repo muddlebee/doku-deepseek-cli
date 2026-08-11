@@ -1,4 +1,4 @@
-const PARALLEL_SAFE_TOOLS = new Set(["read", "Read", "Grep", "ListFiles", "WebSearch", "UpdatePlan"]);
+import { getBuiltInToolExecutionClass } from "../tools/catalog";
 
 type ScheduledTool = {
   parallel: boolean;
@@ -13,7 +13,7 @@ export class AgentToolScheduler {
   schedule<Result>(toolName: string, operation: () => Promise<Result>): Promise<Result> {
     return new Promise<Result>((resolve, reject) => {
       this.queue.push({
-        parallel: PARALLEL_SAFE_TOOLS.has(toolName),
+        parallel: getBuiltInToolExecutionClass(toolName) === "parallel",
         run: async () => {
           try {
             resolve(await operation());
