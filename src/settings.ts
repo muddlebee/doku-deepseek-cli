@@ -286,8 +286,13 @@ export function resolveSettingsSources(
   const configuredBaseURL = trimString(env.BASE_URL);
   const hasOpenAIKey = Boolean(trimString(systemEnv.OPENAI_API_KEY) || trimString(processEnv.OPENAI_API_KEY));
   const hasDeepSeekKey = Boolean(trimString(systemEnv.DEEPSEEK_API_KEY) || trimString(processEnv.DEEPSEEK_API_KEY));
+  const hasGenericApiKey = Boolean(
+    trimString(systemEnv.API_KEY) || trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY)
+  );
   const credentialInferredProvider =
-    !explicitProvider && !configuredModel && !configuredBaseURL && hasOpenAIKey && !hasDeepSeekKey ? "openai" : "";
+    !explicitProvider && !configuredModel && !configuredBaseURL && !hasGenericApiKey && hasOpenAIKey && !hasDeepSeekKey
+      ? "openai"
+      : "";
   const model = configuredModel || (credentialInferredProvider === "openai" ? DEFAULT_OPENAI_MODEL : defaults.model);
   const effectiveConfiguredBaseURL = configuredBaseURL || defaults.baseURL;
   const providers = {

@@ -556,6 +556,19 @@ test("a lone OpenAI environment credential selects a usable OpenAI default", () 
   assert.equal(resolved.apiKeySource, "environment");
 });
 
+test("a saved generic credential prevents provider inference from an unrelated OpenAI environment key", () => {
+  const resolved = resolveSettingsSources(
+    { env: { API_KEY: "saved-deepseek-key" } },
+    null,
+    { model: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
+    { OPENAI_API_KEY: "shell-openai-key" }
+  );
+  assert.equal(resolved.provider, "deepseek");
+  assert.equal(resolved.model, "deepseek-v4-pro");
+  assert.equal(resolved.apiKey, "saved-deepseek-key");
+  assert.equal(resolved.apiKeySource, "settings");
+});
+
 test("resolveSettings supports named compatible provider profiles and DOKU overrides", () => {
   const resolved = resolveSettingsSources(
     {

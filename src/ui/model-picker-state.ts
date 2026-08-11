@@ -7,3 +7,17 @@ export function modelPickerBackAction(step: ModelPickerStep): ModelPickerBackAct
   if (step === "model") return { kind: "back", step: "provider" };
   return { kind: "back", step: "model" };
 }
+
+export function modelPickerModelBackIndex(input: {
+  fromStep: ModelPickerStep;
+  options: string[];
+  pendingModel: string | null;
+  customModel: string | null;
+  customOption: string;
+}): number {
+  const customPath =
+    input.fromStep === "custom" ||
+    (input.fromStep === "thinking" && Boolean(input.customModel) && input.pendingModel === input.customModel);
+  const target = customPath ? input.customOption : input.pendingModel;
+  return Math.max(0, target ? input.options.indexOf(target) : 0);
+}

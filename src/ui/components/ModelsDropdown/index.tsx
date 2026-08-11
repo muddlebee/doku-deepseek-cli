@@ -3,7 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import DropdownMenu from "../../DropdownMenu";
 import type { ModelConfigSelection, ProviderProfile, ReasoningEffort } from "../../../settings";
-import { modelPickerBackAction, type ModelPickerStep } from "../../model-picker-state";
+import { modelPickerBackAction, modelPickerModelBackIndex, type ModelPickerStep } from "../../model-picker-state";
 
 type ThinkingModeOption = {
   label: string;
@@ -101,6 +101,7 @@ const ModelsDropdown: React.FC<Props> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [pendingProvider, setPendingProvider] = useState(modelConfig.provider ?? providerIds[0]!);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  const [customModel, setCustomModel] = useState<string | null>(null);
   const profile = providers[pendingProvider];
   const currentProvider = modelConfig.provider ?? providerIds[0]!;
   const models = suggestedModels(pendingProvider, profile, currentProvider, modelConfig.model);
@@ -116,6 +117,7 @@ const ModelsDropdown: React.FC<Props> = ({
     const provider = modelConfig.provider ?? providerIds[0]!;
     setPendingProvider(provider);
     setPendingModel(null);
+    setCustomModel(null);
     setStep("provider");
     setActiveIndex(Math.max(0, providerIds.indexOf(provider)));
   }, [modelConfig.provider, open, providerIds]);
@@ -145,6 +147,7 @@ const ModelsDropdown: React.FC<Props> = ({
 
   function goBack(): void {
     if (!step) return;
+    const previousStep = step;
     const action = modelPickerBackAction(step);
     if (action.kind === "close") {
       onClose();
@@ -155,7 +158,15 @@ const ModelsDropdown: React.FC<Props> = ({
       setActiveIndex(Math.max(0, providerIds.indexOf(pendingProvider)));
       return;
     }
-    setActiveIndex(Math.max(0, modelOptions.indexOf(pendingModel ?? modelConfig.model)));
+    setActiveIndex(
+      modelPickerModelBackIndex({
+        fromStep: previousStep,
+        options: modelOptions,
+        pendingModel: pendingModel ?? modelConfig.model,
+        customModel,
+        customOption: CUSTOM_MODEL_KEY,
+      })
+    );
   }
 
   useInput(
@@ -169,6 +180,7 @@ const ModelsDropdown: React.FC<Props> = ({
         if (step === "provider") {
           const provider = providerIds[activeIndex] ?? pendingProvider;
           setPendingProvider(provider);
+          setCustomModel(null);
           setStep("model");
           setActiveIndex(0);
         } else if (step === "model") {
@@ -200,10 +212,14 @@ const ModelsDropdown: React.FC<Props> = ({
         <Text bold>Enter Model ID</Text>
         <Text dimColor>{pendingProvider} / custom model</Text>
         <TextInput
+          defaultValue={customModel ?? ""}
           placeholder="provider/model-name"
           onSubmit={(value) => {
             const model = value.trim();
-            if (model) showThinking(model);
+            if (model) {
+              setCustomModel(model);
+              showThinking(model);
+            }
           }}
         />
         <Text dimColor>Enter continue · Esc back · Tab cancel</Text>

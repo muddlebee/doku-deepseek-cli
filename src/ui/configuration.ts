@@ -10,8 +10,8 @@ export function getConfigurationIssue(settings: ResolvedDeepcodingSettings): str
   if (!isSupportedProviderType(settings.providerProfile.type)) {
     return `Provider “${settings.provider}” has unsupported type “${String(settings.providerProfile.type)}”. Choose OpenAI, DeepSeek, or OpenAI-compatible.`;
   }
-  if (settings.providerProfile.type === "deepseek" && settings.apiMode !== "chat_completions") {
-    return "DeepSeek requires Chat Completions mode. Remove DOKU_API_MODE or set it to chat_completions.";
+  if (settings.providerProfile.type === "deepseek" && settings.apiMode === "responses") {
+    return "DeepSeek does not support Responses mode. Remove DOKU_API_MODE or set it to auto or chat_completions.";
   }
 
   try {

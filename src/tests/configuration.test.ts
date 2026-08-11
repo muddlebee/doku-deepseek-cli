@@ -35,7 +35,16 @@ test("configuration preflight rejects unsupported DeepSeek API modes", () => {
   const settings = resolveSettings({ provider: "deepseek", env: { API_KEY: "sk-test" } }, defaults, {
     DOKU_API_MODE: "responses",
   });
-  assert.match(getConfigurationIssue(settings) ?? "", /requires Chat Completions/);
+  assert.match(getConfigurationIssue(settings) ?? "", /does not support Responses/);
+});
+
+test("configuration preflight accepts DeepSeek auto API mode", () => {
+  const settings = resolveSettings(
+    { provider: "deepseek", apiMode: "auto", env: { API_KEY: "sk-test" } },
+    defaults,
+    {}
+  );
+  assert.equal(getConfigurationIssue(settings), null);
 });
 
 test("configuration retry screen supports retry and Ctrl+C exit", () => {
