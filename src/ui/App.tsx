@@ -45,7 +45,7 @@ import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
-import { buildChatStatus } from "./chat-status";
+import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
@@ -120,6 +120,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       onSessionEntryUpdated: (entry) => {
         setRunningProcesses(entry.processes);
         setActiveEntry(entry);
+        setErrorLine((current) => reconcileChatError(current, entry));
       },
       onLlmStreamProgress: (progress) => {
         if (progress.phase === "end") {

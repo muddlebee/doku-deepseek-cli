@@ -46,6 +46,7 @@ export type {
   UndoTarget,
   UserPromptContent,
 } from "./session/types";
+export { isProcessStopFailureMessage } from "./session/process-tracker";
 
 const DEFAULT_COMPACT_PROMPT_TOKEN_THRESHOLD = 128 * 1024;
 // Both deepseek-v4-flash and deepseek-v4-pro have a 1M token context window.

@@ -1,4 +1,4 @@
-import type { SessionEntry } from "../session";
+import { isProcessStopFailureMessage, type SessionEntry } from "../session";
 
 export type ChatStatusKind = "error" | "waiting" | "tool" | "reasoning" | "stopped" | "complete" | "idle";
 
@@ -38,6 +38,11 @@ export function buildChatStatus(input: ChatStatusInput): ChatStatus {
     return { kind: "complete", text: `Turn complete${tokenText}` };
   }
   return { kind: "idle", text: "Ready" };
+}
+
+export function reconcileChatError(error: string | null, entry: SessionEntry): string | null {
+  if (isProcessStopFailureMessage(error) && !isProcessStopFailureMessage(entry.failReason)) return null;
+  return error;
 }
 
 function formatStatusDetail(value: string): string {

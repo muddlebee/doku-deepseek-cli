@@ -81,6 +81,29 @@ test("setup persists a custom compatible provider profile", () => {
   assert.equal(settings.env?.API_KEY, "gateway-key");
 });
 
+test("setup retains credentials when a provider explicitly uses API_KEY", () => {
+  const settings = buildSetupSettings(
+    {
+      providers: {
+        openai: {
+          type: "openai",
+          apiKeyEnv: "API_KEY",
+        },
+      },
+    },
+    {
+      provider: "openai",
+      providerType: "openai",
+      apiKey: "openai-key",
+      baseURL: "https://api.openai.com/v1",
+      model: "gpt-5.6-sol",
+      apiMode: "auto",
+    }
+  );
+
+  assert.equal(settings.env?.API_KEY, "openai-key");
+});
+
 test("setup-confirmed built-in credentials win over standard shell credentials", () => {
   const settings = buildSetupSettings(
     { provider: "deepseek" },

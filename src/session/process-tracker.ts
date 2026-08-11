@@ -92,7 +92,11 @@ export class SessionProcessTracker {
 }
 
 export function hasProcessStopFailure(entry: SessionEntry): boolean {
-  return Boolean(entry.failReason?.startsWith(PROCESS_STOP_FAILURE_PREFIX));
+  return isProcessStopFailureMessage(entry.failReason);
+}
+
+export function isProcessStopFailureMessage(value: string | null | undefined): boolean {
+  return Boolean(value?.startsWith(PROCESS_STOP_FAILURE_PREFIX));
 }
 
 export function formatProcessStopFailure(processIds: number[]): string | null {

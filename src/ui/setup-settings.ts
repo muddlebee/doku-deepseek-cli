@@ -17,7 +17,7 @@ export function buildSetupSettings(existing: DeepcodingSettings, result: SetupRe
   const env: Record<string, string> = { ...existing.env, BASE_URL: result.baseURL };
   if (credentialEnv) {
     env[credentialEnv] = result.apiKey;
-    delete env[GENERIC_API_KEY_ENV];
+    if (credentialEnv !== GENERIC_API_KEY_ENV) delete env[GENERIC_API_KEY_ENV];
   } else {
     env[GENERIC_API_KEY_ENV] = result.apiKey;
   }

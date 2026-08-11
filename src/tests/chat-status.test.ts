@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildChatStatus } from "../ui/chat-status";
+import { buildChatStatus, reconcileChatError } from "../ui/chat-status";
 import type { SessionEntry } from "../session";
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
@@ -69,4 +69,12 @@ test("chat status reports completion context without transcript messages", () =>
     entry: entry({ activeTokens: 12345 }),
   });
   assert.deepEqual(result, { kind: "complete", text: "Turn complete · 12,345 context tokens" });
+});
+
+test("chat errors clear a failed process-stop notice only after recovery", () => {
+  const failure = "Failed to stop processes: 123";
+
+  assert.equal(reconcileChatError(failure, entry({ status: "failed", failReason: failure })), failure);
+  assert.equal(reconcileChatError(failure, entry({ status: "interrupted", failReason: "interrupted" })), null);
+  assert.equal(reconcileChatError("Provider unavailable", entry({ status: "completed" })), "Provider unavailable");
 });
