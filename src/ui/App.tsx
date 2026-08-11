@@ -6,13 +6,13 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createOpenAIClient } from "../common/openai-client";
+import { getWebSearchApiKeyEnv } from "../common/web-search-provider";
 import {
   type LlmStreamProgress,
   type MessageMeta,
   type SessionEntry,
   SessionManager,
   type SessionMessage,
-  type SessionStatus,
   type SkillInfo,
   type UndoTarget,
   type UserPromptContent,
@@ -45,11 +45,11 @@ import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
+import { buildChatStatus, reconcileChatError } from "./chat-status";
+import { transitionView, type AppView } from "./view-state";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
-
-type View = "chat" | "session-list" | "undo" | "mcp-status" | "web-search-setup";
 
 type AppProps = {
   projectRoot: string;
@@ -68,18 +68,17 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const writeRef = useRef(write);
   const lastRenderedColumnsRef = useRef<number | null>(null);
   const messagesRef = useRef<SessionMessage[]>([]);
-  const [view, setView] = useState<View>("chat");
+  const [view, setView] = useState<AppView>("chat");
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [sessions, setSessions] = useState<SessionEntry[]>([]);
   const [undoTargets, setUndoTargets] = useState<UndoTarget[]>([]);
   const [promptDraft, setPromptDraft] = useState<PromptDraft | null>(null);
-  const [statusLine, setStatusLine] = useState<string>("");
   const [errorLine, setErrorLine] = useState<string | null>(null);
   const [streamProgress, setStreamProgress] = useState<LlmStreamProgress | null>(null);
   const [runningProcesses, setRunningProcesses] = useState<SessionEntry["processes"]>(null);
-  const [activeStatus, setActiveStatus] = useState<SessionStatus | null>(null);
+  const [activeEntry, setActiveEntry] = useState<SessionEntry | null>(null);
   const [dismissedQuestionIds, setDismissedQuestionIds] = useState<Set<string>>(() => new Set());
   const [isExiting, setIsExiting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -88,6 +87,11 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [nowTick, setNowTick] = useState(0);
   const [mcpStatuses, setMcpStatuses] = useState<ReturnType<typeof sessionManager.getMcpStatus>>([]);
   const [showProcessStdout, setShowProcessStdout] = useState(false);
+
+  const openSecondaryView = useCallback((nextView: Exclude<AppView, "chat">): void => {
+    setShowWelcome(false);
+    setView((current) => transitionView(current, { type: "open", view: nextView }));
+  }, []);
 
   rawModeRef.current = mode;
   messagesRef.current = messages;
@@ -99,6 +103,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       getResolvedSettings: () => resolveCurrentSettings(projectRoot),
       renderMarkdown: (text) => text,
       onAssistantMessage: (message: SessionMessage) => {
+        if (message.meta?.notice === "error") {
+          if (rawModeRef.current === RawMode.Raw) {
+            process.stdout.write(`\n${renderMessageToStdout(message, rawModeRef.current)}\n\n`);
+          } else {
+            setErrorLine(message.content || "Unknown provider error");
+          }
+          return;
+        }
         setMessages((prev) => [...prev, message]);
         if (rawModeRef.current === RawMode.Raw) {
           process.stdout.write("\n");
@@ -106,9 +118,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         }
       },
       onSessionEntryUpdated: (entry) => {
-        setStatusLine(buildStatusLine(entry));
         setRunningProcesses(entry.processes);
-        setActiveStatus(entry.status);
+        setActiveEntry(entry);
+        setErrorLine((current) => reconcileChatError(current, entry));
       },
       onLlmStreamProgress: (progress) => {
         if (progress.phase === "end") {
@@ -135,10 +147,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         buf.set(pid, current + text.slice(0, available));
       },
       onNeedsWebSearchSetup: () => {
-        setView("web-search-setup");
+        openSecondaryView("web-search-setup");
       },
     });
-  }, [projectRoot]);
+  }, [openSecondaryView, projectRoot]);
+
+  const closeSecondaryView = useCallback((): void => {
+    setView((current) => transitionView(current, { type: "close" }));
+    setShowWelcome(!sessionManager.getActiveSessionId());
+  }, [sessionManager]);
 
   useEffect(() => {
     if (!busy) {
@@ -217,10 +234,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           writeRef.current("\u001B[2J\u001B[3J\u001B[H");
           sessionManager.setActiveSessionId(null);
           setMessages([]);
-          setStatusLine("");
           setErrorLine(null);
           setRunningProcesses(null);
-          setActiveStatus(null);
+          setActiveEntry(null);
           setDismissedQuestionIds(new Set());
           setShowWelcome(true);
           setWelcomeNonce((n) => n + 1);
@@ -230,15 +246,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         return;
       }
       if (submission.command === "resume") {
-        setShowWelcome(false);
         refreshSessionsList();
-        setView("session-list");
+        openSecondaryView("session-list");
         return;
       }
       if (submission.command === "continue" && isCurrentSessionEmpty(sessionManager)) {
-        setShowWelcome(false);
         refreshSessionsList();
-        setView("session-list");
+        openSecondaryView("session-list");
         return;
       }
       if (submission.command === "undo") {
@@ -247,20 +261,17 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           setErrorLine("No active session to undo.");
           return;
         }
-        setShowWelcome(false);
         setUndoTargets(sessionManager.listUndoTargets(activeSessionId));
-        setView("undo");
+        openSecondaryView("undo");
         return;
       }
       if (submission.command === "mcp") {
-        setShowWelcome(false);
         setMcpStatuses(sessionManager.getMcpStatus());
-        setView("mcp-status");
+        openSecondaryView("mcp-status");
         return;
       }
       if (submission.command === "setup-websearch") {
-        setShowWelcome(false);
-        setView("web-search-setup");
+        openSecondaryView("web-search-setup");
         return;
       }
 
@@ -300,7 +311,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         setRunningProcesses(null);
       }
     },
-    [exit, onRestart, sessionManager, refreshSkills, refreshSessionsList]
+    [exit, onRestart, openSecondaryView, sessionManager, refreshSkills, refreshSessionsList]
   );
 
   const handleInterrupt = useCallback(() => {
@@ -409,9 +420,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     apiKey: string;
   }): void {
     const existing = readSettings() ?? {};
-    const envKey = provider === "tavily" ? "TAVILY_API_KEY" : "FIRECRAWL_API_KEY";
+    const envKey = getWebSearchApiKeyEnv(provider);
     writeSettings({ ...existing, webSearchProvider: provider, env: { ...existing.env, [envKey]: apiKey } });
-    setView("chat");
+    closeSecondaryView();
   }
 
   const handleSelectSession = useCallback(
@@ -421,23 +432,23 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
       }
       sessionManager.setActiveSessionId(sessionId);
+      setErrorLine(null);
       // Clear first so <Static> resets its index to 0.
       setMessages([]);
       setShowWelcome(false);
       setWelcomeNonce((n) => n + 1);
-      setView("chat");
+      closeSecondaryView();
       // Load messages after the reset so all static items are rendered.
       setTimeout(() => {
         setMessages(loadVisibleMessages(sessionManager, sessionId));
         setShowWelcome(true);
       }, 0);
       const session = sessionManager.getSession(sessionId);
-      setStatusLine(session ? buildStatusLine(session) : "");
       setRunningProcesses(session?.processes ?? null);
-      setActiveStatus(session?.status ?? null);
+      setActiveEntry(session);
       await refreshSkills(sessionId);
     },
-    [sessionManager, refreshSkills]
+    [closeSecondaryView, sessionManager, refreshSkills]
   );
 
   const handleUndoRestore = useCallback(
@@ -445,8 +456,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const sessionId = sessionManager.getActiveSessionId();
       if (!sessionId) {
         setErrorLine("No active session to undo.");
-        setView("chat");
-        setShowWelcome(true);
+        closeSecondaryView();
         return;
       }
 
@@ -469,14 +479,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
       refreshSessionsList();
       await refreshSkills(sessionId);
-      setView("chat");
+      closeSecondaryView();
       setErrorLine(errors.length > 0 ? errors.join(" ") : null);
       if (conversationRestored) {
         setPromptDraft(buildPromptDraftFromSessionMessage(target.message, Date.now()));
       }
       reloadActiveSessionView(sessionId);
     },
-    [reloadActiveSessionView, refreshSessionsList, refreshSkills, sessionManager]
+    [closeSecondaryView, reloadActiveSessionView, refreshSessionsList, refreshSkills, sessionManager]
   );
 
   const handleRawModeChange = useCallback(
@@ -583,12 +593,26 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       .filter((content) => content.length > 0);
   }, [messages]);
   const expandedThinkingId = findExpandedThinkingId(messages);
-  const pendingQuestion = useMemo(() => findPendingAskUserQuestion(messages, activeStatus), [activeStatus, messages]);
+  const pendingQuestion = useMemo(
+    () => findPendingAskUserQuestion(messages, activeEntry?.status ?? null),
+    [activeEntry?.status, messages]
+  );
   const shouldShowQuestionPrompt = Boolean(pendingQuestion && !dismissedQuestionIds.has(pendingQuestion.messageId));
   const loadingText = useMemo(
     () => (busy ? buildLoadingText({ progress: streamProgress, processes: runningProcesses, now: Date.now() }) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick forces periodic recalculation for spinner animation
     [busy, streamProgress, runningProcesses, nowTick]
+  );
+  const chatStatus = useMemo(
+    () =>
+      buildChatStatus({
+        error: errorLine,
+        waitingForUser: shouldShowQuestionPrompt,
+        busy,
+        loadingText,
+        entry: activeEntry,
+      }),
+    [activeEntry, busy, errorLine, loadingText, shouldShowQuestionPrompt]
   );
 
   const welcomeItem: SessionMessage = useMemo(
@@ -639,7 +663,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   }
 
   return (
-    <Box flexDirection="column" width={screenWidth} minWidth={80} overflowX={"visible"}>
+    <Box flexDirection="column" width={screenWidth} overflowX={"visible"}>
       <Static items={staticItems}>
         {(item) => {
           if (item.id.startsWith("__welcome__")) {
@@ -663,14 +687,14 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           );
         }}
       </Static>
-      {statusLine ? (
+      {view === "chat" && chatStatus.kind === "error" ? (
         <Box marginLeft={1}>
-          <Text dimColor>{statusLine}</Text>
+          <StatusMessage variant="error">{chatStatus.text}</StatusMessage>
         </Box>
-      ) : null}
-      {errorLine ? (
-        <Box marginLeft={1}>
-          <StatusMessage variant="error">{errorLine}</StatusMessage>
+      ) : view === "chat" ? (
+        <Box marginLeft={1} gap={1}>
+          <Text color={chatStatusColor(chatStatus.kind)}>{chatStatusSymbol(chatStatus.kind)}</Text>
+          <Text dimColor>{chatStatus.text}</Text>
         </Box>
       ) : null}
       {showProcessStdout ? (
@@ -686,28 +710,27 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         <SessionList
           sessions={sessions}
           onSelect={(id) => void handleSelectSession(id)}
-          onCancel={() => setView("chat")}
+          onCancel={closeSecondaryView}
         />
       ) : view === "undo" ? (
         <UndoSelector
           targets={undoTargets}
           onSelect={(target, restoreMode) => void handleUndoRestore(target, restoreMode)}
           onCancel={() => {
-            setView("chat");
-            setShowWelcome(true);
+            closeSecondaryView();
           }}
         />
       ) : view === "mcp-status" ? (
         <McpStatusList
           statuses={mcpStatuses}
-          onCancel={() => setView("chat")}
+          onCancel={closeSecondaryView}
           onReconnect={(name) => {
             const latest = resolveCurrentSettings(projectRoot);
             void sessionManager.reconnectMcpServer(name, latest.mcpServers?.[name]);
           }}
         />
       ) : view === "web-search-setup" ? (
-        <WebSearchSetupScreen onComplete={handleWebSearchSetupComplete} onCancel={() => setView("chat")} />
+        <WebSearchSetupScreen onComplete={handleWebSearchSetupComplete} onCancel={closeSecondaryView} />
       ) : shouldShowQuestionPrompt && pendingQuestion && !busy ? (
         <AskUserQuestionPrompt
           questions={pendingQuestion.questions}
@@ -722,7 +745,6 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           modelConfig={resolvedSettings}
           promptHistory={promptHistory}
           busy={busy}
-          loadingText={loadingText}
           runningProcesses={runningProcesses}
           promptDraft={promptDraft}
           onSubmit={handleSubmit}
@@ -798,16 +820,20 @@ function isCurrentSessionEmpty(sessionManager: SessionManager): boolean {
   return !activeSessionId || !sessionManager.getSession(activeSessionId);
 }
 
-function buildStatusLine(entry: SessionEntry): string {
-  const parts: string[] = [];
-  parts.push(`status: ${entry.status}`);
-  if (typeof entry.activeTokens === "number" && entry.activeTokens > 0) {
-    parts.push(`tokens: ${entry.activeTokens}`);
-  }
-  if (entry.failReason) {
-    parts.push(`fail: ${entry.failReason}`);
-  }
-  return parts.join(" · ");
+function chatStatusColor(kind: ReturnType<typeof buildChatStatus>["kind"]): string {
+  if (kind === "waiting") return "yellow";
+  if (kind === "tool" || kind === "complete") return "green";
+  if (kind === "reasoning") return "#6366f1";
+  return "gray";
+}
+
+function chatStatusSymbol(kind: ReturnType<typeof buildChatStatus>["kind"]): string {
+  if (kind === "waiting") return "?";
+  if (kind === "tool") return "◆";
+  if (kind === "reasoning") return "◎";
+  if (kind === "complete") return "✓";
+  if (kind === "stopped") return "■";
+  return "·";
 }
 
 export function readSettings(): DeepcodingSettings | null {

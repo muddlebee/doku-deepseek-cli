@@ -1,6 +1,13 @@
 import { defaultsToThinkingMode } from "./common/model-capabilities";
+import {
+  getProviderApiKeyEnv,
+  hasConfiguredGenericCredential,
+  hasProviderEnvironmentCredential,
+  resolveProviderCredential,
+} from "./common/provider-credentials";
+import type { WebSearchProvider } from "./common/web-search-provider";
 
-export type WebSearchProvider = "tavily" | "firecrawl";
+export type { WebSearchProvider } from "./common/web-search-provider";
 
 export type ApiMode = "auto" | "responses" | "chat_completions";
 export type ProviderType = "openai" | "deepseek" | "openai-compatible";
@@ -44,6 +51,7 @@ export type McpServerConfig = {
 export type DeepcodingSettings = {
   settingsVersion?: 2;
   provider?: string;
+  credentialProvider?: string;
   apiMode?: ApiMode;
   providers?: Record<string, ProviderProfile>;
   env?: DeepcodingEnv;
@@ -67,6 +75,7 @@ export type ResolvedDeepcodingSettings = {
   providers: Record<string, ProviderProfile>;
   env: Record<string, string>;
   apiKey?: string;
+  apiKeySource?: "environment" | "settings";
   baseURL: string;
   model: string;
   thinkingEnabled: boolean;
@@ -89,6 +98,8 @@ export type ModelConfigSelection = {
 };
 
 export type SettingsProcessEnv = Record<string, string | undefined>;
+
+const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 
 function resolveReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value))
@@ -133,11 +144,16 @@ function inferProvider(model: string, baseURL: string): string {
 
 function builtinProviders(defaultBaseURL: string): Record<string, ProviderProfile> {
   return {
-    openai: { type: "openai", baseURL: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY", apiMode: "auto" },
+    openai: {
+      type: "openai",
+      baseURL: "https://api.openai.com/v1",
+      apiKeyEnv: getProviderApiKeyEnv("openai"),
+      apiMode: "auto",
+    },
     deepseek: {
       type: "deepseek",
       baseURL: "https://api.deepseek.com",
-      apiKeyEnv: "DEEPSEEK_API_KEY",
+      apiKeyEnv: getProviderApiKeyEnv("deepseek"),
       apiMode: "chat_completions",
     },
     custom: { type: "openai-compatible", baseURL: defaultBaseURL, apiMode: "chat_completions" },
@@ -255,24 +271,33 @@ export function resolveSettingsSources(
     ...systemEnv,
   };
 
-  const model =
+  const configuredModel =
     trimString(systemEnv.MODEL) ||
     trimString(projectSettings?.model) ||
     trimString(projectEnv.MODEL) ||
     trimString(userSettings?.model) ||
-    trimString(userEnv.MODEL) ||
-    defaults.model;
+    trimString(userEnv.MODEL);
 
-  const configuredBaseURL = trimString(env.BASE_URL) || defaults.baseURL;
+  const explicitProvider =
+    trimString(systemEnv.PROVIDER) || trimString(projectSettings?.provider) || trimString(userSettings?.provider);
+  const configuredBaseURL = trimString(env.BASE_URL);
+  const hasOpenAIKey = hasProviderEnvironmentCredential("openai", systemEnv, processEnv);
+  const hasDeepSeekKey = hasProviderEnvironmentCredential("deepseek", systemEnv, processEnv);
+  const hasGenericApiKey = hasConfiguredGenericCredential(systemEnv, projectEnv, userEnv);
+  const credentialInferredProvider =
+    !explicitProvider && !configuredModel && !configuredBaseURL && !hasGenericApiKey && hasOpenAIKey && !hasDeepSeekKey
+      ? "openai"
+      : "";
+  const model = configuredModel || (credentialInferredProvider === "openai" ? DEFAULT_OPENAI_MODEL : defaults.model);
+  const effectiveConfiguredBaseURL = configuredBaseURL || defaults.baseURL;
   const providers = {
-    ...builtinProviders(configuredBaseURL),
+    ...builtinProviders(effectiveConfiguredBaseURL),
     ...(userSettings?.providers ?? {}),
     ...(projectSettings?.providers ?? {}),
   };
-  const explicitProvider =
-    trimString(systemEnv.PROVIDER) || trimString(projectSettings?.provider) || trimString(userSettings?.provider);
-  const requestedProvider = explicitProvider || inferProvider(model, configuredBaseURL);
-  const provider = providers[requestedProvider] ? requestedProvider : inferProvider(model, configuredBaseURL);
+  const requestedProvider =
+    explicitProvider || credentialInferredProvider || inferProvider(model, effectiveConfiguredBaseURL);
+  const provider = providers[requestedProvider] ? requestedProvider : inferProvider(model, effectiveConfiguredBaseURL);
   const providerProfile = providers[provider] ?? providers.custom;
   const apiMode =
     resolveApiMode(systemEnv.API_MODE) ??
@@ -285,17 +310,17 @@ export function resolveSettingsSources(
     (explicitProvider ? trimString(providerProfile.baseURL) : trimString(env.BASE_URL)) ||
     trimString(providerProfile.baseURL) ||
     defaults.baseURL;
-  const apiKeyEnv = trimString(providerProfile.apiKeyEnv);
-  const providerApiKey = apiKeyEnv
-    ? trimString(systemEnv[apiKeyEnv]) ||
-      trimString(processEnv[apiKeyEnv]) ||
-      trimString(projectEnv[apiKeyEnv]) ||
-      trimString(userEnv[apiKeyEnv])
-    : "";
-  const configuredApiKey = trimString(projectEnv.API_KEY) || trimString(userEnv.API_KEY);
-  const apiKey =
-    trimString(systemEnv.API_KEY) ||
-    (explicitProvider ? providerApiKey || configuredApiKey : configuredApiKey || providerApiKey);
+  const credential = resolveProviderCredential({
+    provider,
+    apiKeyEnv: providerProfile.apiKeyEnv,
+    explicitProvider: Boolean(explicitProvider),
+    projectCredentialProvider: projectSettings?.credentialProvider,
+    userCredentialProvider: userSettings?.credentialProvider,
+    systemEnv,
+    processEnv,
+    projectEnv,
+    userEnv,
+  });
 
   const thinkingEnabled =
     parseBoolean(systemEnv.THINKING_ENABLED) ??
@@ -344,7 +369,8 @@ export function resolveSettingsSources(
     apiMode,
     providers,
     env,
-    apiKey: apiKey || undefined,
+    apiKey: credential.apiKey,
+    apiKeySource: credential.source,
     baseURL,
     model,
     thinkingEnabled,

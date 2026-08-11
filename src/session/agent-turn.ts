@@ -37,6 +37,7 @@ import type { FileSessionStore } from "./file-session-store";
 import { buildToolResultSnippet } from "./tool-presentation";
 import { getTrailingPendingToolCalls } from "./tool-calls";
 import type { LlmStreamProgress, SessionEntry, SessionMessage } from "./types";
+import { hasProcessStopFailure } from "./process-tracker";
 import { accumulateUsage, accumulateUsagePerModel } from "./usage";
 
 export { agentHistoryPath as getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState } from "./agent-turn-state";
@@ -95,7 +96,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       deps.updateEntry(sessionId, (entry) => ({
         ...entry,
         toolCalls: pendingToolCalls,
-        status: execution.waitingForUser ? "waiting_for_user" : "interrupted",
+        status: execution.waitingForUser ? "waiting_for_user" : hasProcessStopFailure(entry) ? "failed" : "interrupted",
         updateTime: new Date().toISOString(),
       }));
       return;

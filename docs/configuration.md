@@ -32,6 +32,7 @@ doku 使用 `settings.json` 设置文件进行持久化配置，支持两个层�
 | -------------------- | --------- | ------------------------------------------------------------------- |
 | `env`                | object    | 环境变量分组（见下方子字段表）                                       |
 | `model`              | string    | 模型名称。优先级高于 `env.MODEL`                                    |
+| `credentialProvider` | string    | 已由设置向导确认保存凭据的提供商                                     |
 | `thinkingEnabled`    | boolean   | 是否启用思考模式（DeepSeek V4 系列默认启用）                         |
 | `reasoningEffort`    | string    | 推理强度，可选 `"high"` 或 `"max"`（默认 `"max"`）                  |
 | `debugLogEnabled`    | boolean   | 是否启用调试日志输出（默认 `false`）                                 |
@@ -151,6 +152,8 @@ DOKU_MODEL=gpt-5.6-sol
 ### 优先级原则
 
 环境变量优先级遵循“越具体、越局部的配置，优先级越高”和“env文件默认保护现有环境，系统变量高于env文件”的覆盖逻辑。(settings.json的env对象可以认为是一种env文件)
+
+设置向导会把密钥保存到所选提供商配置的环境变量，并记录 `credentialProvider`，避免把密钥用于其他提供商。项目级凭据始终优先于用户级凭据，不受通用密钥或提供商专用密钥形式影响。向导关联的密钥优先于 `OPENAI_API_KEY` 等标准 Shell 变量；显式的 `DOKU_API_KEY` 和 `DOKU_<PROVIDER>_API_KEY` 覆盖仍具有最高优先级。未配置专用密钥变量的提供商使用 `env.API_KEY`。
 
 优先级层级 (由低到高)
 1. settings.json 外层的 env：这是针对整个工具及其所有子进程的通用配置（全局变量）。可被外层环境变量覆盖，但环境变量KEY会移除`DOKU_`前缀。

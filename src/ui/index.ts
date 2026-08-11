@@ -28,6 +28,7 @@ export {
   removeCurrentSlashToken,
   isClearImageAttachmentsShortcut,
   getPromptReturnKeyAction,
+  getPromptFooterHints,
   renderBufferWithCursor,
   buildInitPromptSubmission,
   buildSkillPromptSubmission,
@@ -43,7 +44,13 @@ export { disableTerminalExtendedKeys, enableTerminalExtendedKeys, getPromptCurso
 export { SessionList, formatSessionTitle, filterSessions, formatSessionStatus } from "./SessionList";
 export { ThemedGradient } from "./ThemedGradient";
 export { UpdatePrompt, type UpdatePromptChoice } from "./UpdatePrompt";
-export { WelcomeScreen, formatHomeRelativePath, buildWelcomeTips } from "./WelcomeScreen";
+export {
+  WelcomeScreen,
+  formatHomeRelativePath,
+  buildWelcomeTips,
+  getWelcomeLayout,
+  truncateMiddle,
+} from "./WelcomeScreen";
 export {
   findPendingAskUserQuestion,
   formatAskUserQuestionAnswers,

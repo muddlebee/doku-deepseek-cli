@@ -7,6 +7,7 @@ import * as path from "path";
 import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
+import { hasProcessStopFailure } from "../session/process-tracker";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleWarn = console.warn;
@@ -87,6 +88,76 @@ test("SessionManager keeps usagePerModel null until response usage is available"
 
   assert.equal(manager.getSession(sessionId)?.usage, null);
   assert.equal(manager.getSession(sessionId)?.usagePerModel, null);
+});
+
+test("SessionManager emits provider failures as runtime notices", async () => {
+  const workspace = createTempDir("doku-runtime-notice-workspace-");
+  const home = createTempDir("doku-runtime-notice-home-");
+  setHomeDir(home);
+  const notices: SessionMessage[] = [];
+  const manager = new SessionManager({
+    projectRoot: workspace,
+    createOpenAIClient: () => ({
+      client: null,
+      model: "test-model",
+      baseURL: "https://api.example.com/v1",
+      thinkingEnabled: false,
+    }),
+    getResolvedSettings: () => ({ model: "test-model" }),
+    renderMarkdown: (text) => text,
+    onAssistantMessage: (message) => notices.push(message),
+  });
+
+  await manager.createSession({ text: "" });
+
+  assert.equal(notices.at(-1)?.role, "system");
+  assert.equal(notices.at(-1)?.meta?.notice, "error");
+  assert.match(notices.at(-1)?.content ?? "", /API key not found/);
+});
+
+test("SessionManager retains and reports processes that fail to stop", async () => {
+  const workspace = createTempDir("doku-failed-process-stop-workspace-");
+  const home = createTempDir("doku-failed-process-stop-home-");
+  setHomeDir(home);
+  const notices: SessionMessage[] = [];
+  const manager = new SessionManager({
+    projectRoot: workspace,
+    createOpenAIClient: () => ({
+      client: null,
+      model: "test-model",
+      baseURL: "https://api.example.com/v1",
+      thinkingEnabled: false,
+    }),
+    getResolvedSettings: () => ({ model: "test-model" }),
+    renderMarkdown: (text) => text,
+    onAssistantMessage: (message) => notices.push(message),
+  });
+  const sessionId = await manager.createSession({ text: "" });
+  (manager as any).processTracker.add(sessionId, 123, "sleep 10");
+  (manager as any).processTracker.killAll = () => ({ killedPids: [], failedPids: [123] });
+
+  manager.interruptSession(sessionId);
+
+  const session = manager.getSession(sessionId);
+  assert.equal(session?.status, "failed");
+  assert.equal(session?.failReason, "Failed to stop processes: 123");
+  assert.equal(session?.processes?.get("123")?.command, "sleep 10");
+  assert.equal(notices.at(-1)?.meta?.notice, "error");
+  assert.equal(notices.at(-1)?.content, "Failed to stop processes: 123");
+  assert.equal(hasProcessStopFailure({ ...session!, processes: null }), true);
+
+  (manager as any).processTracker.remove(sessionId, 123);
+  (manager as any).processTracker.killAll = () => ({ killedPids: [], failedPids: [] });
+  manager.interruptSession(sessionId);
+  assert.equal(manager.getSession(sessionId)?.status, "failed");
+  assert.equal(manager.getSession(sessionId)?.failReason, "Failed to stop processes: 123");
+
+  (manager as any).processTracker.add(sessionId, 456, "sleep 20");
+  (manager as any).processTracker.killAll = () => ({ killedPids: [456], failedPids: [] });
+  manager.interruptSession(sessionId);
+  assert.equal(manager.getSession(sessionId)?.status, "interrupted");
+  assert.equal(manager.getSession(sessionId)?.failReason, "interrupted");
+  assert.equal(manager.getSession(sessionId)?.processes, null);
 });
 
 test("SessionManager marks skills loaded from existing session messages", async () => {

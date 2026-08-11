@@ -50,11 +50,11 @@ export function formatAskUserQuestionAnswers(answers: AskUserQuestionAnswers): s
   const answersText = Object.entries(answers)
     .map(([question, answer]) => `"${escapeAnswerPart(question)}"="${escapeAnswerPart(answer)}"`)
     .join(", ");
-  return `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`;
+  return `Answers to your questions: ${answersText}. Continue with these answers.`;
 }
 
 export function formatAskUserQuestionDecline(): string {
-  return "The user declined to answer the questions. Continue with the available context, or ask again if the information is required.";
+  return "User declined to answer. Continue with available context; ask again only if required.";
 }
 
 function parseAskUserQuestionContent(content: string | null): AskUserQuestionItem[] {

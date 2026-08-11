@@ -2,6 +2,8 @@ import { killProcessTree } from "../common/process-tree";
 import type { ProcessTimeoutControl, ProcessTimeoutInfo } from "../tools/executor";
 import type { BashTimeoutAdjustment, SessionEntry } from "./types";
 
+const PROCESS_STOP_FAILURE_PREFIX = "Failed to stop processes:";
+
 export class SessionProcessTracker {
   private readonly timeoutControls = new Map<string, ProcessTimeoutControl>();
 
@@ -87,6 +89,18 @@ export class SessionProcessTracker {
     if (!processes) return [];
     return [...processes.keys()].map(Number).filter((processId) => Number.isInteger(processId) && processId > 0);
   }
+}
+
+export function hasProcessStopFailure(entry: SessionEntry): boolean {
+  return isProcessStopFailureMessage(entry.failReason);
+}
+
+export function isProcessStopFailureMessage(value: string | null | undefined): boolean {
+  return Boolean(value?.startsWith(PROCESS_STOP_FAILURE_PREFIX));
+}
+
+export function formatProcessStopFailure(processIds: number[]): string | null {
+  return processIds.length > 0 ? `${PROCESS_STOP_FAILURE_PREFIX} ${processIds.join(", ")}` : null;
 }
 
 function key(sessionId: string, processId: string | number): string {

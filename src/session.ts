@@ -2,6 +2,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
 import { DEEPSEEK_V4_MODELS } from "./common/model-capabilities";
+import { getWebSearchApiKeyEnv } from "./common/web-search-provider";
 import { getTools, type ToolDefinition } from "./prompt";
 import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
 import { McpManager } from "./mcp/mcp-manager";
@@ -15,7 +16,7 @@ import { identifyMatchingSkills } from "./session/skill-matcher";
 import { appendPromptSkills } from "./session/prompt-skills";
 import { SessionMessageFactory } from "./session/message-factory";
 import { notifyTaskCompletion, reportNewPrompt } from "./session/notifications";
-import { SessionProcessTracker } from "./session/process-tracker";
+import { formatProcessStopFailure, hasProcessStopFailure, SessionProcessTracker } from "./session/process-tracker";
 import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
@@ -45,6 +46,7 @@ export type {
   UndoTarget,
   UserPromptContent,
 } from "./session/types";
+export { isProcessStopFailureMessage } from "./session/process-tracker";
 
 const DEFAULT_COMPACT_PROMPT_TOKEN_THRESHOLD = 128 * 1024;
 // Both deepseek-v4-flash and deepseek-v4-pro have a 1M token context window.
@@ -381,14 +383,7 @@ export class SessionManager {
         failReason: "API key not found",
         updateTime: now,
       }));
-      this.onAssistantMessage(
-        this.buildAssistantMessage(
-          sessionId,
-          "API key not found. Please configure ~/.doku/settings.json or ./.doku/settings.json.",
-          null
-        ),
-        false
-      );
+      this.emitRuntimeError(sessionId, "API key not found. Configure ~/.doku/settings.json or ./.doku/settings.json.");
       this.maybeNotifyTaskCompletion(sessionId, notify, startedAt, env);
       return;
     }
@@ -475,15 +470,17 @@ export class SessionManager {
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);
       const aborted = this.isAbortLikeError(error) || sessionController.signal.aborted;
-      this.updateSessionEntry(sessionId, (entry) => ({
-        ...entry,
-        status: aborted ? "interrupted" : "failed",
-        failReason: aborted ? "interrupted" : errMessage,
-        updateTime: new Date().toISOString(),
-      }));
-      if (!aborted) {
-        this.onAssistantMessage(this.buildAssistantMessage(sessionId, `Request failed: ${errMessage}`, null), false);
-      }
+      this.updateSessionEntry(sessionId, (entry) =>
+        aborted && hasProcessStopFailure(entry)
+          ? { ...entry, status: "failed", updateTime: new Date().toISOString() }
+          : {
+              ...entry,
+              status: aborted ? "interrupted" : "failed",
+              failReason: aborted ? "interrupted" : errMessage,
+              updateTime: new Date().toISOString(),
+            }
+      );
+      if (!aborted) this.emitRuntimeError(sessionId, errMessage);
     } finally {
       await provider?.close().catch(() => {});
       if (this.sessionControllers.get(sessionId) === sessionController) this.sessionControllers.delete(sessionId);
@@ -565,8 +562,12 @@ export class SessionManager {
     const settings = this.getResolvedSettings();
     const { webSearchProvider, webSearchTool } = settings;
     if (webSearchTool) return "custom-script";
-    if (webSearchProvider === "tavily" && settings.env?.TAVILY_API_KEY?.trim()) return "tavily";
-    if (webSearchProvider === "firecrawl" && settings.env?.FIRECRAWL_API_KEY?.trim()) return "firecrawl";
+    if (
+      (webSearchProvider === "tavily" || webSearchProvider === "firecrawl") &&
+      settings.env?.[getWebSearchApiKeyEnv(webSearchProvider)]?.trim()
+    ) {
+      return webSearchProvider;
+    }
     return undefined;
   }
 
@@ -603,27 +604,32 @@ export class SessionManager {
     }
 
     const now = new Date().toISOString();
-    this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      status: "interrupted",
-      failReason: "interrupted",
-      processes: null,
-      updateTime: now,
-    }));
-
-    const contentParts = ["Interrupted."];
-    if (killedPids.length > 0) {
-      contentParts.push(`Killed processes: ${killedPids.join(", ")}.`);
-    }
-    if (failedPids.length > 0) {
-      contentParts.push(`Failed to kill processes: ${failedPids.join(", ")}.`);
-    }
-
-    this.onAssistantMessage(this.buildUserMessage(sessionId, { text: contentParts.join(" ") }), false);
+    const failedProcessIds = new Set(failedPids.map(String));
+    const currentFailure = formatProcessStopFailure(failedPids);
+    this.updateSessionEntry(sessionId, (entry) => {
+      const preservePreviousFailure = killedPids.length === 0 && hasProcessStopFailure(entry);
+      const failure = currentFailure ?? (preservePreviousFailure ? entry.failReason : null);
+      return {
+        ...entry,
+        status: failure ? "failed" : "interrupted",
+        failReason: failure ?? "interrupted",
+        processes: currentFailure
+          ? new Map([...(entry.processes ?? [])].filter(([processId]) => failedProcessIds.has(processId)))
+          : failure
+            ? entry.processes
+            : null,
+        updateTime: now,
+      };
+    });
+    if (currentFailure) this.emitRuntimeError(sessionId, currentFailure);
   }
 
   private isInterrupted(sessionId: string): boolean {
     return !this.sessionControllers.has(sessionId);
+  }
+
+  private emitRuntimeError(sessionId: string, content: string): void {
+    this.onAssistantMessage(this.buildSystemMessage(sessionId, content, null, true, { notice: "error" }), false);
   }
 
   adjustActiveBashTimeout(deltaMs: number): BashTimeoutAdjustment | null {

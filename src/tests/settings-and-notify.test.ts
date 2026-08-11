@@ -526,6 +526,7 @@ test("resolveSettings infers providers and honors provider-specific credentials"
   assert.equal(openai.provider, "openai");
   assert.equal(openai.providerProfile.type, "openai");
   assert.equal(openai.apiKey, "sk-openai");
+  assert.equal(openai.apiKeySource, "environment");
   assert.equal(openai.apiMode, "auto");
   assert.equal(openai.maxTurns, 100);
   assert.equal(openai.tracingEnabled, false);
@@ -538,6 +539,34 @@ test("resolveSettings infers providers and honors provider-specific credentials"
   assert.equal(legacy.provider, "deepseek");
   assert.equal(legacy.apiMode, "chat_completions");
   assert.equal(legacy.apiKey, "sk-deepseek");
+  assert.equal(legacy.apiKeySource, "settings");
+});
+
+test("a lone OpenAI environment credential selects a usable OpenAI default", () => {
+  const resolved = resolveSettingsSources(
+    null,
+    null,
+    { model: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
+    { OPENAI_API_KEY: "sk-openai" }
+  );
+  assert.equal(resolved.provider, "openai");
+  assert.equal(resolved.model, "gpt-5.6-sol");
+  assert.equal(resolved.baseURL, "https://api.openai.com/v1");
+  assert.equal(resolved.apiKey, "sk-openai");
+  assert.equal(resolved.apiKeySource, "environment");
+});
+
+test("a saved generic credential prevents provider inference from an unrelated OpenAI environment key", () => {
+  const resolved = resolveSettingsSources(
+    { env: { API_KEY: "saved-deepseek-key" } },
+    null,
+    { model: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
+    { OPENAI_API_KEY: "shell-openai-key" }
+  );
+  assert.equal(resolved.provider, "deepseek");
+  assert.equal(resolved.model, "deepseek-v4-pro");
+  assert.equal(resolved.apiKey, "saved-deepseek-key");
+  assert.equal(resolved.apiKeySource, "settings");
 });
 
 test("resolveSettings supports named compatible provider profiles and DOKU overrides", () => {
@@ -598,7 +627,26 @@ test("named provider credentials can be configured in settings env", () => {
   );
 
   assert.equal(projectOverridesUser.apiKey, "project-key");
+  assert.equal(projectOverridesUser.apiKeySource, "settings");
   assert.equal(processOverridesSettings.apiKey, "process-key");
+  assert.equal(processOverridesSettings.apiKeySource, "environment");
+});
+
+test("project generic credentials override setup-associated user provider credentials", () => {
+  const resolved = resolveSettingsSources(
+    {
+      provider: "openai",
+      credentialProvider: "openai",
+      env: { OPENAI_API_KEY: "user-key" },
+    },
+    { env: { API_KEY: "project-key" } },
+    { model: "gpt-5.6-sol", baseURL: "https://api.openai.com/v1" },
+    {}
+  );
+
+  assert.equal(resolved.provider, "openai");
+  assert.equal(resolved.apiKey, "project-key");
+  assert.equal(resolved.apiKeySource, "settings");
 });
 
 test("provider-specific DOKU credentials are supported", () => {
@@ -609,6 +657,17 @@ test("provider-specific DOKU credentials are supported", () => {
     { DOKU_OPENAI_API_KEY: "provider-key" }
   );
   assert.equal(resolved.apiKey, "provider-key");
+});
+
+test("credential source follows the key selected by precedence", () => {
+  const resolved = resolveSettingsSources(
+    { model: "gpt-5", env: { API_KEY: "saved-key" } },
+    null,
+    { model: "fallback", baseURL: "https://fallback.example/v1" },
+    { OPENAI_API_KEY: "environment-key" }
+  );
+  assert.equal(resolved.apiKey, "saved-key");
+  assert.equal(resolved.apiKeySource, "settings");
 });
 
 test("an explicit provider profile is not routed through a legacy base URL", () => {

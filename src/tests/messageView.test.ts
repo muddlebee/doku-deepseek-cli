@@ -184,6 +184,16 @@ test("renderMessageToStdout renders system model change messages", () => {
   assert.ok(output.includes("> Switched to deepseek-v4-pro"));
 });
 
+test("renderMessageToStdout preserves runtime errors in raw mode", () => {
+  const msg = makeSessionMessage({
+    role: "system",
+    content: "invalid credential",
+    meta: { notice: "error" },
+  });
+  const output = renderMessageToStdout(msg, RawMode.Raw);
+  assert.ok(output.includes("Error: invalid credential"));
+});
+
 test("renderMessageToStdout renders system skill load messages", () => {
   const msg = makeSessionMessage({
     role: "system",

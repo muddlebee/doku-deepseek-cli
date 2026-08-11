@@ -52,6 +52,7 @@ The following are all the top-level fields supported in `settings.json`, along w
 | Field              | Type    | Description                                                                 |
 | ------------------ | ------- | --------------------------------------------------------------------------- |
 | `env`              | object  | Group of environment variables (see sub-field table below)                 |
+| `credentialProvider` | string | Provider whose saved credential was confirmed by setup                     |
 | `model`            | string  | Model name. Takes precedence over `env.MODEL`                              |
 | `thinkingEnabled`  | boolean | Whether to enable thinking mode (enabled by default for DeepSeek V4 series)|
 | `reasoningEffort`  | string  | Reasoning intensity, either `"high"` or `"max"` (default `"max"`)          |
@@ -171,6 +172,8 @@ You can also use `DOKU_API_KEY` instead of the provider-specific key. `.env` and
 ### Priority Principle
 
 Environment variable priority follows the logic of “the more specific and localized the configuration, the higher the priority”, and the override rule of “env files protect existing environment by default, system variables override env files”. (The `env` object in settings.json can be thought of as a type of env file.)
+
+The setup wizard saves credentials under the selected provider's configured environment key and records `credentialProvider`, so the key is never reused for a different provider. Project credentials always take precedence over user credentials, regardless of whether either key is generic or provider-specific. A setup-associated key wins over the standard shell variable such as `OPENAI_API_KEY`; explicit `DOKU_API_KEY` and `DOKU_<PROVIDER>_API_KEY` overrides still take priority. Providers without a configured credential key use `env.API_KEY`.
 
 Priority levels (from lowest to highest):
 1. `env` defined at the top level of `settings.json` – this is a general configuration for the entire tool and all its subprocesses (global variables). Can be overridden by outer environment variables, but the environment variable KEY has the `DOKU_` prefix removed.

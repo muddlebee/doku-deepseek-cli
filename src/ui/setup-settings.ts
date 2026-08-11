@@ -1,4 +1,5 @@
 import type { DeepcodingSettings } from "../settings";
+import { GENERIC_API_KEY_ENV, getProviderApiKeyEnv } from "../common/provider-credentials";
 import type { SetupResult } from "./SetupScreen";
 
 export function buildSetupSettings(existing: DeepcodingSettings, result: SetupResult): DeepcodingSettings {
@@ -12,14 +13,23 @@ export function buildSetupSettings(existing: DeepcodingSettings, result: SetupRe
       apiMode: result.apiMode,
     };
   }
+  const credentialEnv = getProviderApiKeyEnv(result.provider, existingProfile?.apiKeyEnv);
+  const env: Record<string, string> = { ...existing.env, BASE_URL: result.baseURL };
+  if (credentialEnv) {
+    env[credentialEnv] = result.apiKey;
+    if (credentialEnv !== GENERIC_API_KEY_ENV) delete env[GENERIC_API_KEY_ENV];
+  } else {
+    env[GENERIC_API_KEY_ENV] = result.apiKey;
+  }
 
   return {
     ...existing,
     settingsVersion: 2,
     provider: result.provider,
+    credentialProvider: result.provider,
     model: result.model,
     apiMode: result.apiMode,
     ...(Object.keys(providers).length ? { providers } : {}),
-    env: { ...existing.env, API_KEY: result.apiKey, BASE_URL: result.baseURL },
+    env,
   };
 }

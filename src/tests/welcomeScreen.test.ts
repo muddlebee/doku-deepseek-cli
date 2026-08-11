@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as os from "os";
 import * as path from "path";
-import { buildWelcomeTips, formatHomeRelativePath } from "../ui";
+import { buildWelcomeTips, formatHomeRelativePath, getWelcomeLayout, truncateMiddle } from "../ui";
 
 test("formatHomeRelativePath returns tilde for the home directory", () => {
   const home = path.resolve("/Users/example");
@@ -33,4 +33,20 @@ test("buildWelcomeTips includes built-in slash commands and loaded skills", () =
   assert.ok(labels.includes("/new"));
   assert.ok(labels.includes("/loaded"));
   assert.equal(labels.includes("/fresh"), false);
+  assert.ok(labels.includes("Ctrl+C twice"));
+});
+
+test("welcome layout switches cleanly at supported terminal widths", () => {
+  assert.equal(getWelcomeLayout(60), "compact");
+  assert.equal(getWelcomeLayout(79), "compact");
+  assert.equal(getWelcomeLayout(80), "standard");
+  assert.equal(getWelcomeLayout(119), "standard");
+  assert.equal(getWelcomeLayout(120), "full");
+});
+
+test("truncateMiddle preserves both ends within narrow layouts", () => {
+  assert.equal(truncateMiddle("gpt-5.6-sol", 20), "gpt-5.6-sol");
+  const result = truncateMiddle("~/Codes/ai-stuff/doku-deepseek-cli", 20);
+  assert.equal(result.length, 20);
+  assert.match(result, /^~\/Codes\/a.*cli$/);
 });

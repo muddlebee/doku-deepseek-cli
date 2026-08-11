@@ -65,6 +65,7 @@ export type MessageMeta = {
   isModelChange?: boolean;
   skill?: SkillInfo;
   pendingApproval?: boolean;
+  notice?: "error";
 };
 
 export type SessionMessageRole = "system" | "user" | "assistant" | "tool";

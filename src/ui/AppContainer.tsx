@@ -5,6 +5,8 @@ import { RawModeProvider } from "./contexts/RawModeContext";
 import { SetupScreen, type SetupResult } from "./SetupScreen";
 import { readSettings, resolveCurrentSettings, writeSettings } from "./App";
 import { buildSetupSettings } from "./setup-settings";
+import { getConfigurationIssue, getPostSetupConfigurationIssue } from "./configuration";
+import { ConfigurationIssueScreen } from "./ConfigurationIssueScreen";
 
 const AppContainer: React.FC<{
   projectRoot: string;
@@ -12,19 +14,40 @@ const AppContainer: React.FC<{
   initialPrompt: string | undefined;
   onRestart: () => void;
 }> = ({ version, projectRoot, initialPrompt, onRestart }) => {
-  const [needsSetup] = useState(() => !resolveCurrentSettings(projectRoot).apiKey);
-  const [setupDone, setSetupDone] = useState(false);
+  const [setupIssue, setSetupIssue] = useState(() => getConfigurationIssue(resolveCurrentSettings(projectRoot)));
+  const [postSetupIssue, setPostSetupIssue] = useState<string | null>(null);
+  const [confirmedApiKey, setConfirmedApiKey] = useState<string | null>(null);
 
   function handleSetupComplete(result: SetupResult): void {
     const existing = readSettings() ?? {};
     writeSettings(buildSetupSettings(existing, result));
-    setSetupDone(true);
+    const nextIssue = getPostSetupConfigurationIssue(resolveCurrentSettings(projectRoot), result.apiKey);
+    setConfirmedApiKey(result.apiKey);
+    setSetupIssue(nextIssue);
+    setPostSetupIssue(nextIssue);
   }
 
-  if (needsSetup && !setupDone) {
+  function retryConfiguration(): void {
+    const settings = resolveCurrentSettings(projectRoot);
+    const nextIssue = confirmedApiKey
+      ? getPostSetupConfigurationIssue(settings, confirmedApiKey)
+      : getConfigurationIssue(settings);
+    setSetupIssue(nextIssue);
+    setPostSetupIssue(nextIssue);
+  }
+
+  if (postSetupIssue) {
     return (
       <AppContext.Provider value={{ version }}>
-        <SetupScreen onComplete={handleSetupComplete} />
+        <ConfigurationIssueScreen issue={postSetupIssue} onRetry={retryConfiguration} />
+      </AppContext.Provider>
+    );
+  }
+
+  if (setupIssue) {
+    return (
+      <AppContext.Provider value={{ version }}>
+        <SetupScreen onComplete={handleSetupComplete} notice={setupIssue} />
       </AppContext.Provider>
     );
   }

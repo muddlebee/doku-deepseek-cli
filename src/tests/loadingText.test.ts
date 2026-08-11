@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildLoadingText } from "../ui";
 
-test("buildLoadingText returns plain Thinking... when no progress", () => {
-  assert.equal(buildLoadingText({ progress: null, now: Date.now() }), "Thinking...");
+test("buildLoadingText distinguishes a request awaiting its first stream event", () => {
+  assert.equal(buildLoadingText({ progress: null, now: Date.now() }), "Sending request…");
 });
 
 test("buildLoadingText shows running process elapsed time before thinking progress", () => {

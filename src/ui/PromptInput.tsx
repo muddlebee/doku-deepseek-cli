@@ -85,7 +85,6 @@ type Props = {
   screenWidth: number;
   promptHistory: string[];
   busy: boolean;
-  loadingText?: string | null;
   disabled?: boolean;
   placeholder?: string;
   runningProcesses?: SessionEntry["processes"];
@@ -140,7 +139,6 @@ export const PromptInput = React.memo(function PromptInput({
   screenWidth,
   promptHistory,
   busy,
-  loadingText,
   disabled,
   placeholder,
   runningProcesses,
@@ -167,7 +165,7 @@ export const PromptInput = React.memo(function PromptInput({
   const [historyCursor, setHistoryCursor] = useState(-1);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState<string | null>(null);
   const [hasTerminalFocus, setHasTerminalFocus] = useState(true);
-  const lastCtrlDAt = React.useRef<number>(0);
+  const lastExitAt = React.useRef<number>(0);
   const undoRedoRef = React.useRef(createPromptUndoRedoState());
   const wasBusyRef = React.useRef(busy);
   const hadFileMentionTokenRef = React.useRef(false);
@@ -341,11 +339,11 @@ export const PromptInput = React.memo(function PromptInput({
           expandedRegionsRef.current.clear();
         } else {
           const now = Date.now();
-          if (pendingExit && now - lastCtrlDAt.current < 2000) {
+          if (pendingExit && now - lastExitAt.current < 2000) {
             exit();
             return;
           }
-          lastCtrlDAt.current = now;
+          lastExitAt.current = now;
           setPendingExit(true);
           setStatusMessage("press ctrl+c again to exit");
         }
@@ -946,22 +944,29 @@ export const PromptInput = React.memo(function PromptInput({
           </Box>
         ) : busy ? (
           <Box paddingX={2} gap={2} marginTop={0}>
-            <Text color="#6366f1">{loadingText || "Thinking..."}</Text>
-            <Text dimColor>{`esc interrupt${processOrPasteHint}`}</Text>
+            <Text dimColor>{`esc stop turn${processOrPasteHint}`}</Text>
           </Box>
         ) : (
           <Box paddingX={2} gap={3}>
-            <KeyHint k="enter" d="send" />
-            <KeyHint k="/" d="commands" />
-            <KeyHint k="@" d="files" />
-            <KeyHint k="ctrl+v" d="image" />
-            <KeyHint k="ctrl+c" d="exit" />
+            {getPromptFooterHints(screenWidth).map((hint) => (
+              <KeyHint key={hint.k} k={hint.k} d={hint.d} />
+            ))}
             {processOrPasteHint ? <Text dimColor>{processOrPasteHint}</Text> : null}
           </Box>
         ))}
     </Box>
   );
 });
+
+export function getPromptFooterHints(width: number): Array<{ k: string; d: string }> {
+  const essential = [
+    { k: "enter", d: "send" },
+    { k: "/", d: "commands" },
+    { k: "ctrl+c", d: "exit" },
+  ];
+  if (width < 80) return essential;
+  return [...essential.slice(0, 2), { k: "@", d: "files" }, { k: "ctrl+v", d: "image" }, essential[2]!];
+}
 
 export const IMAGE_ATTACHMENT_CLEAR_HINT = "ctrl+x clear images";
 
