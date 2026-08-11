@@ -9,5 +9,5 @@ Usage:
 - `pattern` matches POSIX paths relative to the requested directory. Use `**/*.ts` for recursive TypeScript matches.
 - Set `recursive: false` to list only the immediate contents of a directory.
 - Use `max_depth` to control how deep the walk goes (default 5, max 20).
-- Pagination is applied to one combined path-sorted entry list before files and directories are separated. Continue from `next_offset` when truncated.
+- Pagination is applied to one combined path-sorted traversal batch before files and directories are separated. Continue with `next_offset` while it is present. After consuming that batch, pass `next_cursor` as `cursor` and reset `offset` to 0 to continue a very large traversal.
 - Always run multiple independent ListFiles calls in parallel when mapping the codebase structure.

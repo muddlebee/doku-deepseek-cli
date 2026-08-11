@@ -92,7 +92,10 @@ export async function handleGrepTool(
   const contextLines = parseClampedInteger(args.context_lines, 0, 10, 0);
   if (!contextLines.ok) return { ok: false, name: "Grep", error: contextLines.error };
 
-  const rgArgs = ["--json", "--sort", "path", "--max-filesize", "1M"];
+  const rgArgs = ["--sort", "path", "--max-filesize", "1M"];
+  if (mode.value === "content") rgArgs.push("--json");
+  if (mode.value === "files_with_matches") rgArgs.push("--files-with-matches", "--null");
+  if (mode.value === "count") rgArgs.push("--count-matches", "--with-filename", "--null");
   if (isLiteralPattern(pattern)) rgArgs.push("--fixed-strings");
   if (!caseSensitive) rgArgs.push("--ignore-case");
   if (multiline) rgArgs.push("--multiline");
@@ -106,6 +109,7 @@ export async function handleGrepTool(
   const search = await runRipgrep(
     rgArgs,
     context.projectRoot,
+    mode.value,
     offset.value,
     limit.value,
     contextLines.value,
@@ -180,6 +184,7 @@ function buildResult(mode: OutputMode, results: SearchResults, offset: number, l
 async function runRipgrep(
   args: string[],
   projectRoot: string,
+  mode: OutputMode,
   offset: number,
   limit: number,
   contextLines: number,
@@ -187,11 +192,13 @@ async function runRipgrep(
 ): Promise<{ ok: true; value: SearchResults } | { ok: false; error: string }> {
   return new Promise((resolve) => {
     const child = spawn("rg", args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
-    const lines = readline.createInterface({ input: child.stdout });
+    const lines = mode === "content" ? readline.createInterface({ input: child.stdout }) : null;
     const matches: GrepMatch[] = [];
     const fileCounts = new Map<string, number>();
     const pendingContext = new Map<string, ContextLine[]>();
-    const lastPagedMatches = new Map<string, GrepMatch[]>();
+    const activePagedMatches = new Map<string, GrepMatch[]>();
+    let aggregateBuffer = Buffer.alloc(0);
+    let pendingCountPath: string | null = null;
     let totalMatches = 0;
     let stderr = "";
     let settled = false;
@@ -225,12 +232,12 @@ async function runRipgrep(
     child.stderr.on("data", (chunk: string) => {
       if (stderr.length < 64 * 1024) stderr += chunk;
     });
-    lines.on("line", (raw) => {
+    lines?.on("line", (raw) => {
       const message = parseMessage(raw);
       if (!message) return;
       if (message.type === "begin") {
         pendingContext.clear();
-        lastPagedMatches.clear();
+        activePagedMatches.clear();
         return;
       }
       if (message.type === "context") {
@@ -239,12 +246,16 @@ async function runRipgrep(
           line: message.data.line_number,
           content: clipContent(stripLineEnding(decodeRgText(message.data.lines))),
         };
-        for (const match of lastPagedMatches.get(file) ?? []) {
+        const activeMatches = (activePagedMatches.get(file) ?? []).filter(
+          (match) => context.line <= match.end_line + contextLines
+        );
+        for (const match of activeMatches) {
           if (context.line > match.end_line && context.line <= match.end_line + contextLines) {
             match.context_after ??= [];
             match.context_after.push(context.content);
           }
         }
+        activePagedMatches.set(file, activeMatches);
         const pending = pendingContext.get(file) ?? [];
         pending.push(context);
         pendingContext.set(file, pending);
@@ -253,6 +264,9 @@ async function runRipgrep(
       if (message.type !== "match") return;
 
       const file = projectRelativePath(projectRoot, decodeRgText(message.data.path));
+      const activeMatches = (activePagedMatches.get(file) ?? []).filter(
+        (match) => message.data.line_number <= match.end_line + contextLines
+      );
       const submatches = message.data.submatches.length > 0 ? message.data.submatches : [{ start: 0, end: 0 }];
       fileCounts.set(file, (fileCounts.get(file) ?? 0) + submatches.length);
       const before = (pendingContext.get(file) ?? [])
@@ -279,10 +293,51 @@ async function runRipgrep(
         matches.push(match);
         pagedForLine.push(match);
       }
-      lastPagedMatches.set(file, pagedForLine);
+      activePagedMatches.set(file, [...activeMatches, ...pagedForLine]);
     });
+    if (mode !== "content") {
+      child.stdout.on("data", (chunk: Buffer) => {
+        aggregateBuffer = Buffer.concat([aggregateBuffer, chunk]);
+        consumeAggregateOutput(false);
+      });
+    }
+
+    const consumeAggregateOutput = (final: boolean) => {
+      if (mode === "files_with_matches") {
+        let separator = aggregateBuffer.indexOf(0);
+        while (separator >= 0) {
+          const file = projectRelativePath(projectRoot, aggregateBuffer.subarray(0, separator).toString("utf8"));
+          if (file) fileCounts.set(file, 1);
+          aggregateBuffer = aggregateBuffer.subarray(separator + 1);
+          separator = aggregateBuffer.indexOf(0);
+        }
+        return;
+      }
+      if (mode !== "count") return;
+
+      while (true) {
+        if (pendingCountPath === null) {
+          const separator = aggregateBuffer.indexOf(0);
+          if (separator < 0) return;
+          pendingCountPath = projectRelativePath(projectRoot, aggregateBuffer.subarray(0, separator).toString("utf8"));
+          aggregateBuffer = aggregateBuffer.subarray(separator + 1);
+        }
+        const separator = aggregateBuffer.indexOf(0x0a);
+        if (separator < 0 && !final) return;
+        const countBuffer = separator < 0 ? aggregateBuffer : aggregateBuffer.subarray(0, separator);
+        const count = Number.parseInt(countBuffer.toString("ascii"), 10);
+        if (Number.isSafeInteger(count) && count >= 0) {
+          fileCounts.set(pendingCountPath, count);
+          totalMatches += count;
+        }
+        pendingCountPath = null;
+        aggregateBuffer = separator < 0 ? Buffer.alloc(0) : aggregateBuffer.subarray(separator + 1);
+        if (aggregateBuffer.length === 0) return;
+      }
+    };
     child.on("close", (code) => {
-      lines.close();
+      lines?.close();
+      consumeAggregateOutput(true);
       if (timedOut) {
         finish({ ok: false, error: `Search timed out after ${SEARCH_TIMEOUT_MS}ms.` });
       } else if (signal?.aborted) {

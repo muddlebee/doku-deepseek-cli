@@ -23,11 +23,25 @@ type ListFilesResult = {
   total: number;
   truncated: boolean;
   next_offset: number | null;
+  next_cursor?: string;
 };
 
-type TraversalState = {
-  visited: number;
-  truncated: boolean;
+type TraversalFrame = {
+  directory: string;
+  index: number;
+  depth: number;
+  handle?: fs.Dir | null;
+  ignoreScopes?: IgnoreScope[];
+};
+
+type TraversalCursor = {
+  version: 1;
+  targetPath: string;
+  pattern: string | null;
+  maxDepth: number;
+  includeHidden: boolean;
+  matched: number;
+  frames: TraversalFrame[];
 };
 
 export async function handleListFilesTool(
@@ -47,6 +61,9 @@ export async function handleListFilesTool(
   const limit = parseInteger(args.limit, "limit", 1, MAX_PAGE_SIZE, MAX_PAGE_SIZE);
   if (!limit.ok) return { ok: false, name: "ListFiles", error: limit.error };
   const includeHidden = args.include_hidden === true;
+  const traversalDepth = recursive ? maxDepth.value : 1;
+  const cursor = parseTraversalCursor(args.cursor, targetPath, pattern ?? null, traversalDepth, includeHidden);
+  if (!cursor.ok) return { ok: false, name: "ListFiles", error: cursor.error };
 
   if (!fs.existsSync(targetPath)) {
     return { ok: false, name: "ListFiles", error: `Path does not exist: ${rawTargetPath}` };
@@ -78,93 +95,222 @@ export async function handleListFilesTool(
     return { ok: false, name: "ListFiles", error: error instanceof Error ? error.message : String(error) };
   }
 
-  const entries: PathEntry[] = [];
-  const traversal: TraversalState = { visited: 0, truncated: false };
-  const initialIgnoreScopes = loadAncestorIgnoreScopes(context.projectRoot, targetPath);
-  walk({
-    directory: targetPath,
+  const traversal = await walkChunk({
     targetPath,
     projectRoot: context.projectRoot,
-    depth: 1,
-    maxDepth: recursive ? maxDepth.value : 1,
+    maxDepth: traversalDepth,
     includeHidden,
     matcher,
-    ignoreScopes: initialIgnoreScopes,
-    entries,
-    traversal,
+    cursor: cursor.value,
+    pattern: pattern ?? null,
   });
-  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
-  const page = entries.slice(offset.value, offset.value + limit.value);
-  const hasMoreEntries = offset.value + page.length < entries.length;
-  const truncated = hasMoreEntries || traversal.truncated;
+  const page = traversal.entries.slice(offset.value, offset.value + limit.value);
+  const hasMoreEntries = offset.value + page.length < traversal.entries.length;
+  const truncated = hasMoreEntries || traversal.nextCursor !== null;
   const result: ListFilesResult = {
     files: page.filter((entry) => entry.kind === "file").map((entry) => entry.path),
     dirs: page.filter((entry) => entry.kind === "dir").map((entry) => entry.path),
-    total: entries.length,
+    total: traversal.total,
     truncated,
     next_offset: hasMoreEntries ? offset.value + page.length : null,
   };
+  if (traversal.nextCursor !== null) result.next_cursor = traversal.nextCursor;
 
   return {
     ok: true,
     name: "ListFiles",
     output: JSON.stringify(result),
-    metadata: { total: result.total, truncated: result.truncated, next_offset: result.next_offset },
+    metadata: {
+      total: result.total,
+      truncated: result.truncated,
+      next_offset: result.next_offset,
+      ...(result.next_cursor ? { next_cursor: result.next_cursor } : {}),
+    },
   };
 }
 
-function walk(options: {
-  directory: string;
+async function walkChunk(options: {
   targetPath: string;
   projectRoot: string;
-  depth: number;
   maxDepth: number;
   includeHidden: boolean;
   matcher: ((candidate: string) => boolean) | null;
-  ignoreScopes: IgnoreScope[];
-  entries: PathEntry[];
-  traversal: TraversalState;
-}): void {
-  const ignoreScopes = addIgnoreScope(options.directory, options.ignoreScopes);
-  let directory: fs.Dir;
-  try {
-    directory = fs.opendirSync(options.directory);
-  } catch {
-    return;
-  }
+  cursor: TraversalCursor | null;
+  pattern: string | null;
+}): Promise<{ entries: PathEntry[]; total: number; nextCursor: string | null }> {
+  const frames: TraversalFrame[] = options.cursor
+    ? options.cursor.frames.map(({ directory, index, depth }) => ({ directory, index, depth }))
+    : [{ directory: "", index: 0, depth: 1 }];
+  const entries: PathEntry[] = [];
+  let visited = 0;
 
   try {
-    let entry: fs.Dirent | null;
-    while ((entry = directory.readSync()) !== null) {
-      if (options.traversal.visited >= MAX_TRAVERSED_ENTRIES) {
-        options.traversal.truncated = true;
-        return;
+    while (frames.length > 0 && visited < MAX_TRAVERSED_ENTRIES) {
+      const frame = frames[frames.length - 1]!;
+      const directory = path.resolve(options.targetPath, frame.directory);
+      if (frame.handle === undefined) {
+        frame.handle = await openTraversalDirectory(directory, frame.index);
+        frame.ignoreScopes = loadIgnoreScopesForDirectory(options.projectRoot, options.targetPath, directory);
       }
-      options.traversal.visited += 1;
+      if (frame.handle === null) {
+        frames.pop();
+        continue;
+      }
+
+      const entry = await frame.handle.read();
+      if (entry === null) {
+        await closeTraversalDirectory(frame);
+        frames.pop();
+        continue;
+      }
+      frame.index += 1;
+      visited += 1;
 
       if (entry.name === ".git" || entry.name === "node_modules") continue;
       if (!options.includeHidden && entry.name.startsWith(".")) continue;
 
-      const fullPath = path.join(options.directory, entry.name);
+      const fullPath = path.join(directory, entry.name);
       const kind = getEntryKind(fullPath, entry);
       if (!kind) continue;
-      if (isIgnored(fullPath, kind === "dir", ignoreScopes)) continue;
+      if (isIgnored(fullPath, kind === "dir", frame.ignoreScopes ?? [])) continue;
 
       const targetRelative = path.relative(options.targetPath, fullPath).replaceAll(path.sep, "/");
       const projectRelative = path.relative(options.projectRoot, fullPath).replaceAll(path.sep, "/") || ".";
-      if (!options.matcher || options.matcher(targetRelative)) {
-        options.entries.push({ path: projectRelative, kind });
-      }
+      if (!options.matcher || options.matcher(targetRelative)) entries.push({ path: projectRelative, kind });
 
-      if (kind === "dir" && !entry.isSymbolicLink() && options.depth < options.maxDepth) {
-        walk({ ...options, directory: fullPath, depth: options.depth + 1, ignoreScopes });
-        if (options.traversal.truncated) return;
+      if (kind === "dir" && !entry.isSymbolicLink() && frame.depth < options.maxDepth) {
+        frames.push({ directory: targetRelative, index: 0, depth: frame.depth + 1 });
       }
     }
   } finally {
-    directory.closeSync();
+    await Promise.all(frames.map((frame) => closeTraversalDirectory(frame)));
   }
+
+  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  const matchedBefore = options.cursor?.matched ?? 0;
+  const nextCursor =
+    frames.length > 0
+      ? encodeTraversalCursor({
+          version: 1,
+          targetPath: options.targetPath,
+          pattern: options.pattern,
+          maxDepth: options.maxDepth,
+          includeHidden: options.includeHidden,
+          matched: matchedBefore + entries.length,
+          frames,
+        })
+      : null;
+  return { entries, total: matchedBefore + entries.length, nextCursor };
+}
+
+async function openTraversalDirectory(directory: string, offset: number): Promise<fs.Dir | null> {
+  let handle: fs.Dir;
+  try {
+    handle = await fs.promises.opendir(directory);
+  } catch {
+    return null;
+  }
+
+  for (let index = 0; index < offset; index += 1) {
+    if ((await handle.read()) === null) {
+      await handle.close();
+      return null;
+    }
+  }
+  return handle;
+}
+
+async function closeTraversalDirectory(frame: TraversalFrame): Promise<void> {
+  const handle = frame.handle;
+  frame.handle = null;
+  if (!handle) return;
+  try {
+    await handle.close();
+  } catch {
+    return;
+  }
+}
+
+function parseTraversalCursor(
+  value: unknown,
+  targetPath: string,
+  pattern: string | null,
+  maxDepth: number,
+  includeHidden: boolean
+): { ok: true; value: TraversalCursor | null } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== "string" || !value) {
+    return { ok: false, error: "cursor must be a non-empty string." };
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<TraversalCursor>;
+    if (
+      parsed.version !== 1 ||
+      parsed.targetPath !== targetPath ||
+      parsed.pattern !== pattern ||
+      parsed.maxDepth !== maxDepth ||
+      parsed.includeHidden !== includeHidden ||
+      !Number.isSafeInteger(parsed.matched) ||
+      parsed.matched! < 0 ||
+      !Array.isArray(parsed.frames) ||
+      parsed.frames.length === 0 ||
+      parsed.frames.length > maxDepth
+    ) {
+      throw new Error("invalid cursor");
+    }
+
+    const frames = parsed.frames.map((frame, index) => {
+      if (
+        typeof frame.directory !== "string" ||
+        !isSafeCursorDirectory(frame.directory) ||
+        !Number.isSafeInteger(frame.index) ||
+        frame.index < 0 ||
+        frame.depth !== index + 1 ||
+        (index === 0 && frame.directory !== "") ||
+        (index > 0 && cursorParent(frame.directory) !== parsed.frames![index - 1]!.directory)
+      ) {
+        throw new Error("invalid cursor frame");
+      }
+      return { directory: frame.directory, index: frame.index, depth: frame.depth };
+    });
+
+    return {
+      ok: true,
+      value: {
+        version: 1,
+        targetPath,
+        pattern,
+        maxDepth,
+        includeHidden,
+        matched: parsed.matched!,
+        frames,
+      },
+    };
+  } catch {
+    return { ok: false, error: "cursor is invalid or does not match the current ListFiles options." };
+  }
+}
+
+function encodeTraversalCursor(cursor: TraversalCursor): string {
+  return Buffer.from(
+    JSON.stringify({
+      ...cursor,
+      frames: cursor.frames.map(({ directory, index, depth }) => ({ directory, index, depth })),
+    })
+  ).toString("base64url");
+}
+
+function isSafeCursorDirectory(directory: string): boolean {
+  if (!directory) return true;
+  if (path.posix.isAbsolute(directory)) return false;
+  return directory.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function cursorParent(directory: string): string {
+  const parent = path.posix.dirname(directory);
+  return parent === "." ? "" : parent;
 }
 
 function addIgnoreScope(directory: string, inherited: IgnoreScope[]): IgnoreScope[] {
@@ -189,6 +335,22 @@ function loadAncestorIgnoreScopes(projectRoot: string, targetPath: string): Igno
     directory = path.join(directory, segment);
   }
   return scopes;
+}
+
+function loadIgnoreScopesForDirectory(
+  projectRoot: string,
+  targetPath: string,
+  currentDirectory: string
+): IgnoreScope[] {
+  let scopes = loadAncestorIgnoreScopes(projectRoot, targetPath);
+  let directory = targetPath;
+  const relative = path.relative(targetPath, currentDirectory);
+  const segments = relative ? relative.split(path.sep) : [];
+  for (const segment of segments) {
+    scopes = addIgnoreScope(directory, scopes);
+    directory = path.join(directory, segment);
+  }
+  return addIgnoreScope(directory, scopes);
 }
 
 function isIgnored(fullPath: string, isDirectory: boolean, scopes: IgnoreScope[]): boolean {

@@ -45,9 +45,21 @@ test("exploration tool schemas expose additive pagination and mode parameters", 
   for (const property of ["offset", "limit", "multiline", "type"]) {
     assert.ok(grep.function.parameters.properties[property]);
   }
-  for (const property of ["include_hidden", "offset", "limit"]) {
+  for (const property of ["include_hidden", "offset", "limit", "cursor"]) {
     assert.ok(listFiles.function.parameters.properties[property]);
   }
+  assert.deepEqual(grep.function.parameters.properties.limit, {
+    type: "integer",
+    minimum: 1,
+    maximum: 200,
+    description: "Page size (1–200). Default 200.",
+  });
+  assert.deepEqual(listFiles.function.parameters.properties.max_depth, {
+    type: "integer",
+    minimum: 1,
+    maximum: 20,
+    description: "Maximum depth when recursive (default 5, max 20).",
+  });
 });
 
 test("tool prompt templates contain guidance without duplicate JSON schemas", () => {

@@ -160,6 +160,19 @@ test("Grep separates context around disjoint match groups", async () => {
   assert.deepEqual(payload.matches[1]?.context_after, ["after second"]);
 });
 
+test("Grep retains trailing context for earlier nearby paged matches", async () => {
+  const workspace = createWorkspace();
+  fs.writeFileSync(path.join(workspace, "nearby.txt"), "before\nmatch one\nmatch two\nafter one\nafter two\n", "utf8");
+
+  const result = await handleGrepTool({ pattern: "match", context_lines: 2, limit: 1 }, context(workspace, "Grep"));
+  const payload = output(result) as {
+    matches: Array<{ context_before?: string[]; context_after?: string[] }>;
+  };
+
+  assert.deepEqual(payload.matches[0]?.context_before, ["before"]);
+  assert.deepEqual(payload.matches[0]?.context_after, ["after one"]);
+});
+
 test("Grep computes byte positions from non-UTF-8 ripgrep payloads", async () => {
   const workspace = createWorkspace();
   fs.writeFileSync(path.join(workspace, "invalid.bin"), Buffer.from([0xff, 0x20, ...Buffer.from("alpha\n")]));
@@ -183,6 +196,7 @@ test("Grep files and count modes report mode-specific totals", async () => {
   const workspace = createWorkspace();
   fs.writeFileSync(path.join(workspace, "a.ts"), "hit hit\n", "utf8");
   fs.writeFileSync(path.join(workspace, "b.ts"), "hit\n", "utf8");
+  fs.writeFileSync(path.join(workspace, "colon:name.ts"), "hit hit hit\n", "utf8");
   fs.writeFileSync(path.join(workspace, "skip.js"), "hit\n", "utf8");
 
   const files = await handleGrepTool(
@@ -191,7 +205,7 @@ test("Grep files and count modes report mode-specific totals", async () => {
   );
   assert.deepEqual(output(files), {
     files: ["a.ts"],
-    total_count: 2,
+    total_count: 3,
     truncated: true,
     next_offset: 1,
   });
@@ -204,10 +218,24 @@ test("Grep files and count modes report mode-specific totals", async () => {
     counts: [
       { file: "a.ts", count: 2 },
       { file: "b.ts", count: 1 },
+      { file: "colon:name.ts", count: 3 },
     ],
-    total_count: 2,
-    total_file_count: 2,
-    total_match_count: 3,
+    total_count: 3,
+    total_file_count: 3,
+    total_match_count: 6,
+    truncated: false,
+    next_offset: null,
+  });
+
+  const singleFileCounts = await handleGrepTool(
+    { pattern: "hit", path: "a.ts", output_mode: "count" },
+    context(workspace, "Grep")
+  );
+  assert.deepEqual(output(singleFileCounts), {
+    counts: [{ file: "a.ts", count: 2 }],
+    total_count: 1,
+    total_file_count: 1,
+    total_match_count: 2,
     truncated: false,
     next_offset: null,
   });
@@ -390,12 +418,29 @@ test("ListFiles bounds filesystem traversal independently of page size", async (
     total: number;
     truncated: boolean;
     next_offset: number | null;
+    next_cursor?: string;
   };
 
   assert.equal(payload.files.length, 1);
   assert.equal(payload.total, 10_000);
   assert.equal(payload.truncated, true);
   assert.equal(payload.next_offset, 1);
+  assert.equal(typeof payload.next_cursor, "string");
+
+  const endOfBatch = output(
+    await handleListFilesTool({ offset: 9_999, limit: 1 }, context(workspace, "ListFiles"))
+  ) as { next_offset: number | null; next_cursor?: string };
+  assert.equal(endOfBatch.next_offset, null);
+  assert.equal(typeof endOfBatch.next_cursor, "string");
+
+  const continuation = output(
+    await handleListFilesTool({ cursor: endOfBatch.next_cursor, limit: 1 }, context(workspace, "ListFiles"))
+  ) as { files: string[]; total: number; truncated: boolean; next_offset: number | null; next_cursor?: string };
+  assert.equal(continuation.files.length, 1);
+  assert.equal(continuation.total, 10_001);
+  assert.equal(continuation.truncated, false);
+  assert.equal(continuation.next_offset, null);
+  assert.equal(continuation.next_cursor, undefined);
 });
 
 function createWorkspace(): string {
