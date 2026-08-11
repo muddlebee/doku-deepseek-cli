@@ -60,8 +60,9 @@ export async function addListFilesIgnoreScope(
   try {
     const rules = await fs.promises.readFile(path.join(directory, ".gitignore"), "utf8");
     return [...inherited, { directory, matcher: ignore().add(rules) }];
-  } catch {
-    return inherited;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return inherited;
+    throw error;
   }
 }
 

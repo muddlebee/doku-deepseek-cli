@@ -16,12 +16,12 @@ export type ListFilesEntry = {
   kind: "file" | "dir";
 };
 
-type ListFilesTraversalFrame = {
+type ListFilesTraversalCandidate = {
   directory: string;
   depth: number;
-  handle?: fs.Dir | null;
+  entry: fs.Dirent;
   ignoreScopes: ListFilesIgnoreScope[];
-  pendingEntry?: fs.Dirent;
+  sortPath: string;
 };
 
 export type ListFilesTraversal = {
@@ -35,7 +35,7 @@ export type ListFilesTraversal = {
   matched: number;
   skipRemaining: number;
   bufferedEntries: ListFilesEntry[];
-  frames: ListFilesTraversalFrame[];
+  pendingEntries: ListFilesTraversalCandidate[];
   complete: boolean;
 };
 
@@ -49,15 +49,17 @@ export async function createListFilesTraversal(
   matcher: ((candidate: string) => boolean) | null
 ): Promise<ListFilesTraversal> {
   const rootScopes = await loadListFilesIgnoreScopes(identity.projectRoot, identity.targetPath);
-  return {
+  const traversal: ListFilesTraversal = {
     ...identity,
     matcher,
     matched: 0,
     skipRemaining: 0,
     bufferedEntries: [],
-    frames: [{ directory: identity.targetPath, depth: 1, ignoreScopes: rootScopes }],
+    pendingEntries: [],
     complete: false,
   };
+  await enqueueListFilesDirectory(traversal, identity.targetPath, 1, rootScopes);
+  return traversal;
 }
 
 export function matchesListFilesTraversal(
@@ -78,24 +80,15 @@ export async function scanListFilesTraversalChunk(traversal: ListFilesTraversal,
   let visited = 0;
   while (visited < MAX_TRAVERSED_ENTRIES) {
     if (signal?.aborted) throw new Error("Listing was aborted.");
-    const next = await readNextListFilesEntry(traversal);
+    const next = popNextListFilesEntry(traversal.pendingEntries);
     if (!next) {
       traversal.complete = true;
       break;
     }
     visited += 1;
-    await processListFilesEntry(traversal, next.frame, next.entry);
+    await processListFilesEntry(traversal, next);
   }
-
-  if (!traversal.complete && visited === MAX_TRAVERSED_ENTRIES) {
-    const next = await readNextListFilesEntry(traversal);
-    if (next) {
-      next.frame.pendingEntry = next.entry;
-    } else {
-      traversal.complete = true;
-    }
-  }
-  traversal.bufferedEntries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  if (traversal.pendingEntries.length === 0) traversal.complete = true;
 }
 
 export function discardSkippedListFilesEntries(traversal: ListFilesTraversal): void {
@@ -106,51 +99,21 @@ export function discardSkippedListFilesEntries(traversal: ListFilesTraversal): v
 }
 
 export async function closeListFilesTraversal(traversal: ListFilesTraversal): Promise<void> {
-  await Promise.all(traversal.frames.map((frame) => closeListFilesTraversalDirectory(frame)));
-  traversal.frames = [];
+  traversal.pendingEntries = [];
   traversal.bufferedEntries = [];
-}
-
-async function readNextListFilesEntry(
-  traversal: ListFilesTraversal
-): Promise<{ frame: ListFilesTraversalFrame; entry: fs.Dirent } | null> {
-  while (traversal.frames.length > 0) {
-    const frame = traversal.frames[traversal.frames.length - 1]!;
-    if (frame.pendingEntry) {
-      const entry = frame.pendingEntry;
-      frame.pendingEntry = undefined;
-      return { frame, entry };
-    }
-    if (frame.handle === undefined) {
-      try {
-        frame.handle = await fs.promises.opendir(frame.directory);
-      } catch {
-        frame.handle = null;
-      }
-    }
-    if (frame.handle === null) {
-      traversal.frames.pop();
-      continue;
-    }
-    const entry = await frame.handle.read();
-    if (entry) return { frame, entry };
-    await closeListFilesTraversalDirectory(frame);
-    traversal.frames.pop();
-  }
-  return null;
 }
 
 async function processListFilesEntry(
   traversal: ListFilesTraversal,
-  frame: ListFilesTraversalFrame,
-  entry: fs.Dirent
+  candidate: ListFilesTraversalCandidate
 ): Promise<void> {
+  const { directory, depth, entry, ignoreScopes } = candidate;
   if (isExcludedListFilesName(entry.name)) return;
   if (!traversal.includeHidden && entry.name.startsWith(".")) return;
 
-  const fullPath = path.join(frame.directory, entry.name);
+  const fullPath = path.join(directory, entry.name);
   const kind = await getListFilesEntryKind(fullPath, entry);
-  if (!kind || isListFilesPathIgnored(fullPath, kind === "dir", frame.ignoreScopes)) return;
+  if (!kind || isListFilesPathIgnored(fullPath, kind === "dir", ignoreScopes)) return;
 
   const targetRelative = path.relative(traversal.targetPath, fullPath).replaceAll(path.sep, "/");
   const projectRelative = path.relative(traversal.projectRoot, fullPath).replaceAll(path.sep, "/") || ".";
@@ -159,19 +122,59 @@ async function processListFilesEntry(
     traversal.matched += 1;
   }
 
-  if (kind === "dir" && !entry.isSymbolicLink() && frame.depth < traversal.maxDepth) {
-    const ignoreScopes = await addListFilesIgnoreScope(fullPath, frame.ignoreScopes);
-    traversal.frames.push({ directory: fullPath, depth: frame.depth + 1, ignoreScopes });
+  if (kind === "dir" && !entry.isSymbolicLink() && depth < traversal.maxDepth) {
+    const childIgnoreScopes = await addListFilesIgnoreScope(fullPath, ignoreScopes);
+    await enqueueListFilesDirectory(traversal, fullPath, depth + 1, childIgnoreScopes);
   }
 }
 
-async function closeListFilesTraversalDirectory(frame: ListFilesTraversalFrame): Promise<void> {
-  const handle = frame.handle;
-  frame.handle = null;
-  if (!handle) return;
-  try {
-    await handle.close();
-  } catch {
-    return;
+async function enqueueListFilesDirectory(
+  traversal: ListFilesTraversal,
+  directory: string,
+  depth: number,
+  ignoreScopes: ListFilesIgnoreScope[]
+): Promise<void> {
+  const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    pushListFilesEntry(traversal.pendingEntries, {
+      directory,
+      depth,
+      entry,
+      ignoreScopes,
+      sortPath: path.relative(traversal.targetPath, fullPath).replaceAll(path.sep, "/"),
+    });
   }
+}
+
+function pushListFilesEntry(heap: ListFilesTraversalCandidate[], candidate: ListFilesTraversalCandidate): void {
+  heap.push(candidate);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (heap[parent]!.sortPath <= candidate.sortPath) break;
+    heap[index] = heap[parent]!;
+    index = parent;
+  }
+  heap[index] = candidate;
+}
+
+function popNextListFilesEntry(heap: ListFilesTraversalCandidate[]): ListFilesTraversalCandidate | null {
+  const first = heap[0];
+  const last = heap.pop();
+  if (!first || !last) return first ?? null;
+  if (heap.length === 0) return first;
+
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) break;
+    const right = left + 1;
+    const child = right < heap.length && heap[right]!.sortPath < heap[left]!.sortPath ? right : left;
+    if (heap[child]!.sortPath >= last.sortPath) break;
+    heap[index] = heap[child]!;
+    index = child;
+  }
+  heap[index] = last;
+  return first;
 }

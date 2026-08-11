@@ -92,7 +92,7 @@ export async function handleGrepTool(
   const contextLines = parseClampedInteger(args.context_lines, 0, 10, 0);
   if (!contextLines.ok) return { ok: false, name: "Grep", error: contextLines.error };
 
-  const rgArgs = ["--sort", "path", "--max-filesize", "1M"];
+  const rgArgs = ["--no-config", "--sort", "path", "--max-filesize", "1M"];
   if (mode.value === "content") rgArgs.push("--json");
   if (mode.value === "files_with_matches") rgArgs.push("--files-with-matches", "--null");
   if (mode.value === "count") rgArgs.push("--count-matches", "--with-filename", "--null");
@@ -277,8 +277,6 @@ async function runRipgrep(
         .map((context) => context.content);
       pendingContext.set(file, []);
       const pagedForLine: GrepMatch[] = [];
-      const rawLineText = decodeRgText(message.data.lines);
-      const lineText = clipContent(stripLineEnding(rawLineText));
       for (const submatch of submatches) {
         const index = totalMatches;
         totalMatches += 1;
@@ -287,7 +285,7 @@ async function runRipgrep(
         const match: GrepMatch = {
           file,
           ...position,
-          content: lineText,
+          content: clipContentAroundMatch(message.data.lines, submatch.start, submatch.end),
         };
         if (before.length > 0) match.context_before = [...before];
         matches.push(match);
@@ -399,6 +397,34 @@ function stripLineEnding(value: string): string {
 
 function clipContent(value: string): string {
   return value.length > MAX_CONTENT_LENGTH ? value.slice(0, MAX_CONTENT_LENGTH) : value;
+}
+
+function clipContentAroundMatch(value: RgText, start: number, end: number): string {
+  const rawBuffer = decodeRgBytes(value);
+  const contentBuffer = stripLineEndingBytes(rawBuffer);
+  const safeStart = Math.min(start, contentBuffer.length);
+  const safeEnd = Math.min(Math.max(safeStart, end), contentBuffer.length);
+  const before = contentBuffer.subarray(0, safeStart).toString("utf8");
+  const matched = contentBuffer.subarray(safeStart, safeEnd).toString("utf8");
+  const after = contentBuffer.subarray(safeEnd).toString("utf8");
+  if (before.length + matched.length + after.length <= MAX_CONTENT_LENGTH) {
+    return before + matched + after;
+  }
+  if (matched.length >= MAX_CONTENT_LENGTH) return matched.slice(0, MAX_CONTENT_LENGTH);
+
+  const remaining = MAX_CONTENT_LENGTH - matched.length;
+  let beforeLength = Math.min(before.length, Math.floor(remaining / 2));
+  const afterLength = Math.min(after.length, remaining - beforeLength);
+  beforeLength = Math.min(before.length, remaining - afterLength);
+  const clippedBefore = beforeLength > 0 ? before.slice(-beforeLength) : "";
+  return clippedBefore + matched + after.slice(0, afterLength);
+}
+
+function stripLineEndingBytes(value: Buffer): Buffer {
+  if (value.length > 1 && value[value.length - 2] === 0x0d && value[value.length - 1] === 0x0a) {
+    return value.subarray(0, value.length - 2);
+  }
+  return value[value.length - 1] === 0x0a ? value.subarray(0, value.length - 1) : value;
 }
 
 function countByte(buffer: Buffer, start: number, end: number, byte: number): number {

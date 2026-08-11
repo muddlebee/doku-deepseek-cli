@@ -207,6 +207,22 @@ test("Grep computes byte positions from non-UTF-8 ripgrep payloads", async () =>
   });
 });
 
+test("Grep clips long content around the matched region", async () => {
+  const workspace = createWorkspace();
+  fs.writeFileSync(path.join(workspace, "minified.js"), `${"x".repeat(2_500)}needle${"y".repeat(100)}\n`, "utf8");
+  fs.writeFileSync(path.join(workspace, "prefix.js"), `needle${"y".repeat(2_500)}\n`, "utf8");
+
+  const result = await handleGrepTool({ pattern: "needle" }, context(workspace, "Grep"));
+  const payload = output(result) as { matches: Array<{ column: number; content: string }> };
+
+  assert.equal(payload.matches[0]?.column, 2_501);
+  assert.equal(payload.matches[0]?.content.includes("needle"), true);
+  assert.equal(payload.matches[0]?.content.length, 2_000);
+  assert.equal(payload.matches[1]?.column, 1);
+  assert.equal(payload.matches[1]?.content.startsWith("needle"), true);
+  assert.equal(payload.matches[1]?.content.length, 2_000);
+});
+
 test("Grep files and count modes report mode-specific totals", async () => {
   const workspace = createWorkspace();
   fs.writeFileSync(path.join(workspace, "a.ts"), "hit hit\n", "utf8");
@@ -225,10 +241,20 @@ test("Grep files and count modes report mode-specific totals", async () => {
     next_offset: 1,
   });
 
-  const counts = await handleGrepTool(
-    { pattern: "hit", output_mode: "count", include: "*.ts" },
-    context(workspace, "Grep")
-  );
+  const ripgrepConfig = path.join(workspace, "ripgrep.conf");
+  fs.writeFileSync(ripgrepConfig, "--null-data\n", "utf8");
+  const previousRipgrepConfig = process.env.RIPGREP_CONFIG_PATH;
+  process.env.RIPGREP_CONFIG_PATH = ripgrepConfig;
+  let counts: Awaited<ReturnType<typeof handleGrepTool>>;
+  try {
+    counts = await handleGrepTool(
+      { pattern: "hit", output_mode: "count", include: "*.ts" },
+      context(workspace, "Grep")
+    );
+  } finally {
+    if (previousRipgrepConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+    else process.env.RIPGREP_CONFIG_PATH = previousRipgrepConfig;
+  }
   assert.deepEqual(output(counts), {
     counts: [
       { file: "a.ts", count: 2 },
@@ -440,16 +466,37 @@ test("ListFiles paginates one combined sorted entry list before separating kinds
   });
 });
 
+test("ListFiles reports unreadable directories instead of claiming an exact result", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("permission behavior is unavailable in this environment");
+    return;
+  }
+
+  const workspace = createWorkspace();
+  const unreadable = path.join(workspace, "unreadable");
+  fs.mkdirSync(unreadable);
+  fs.chmodSync(unreadable, 0o000);
+  try {
+    const result = await handleListFilesTool({ path: "unreadable" }, context(workspace, "ListFiles"));
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /EACCES|permission denied/i);
+  } finally {
+    fs.chmodSync(unreadable, 0o700);
+  }
+});
+
 test("ListFiles bounds filesystem traversal independently of page size", async () => {
   const workspace = createWorkspace();
-  fs.mkdirSync(path.join(workspace, "bulk"));
-  for (let index = 0; index <= 10_000; index += 1) {
-    fs.writeFileSync(path.join(workspace, "bulk", `entry-${index}.txt`), "", "utf8");
+  fs.mkdirSync(path.join(workspace, "bulk", "z-dir"), { recursive: true });
+  for (let index = 0; index < 9_999; index += 1) {
+    fs.writeFileSync(path.join(workspace, "bulk", "z-dir", `entry-${index}.txt`), "", "utf8");
   }
+  fs.writeFileSync(path.join(workspace, "bulk", "a.txt"), "", "utf8");
 
   const result = await handleListFilesTool({ path: "bulk", limit: 1 }, context(workspace, "ListFiles"));
   const payload = output(result) as {
     files: string[];
+    dirs: string[];
     total: number;
     total_is_exact: boolean;
     truncated: boolean;
@@ -458,13 +505,14 @@ test("ListFiles bounds filesystem traversal independently of page size", async (
   };
 
   assert.equal(payload.files.length, 1);
+  assert.deepEqual(payload.files, ["bulk/a.txt"]);
   assert.equal(payload.total, 10_000);
   assert.equal(payload.total_is_exact, false);
   assert.equal(payload.truncated, true);
   assert.equal(payload.next_offset, null);
   assert.equal(typeof payload.next_cursor, "string");
 
-  const files = new Set(payload.files);
+  const entries = new Set([...payload.files, ...payload.dirs]);
   const firstCursor = payload.next_cursor!;
   const conflictingOptions = await handleListFilesTool(
     { cursor: firstCursor, path: "." },
@@ -486,13 +534,13 @@ test("ListFiles bounds filesystem traversal independently of page size", async (
     const continuation = output(
       await handleListFilesTool({ cursor, limit: 500 }, context(workspace, "ListFiles"))
     ) as typeof payload;
-    continuation.files.forEach((file) => files.add(file));
+    [...continuation.files, ...continuation.dirs].forEach((entry) => entries.add(entry));
     assert.equal(continuation.next_offset, null);
     finalPayload = continuation;
     cursor = continuation.next_cursor ?? "";
   }
 
-  assert.equal(files.size, 10_001);
+  assert.equal(entries.size, 10_001);
   assert.equal(finalPayload.total, 10_001);
   assert.equal(finalPayload.total_is_exact, true);
   assert.equal(finalPayload.truncated, false);
@@ -502,7 +550,7 @@ test("ListFiles bounds filesystem traversal independently of page size", async (
   assert.equal(reusedCursor.ok, false);
   assert.match(reusedCursor.error ?? "", /invalid or expired/);
 
-  fs.unlinkSync(path.join(workspace, "bulk", "entry-10000.txt"));
+  fs.unlinkSync(path.join(workspace, "bulk", "a.txt"));
   const exactBoundary = output(
     await handleListFilesTool({ path: "bulk", limit: 1 }, context(workspace, "ListFiles"))
   ) as typeof payload;

@@ -100,7 +100,7 @@ async function main(): Promise<void> {
       const llmCalls = samples.map((sample) => sample.llmRequestCount);
       const toolCalls = samples.map((sample) => sample.toolCallCount);
       const filesRead = samples.map((sample) => sample.filesRead.length);
-      const correctness = samples.map((sample) => sample.correctness.score);
+      const correctness = samples.map((sample) => (sample.ok ? sample.correctness.score : 0));
       const totalTokens = samples.map((sample) => sample.usage?.total_tokens ?? 0);
       return {
         scenarioId: scenario.id,

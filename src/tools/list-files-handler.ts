@@ -75,12 +75,17 @@ export async function handleListFilesTool(
   }
 
   let traversal: ListFilesTraversal;
-  if (cursor.value === null) {
-    traversal = await createListFilesTraversal(options.identity, matcher);
-  } else {
-    const resumed = takeListFilesTraversal(cursor.value, options.identity);
-    if (!resumed.ok) return listFilesError(resumed.error);
-    traversal = resumed.value;
+  try {
+    if (context.signal?.aborted) throw new Error("Listing was aborted.");
+    if (cursor.value === null) {
+      traversal = await createListFilesTraversal(options.identity, matcher);
+    } else {
+      const resumed = takeListFilesTraversal(cursor.value, options.identity);
+      if (!resumed.ok) return listFilesError(resumed.error);
+      traversal = resumed.value;
+    }
+  } catch (error) {
+    return listFilesError(error instanceof Error ? error.message : String(error));
   }
 
   try {
