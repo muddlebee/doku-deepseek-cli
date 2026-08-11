@@ -70,6 +70,21 @@ test("Read reports partial and continuation ranges with one-based next offsets",
   });
 });
 
+test("Read rejects a stale continuation offset after the file shrinks", async () => {
+  const workspace = createWorkspace();
+  const filePath = path.join(workspace, "shrinking.txt");
+  fs.writeFileSync(filePath, "one\ntwo\nthree\nfour", "utf8");
+
+  const first = await handleReadTool({ file_path: filePath, limit: 2 }, context(workspace));
+  assert.equal(first.metadata?.next_offset, 3);
+
+  fs.writeFileSync(filePath, "one\ntwo", "utf8");
+  const continuation = await handleReadTool({ file_path: filePath, offset: 3, limit: 2 }, context(workspace));
+
+  assert.equal(continuation.ok, false);
+  assert.equal(continuation.error, "offset 3 exceeds total line count (2).");
+});
+
 test("Read reports empty, CRLF, and truncated long-line metadata", async () => {
   const workspace = createWorkspace();
   const emptyPath = path.join(workspace, "empty.txt");

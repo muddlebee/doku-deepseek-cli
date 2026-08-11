@@ -420,6 +420,9 @@ function readTextFile(filePath: string, offset: number | null, limit: number): T
   const metadata = readTextFileWithMetadata(filePath);
   const raw = metadata.content;
   if (!raw) {
+    if (offset !== null) {
+      throw new Error(`offset ${offset} exceeds total line count (0).`);
+    }
     return {
       content: "",
       output: "WARNING: File is empty.",
@@ -438,6 +441,9 @@ function readTextFile(filePath: string, offset: number | null, limit: number): T
 
   const startLine = offset ?? 1;
   const { selectedLines, totalLines } = selectLines(raw, startLine, limit);
+  if (offset !== null && offset > totalLines) {
+    throw new Error(`offset ${offset} exceeds total line count (${totalLines}).`);
+  }
   const endLine = selectedLines.length > 0 ? startLine + selectedLines.length - 1 : Math.min(startLine - 1, totalLines);
   const truncatedLines = selectedLines.filter((line) => line.length > MAX_LINE_LENGTH).length;
   const reachedEnd = endLine >= totalLines;
