@@ -34,7 +34,7 @@ test("benchmark summaries retain raw process deltas without timing gates", () =>
     heapUsedDeltaBytes: metric(-20, 40, 10, 10, 40),
     externalDeltaBytes: metric(0, 0, 0, 0, 0),
     arrayBuffersDeltaBytes: metric(0, 0, 0, 0, 0),
-    maxRssKilobytes: metric(101, 102, 101.5, 101.5, 102),
+    outputBytes: metric(101, 102, 101.5, 101.5, 102),
   });
 });
 
@@ -65,6 +65,6 @@ function sample(
       externalBytes: 100,
       arrayBuffersBytes: 50,
     },
-    maxRssKilobytes: 100 + wallTimeMs,
+    outputBytes: 100 + wallTimeMs,
   };
 }

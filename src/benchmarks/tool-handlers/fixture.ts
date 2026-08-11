@@ -1,3 +1,4 @@
+import { createHash, type Hash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,16 +32,18 @@ export function createBenchmarkFixture(
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "doku-tool-benchmark-"));
   try {
+    const contentHash = createHash("sha256");
     const readTargetPath = path.join(root, "docs", "large-source.txt");
     fs.mkdirSync(path.dirname(readTargetPath), { recursive: true });
-    fs.writeFileSync(
+    writeFixtureFile(
+      root,
       readTargetPath,
       Array.from({ length: readLineCount }, (_, index) => `deterministic read line ${index + 1}`).join("\n"),
-      "utf8"
+      contentHash
     );
-    fs.writeFileSync(path.join(root, "README.md"), "# Deterministic tool-handler fixture\n", "utf8");
-    fs.writeFileSync(path.join(root, ".gitignore"), "ignored/\n", "utf8");
-    fs.writeFileSync(path.join(root, ".ignore"), "ignored/\n", "utf8");
+    writeFixtureFile(root, path.join(root, "README.md"), "# Deterministic tool-handler fixture\n", contentHash);
+    writeFixtureFile(root, path.join(root, ".gitignore"), "ignored/\n", contentHash);
+    writeFixtureFile(root, path.join(root, ".ignore"), "ignored/\n", contentHash);
 
     for (let packageIndex = 0; packageIndex < packageCount; packageIndex += 1) {
       const packageName = `package-${String(packageIndex).padStart(3, "0")}`;
@@ -48,14 +51,19 @@ export function createBenchmarkFixture(
       fs.mkdirSync(sourceDirectory, { recursive: true });
       for (let fileIndex = 0; fileIndex < filesPerPackage; fileIndex += 1) {
         const fileName = `module-${String(fileIndex).padStart(3, "0")}.ts`;
-        fs.writeFileSync(path.join(sourceDirectory, fileName), sourceFileContents(packageName, fileIndex), "utf8");
+        writeFixtureFile(
+          root,
+          path.join(sourceDirectory, fileName),
+          sourceFileContents(packageName, fileIndex),
+          contentHash
+        );
       }
     }
 
     fs.mkdirSync(path.join(root, "ignored"), { recursive: true });
-    fs.writeFileSync(path.join(root, "ignored", "noise.ts"), sourceFileContents("ignored", 0), "utf8");
+    writeFixtureFile(root, path.join(root, "ignored", "noise.ts"), sourceFileContents("ignored", 0), contentHash);
     fs.mkdirSync(path.join(root, ".hidden"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".hidden", "noise.ts"), sourceFileContents("hidden", 0), "utf8");
+    writeFixtureFile(root, path.join(root, ".hidden", "noise.ts"), sourceFileContents("hidden", 0), contentHash);
 
     const sourceFileCount = packageCount * filesPerPackage;
     return {
@@ -67,6 +75,7 @@ export function createBenchmarkFixture(
         sourceFileCount,
         visibleEntryCount: 4 + packageCount * (filesPerPackage + 2),
         readTargetPath,
+        contentFingerprint: contentHash.digest("hex"),
       },
       cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
     };
@@ -74,6 +83,12 @@ export function createBenchmarkFixture(
     fs.rmSync(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+function writeFixtureFile(root: string, filePath: string, content: string, hash: Hash): void {
+  const relativePath = path.relative(root, filePath).replaceAll(path.sep, "/");
+  hash.update(relativePath).update("\0").update(content).update("\0");
+  fs.writeFileSync(filePath, content, "utf8");
 }
 
 function sourceFileContents(packageName: string, fileIndex: number): string {

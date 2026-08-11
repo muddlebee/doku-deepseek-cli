@@ -36,6 +36,7 @@ async function main(): Promise<void> {
       sampleCount: options.sampleCount,
       warmupCount: options.warmupCount,
       fixture: fixture.manifest,
+      scenarioDefinitions: scenarios,
       scenarios: scenarioReports,
     });
     if (baseline && options.baselinePath) {
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
 }
 
 function observationsMatch(left: BenchmarkObservation, right: BenchmarkObservation): boolean {
-  return JSON.stringify({ ...left, outputBytes: 0 }) === JSON.stringify({ ...right, outputBytes: 0 });
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function printSummary(report: ToolHandlerBenchmarkReport, outputPath: string): void {

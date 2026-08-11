@@ -39,6 +39,8 @@ The runner constructs a deterministic temporary fixture with:
 
 Fixture construction, worker startup, TypeScript loading, warmups, cursor cleanup after warmups, and result validation are outside the measured interval. Every recorded sample gets a fresh Node worker. Its warmups run inside that same worker so handler modules and JIT state are warm without leaking state between recorded samples. If Node exposes `global.gc`, the runner requests collection between warmup and measurement.
 
+If a sample exceeds its timeout, the parent requests cooperative cancellation and waits for the handler to finish cleanup before rejecting the sample. This aborts an active `rg` subprocess and stops ListFiles traversal. Worker termination is only used as a bounded fallback after the cancellation grace period.
+
 The harness validates only safe invariants while recording exact observations such as returned count, total, truncation, cursor use, exactness, and page count. This allows the same workloads to capture behavior differences from older handler revisions instead of rejecting their older output shapes or pagination caps. Tests on the current revision assert its exact expected observations with a smaller fixture.
 
 ## Baseline comparison
@@ -53,12 +55,12 @@ npm run benchmark:tools -- \
 
 Comparisons report absolute and percentage changes for every shared metric. They never pass or fail based on a timing threshold. Compare reports produced on the same machine, with the same Node and `rg` versions, fixture, scenarios, warmup count, and sample count.
 
-The runner warns when runtime or fixture settings differ and marks scenarios whose correctness observations changed. Treat latency deltas for scenarios with different returned counts, pagination, or result shapes as behavioral comparisons rather than equal-work speedups.
+The runner persists a workload fingerprint covering fixture contents, fixture size, scenario arguments, and execution modes. It warns when fingerprints or scenario sets differ, and marks scenarios whose correctness observations changed. Treat latency deltas for scenarios with different workloads, returned counts, pagination, or result shapes as behavioral comparisons rather than equal-work speedups.
 
 ## Report format
 
-Reports use schema version `1` and retain every raw sample. Numeric summaries include count, minimum, maximum, mean, median, and nearest-rank p95. Environment metadata includes the Git SHA, Node version, `rg` version, platform, architecture, CPU model and logical count, and total system memory.
+Reports use schema version `2` and retain every raw sample. Numeric summaries include count, minimum, maximum, mean, median, and nearest-rank p95. Environment metadata includes the Git SHA, Node version, `rg` version, platform, architecture, CPU model and logical count, and total system memory.
 
-Each sample records handler wall time plus Node process CPU, RSS, heap, external, array-buffer, and maximum-RSS metrics. Wall time includes waiting for the `rg` subprocess, but Node process CPU and memory metrics do not include that subprocess. Memory deltas may be negative when garbage collection runs.
+Each sample records handler wall time, output size, and Node process CPU, RSS, heap, external, and array-buffer metrics. Output size is summarized as a numeric metric rather than treated as a correctness observation. Wall time includes waiting for the `rg` subprocess, but Node process CPU and memory metrics do not include that subprocess. Memory deltas may be negative when garbage collection runs.
 
 Correctness and schema tests intentionally contain no timing gates. For useful comparisons, close unrelated workloads and inspect raw distributions and observations alongside summaries.

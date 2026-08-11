@@ -16,7 +16,7 @@ export function summarizeSamples(samples: BenchmarkSample[]): BenchmarkSummary {
     arrayBuffersDeltaBytes: distribution(
       samples.map((sample) => sample.memoryAfter.arrayBuffersBytes - sample.memoryBefore.arrayBuffersBytes)
     ),
-    maxRssKilobytes: distribution(samples.map((sample) => sample.maxRssKilobytes)),
+    outputBytes: distribution(samples.map((sample) => sample.outputBytes)),
   };
 }
 

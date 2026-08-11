@@ -12,18 +12,20 @@ export type BenchmarkExecution = {
 
 export async function runBenchmarkScenario(
   scenario: BenchmarkScenario,
-  projectRoot: string
+  projectRoot: string,
+  signal?: AbortSignal
 ): Promise<BenchmarkObservation> {
-  const execution = await createBenchmarkInvocation(scenario, projectRoot)();
+  const execution = await createBenchmarkInvocation(scenario, projectRoot, signal)();
   validateBenchmarkResult(scenario, execution);
   return observeBenchmarkResult(scenario, execution);
 }
 
 export function createBenchmarkInvocation(
   scenario: BenchmarkScenario,
-  projectRoot: string
+  projectRoot: string,
+  signal?: AbortSignal
 ): () => Promise<BenchmarkExecution> {
-  const context = createContext(projectRoot, scenario);
+  const context = createContext(projectRoot, scenario, signal);
   if (scenario.execution === "list-files-full-walk") {
     return () => runListFilesWalk(scenario.args, context);
   }
@@ -34,12 +36,13 @@ export function createBenchmarkInvocation(
 export async function drainBenchmarkState(
   scenario: BenchmarkScenario,
   projectRoot: string,
-  execution: BenchmarkExecution
+  execution: BenchmarkExecution,
+  signal?: AbortSignal
 ): Promise<void> {
   if (scenario.tool !== "ListFiles" || scenario.execution === "list-files-full-walk") return;
   const continuation = getContinuation(execution.results.at(-1));
   if (!continuation) return;
-  await continueListFilesWalk(scenario.args, createContext(projectRoot, scenario), continuation);
+  await continueListFilesWalk(scenario.args, createContext(projectRoot, scenario, signal), continuation);
 }
 
 export function observeBenchmarkResult(
@@ -52,7 +55,6 @@ export function observeBenchmarkResult(
   return {
     ok: true,
     resultName: first.name,
-    outputBytes: execution.results.reduce((total, result) => total + Buffer.byteLength(result.output ?? "", "utf8"), 0),
     returnedCount: sumReturnedCounts(scenario, execution.results, parsed),
     totalCount: readNumber(last, parsed.at(-1), ["total_lines", "total_count", "total"]),
     truncated: readBoolean(last, parsed.at(-1), "truncated"),
@@ -64,6 +66,10 @@ export function observeBenchmarkResult(
     totalIsExact: readBoolean(last, parsed.at(-1), "total_is_exact"),
     pageCount: execution.results.length,
   };
+}
+
+export function benchmarkOutputBytes(execution: BenchmarkExecution): number {
+  return execution.results.reduce((total, result) => total + Buffer.byteLength(result.output ?? "", "utf8"), 0);
 }
 
 export function validateBenchmarkResult(scenario: BenchmarkScenario, execution: BenchmarkExecution): void {
@@ -206,8 +212,9 @@ function parseOutput(result: ToolExecutionResult): Record<string, unknown> | nul
   }
 }
 
-function createContext(projectRoot: string, scenario: BenchmarkScenario): ToolExecutionContext {
+function createContext(projectRoot: string, scenario: BenchmarkScenario, signal?: AbortSignal): ToolExecutionContext {
   return {
+    signal,
     sessionId: `benchmark-${scenario.id}`,
     projectRoot,
     toolCall: {

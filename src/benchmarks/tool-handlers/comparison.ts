@@ -55,6 +55,7 @@ function comparisonWarnings(current: ToolHandlerBenchmarkReport, baseline: ToolH
     "architecture",
     "logicalCpuCount",
     "cpuModel",
+    "totalMemoryBytes",
     "ripgrepVersion",
   ] as const;
   for (const field of runtimeFields) {
@@ -68,6 +69,18 @@ function comparisonWarnings(current: ToolHandlerBenchmarkReport, baseline: ToolH
   }
   if (current.configuration.warmupCount !== baseline.configuration.warmupCount) {
     warnings.push("warmup count differs from baseline");
+  }
+  if (current.configuration.workload.fingerprint !== baseline.configuration.workload.fingerprint) {
+    warnings.push("workload fingerprint differs from baseline");
+  }
+  const currentScenarios = new Set(current.configuration.workload.scenarios.map((scenario) => scenario.id));
+  const baselineScenarios = new Set(baseline.configuration.workload.scenarios.map((scenario) => scenario.id));
+  const currentOnly = [...currentScenarios].filter((id) => !baselineScenarios.has(id));
+  const baselineOnly = [...baselineScenarios].filter((id) => !currentScenarios.has(id));
+  if (currentOnly.length > 0 || baselineOnly.length > 0) {
+    warnings.push(
+      `scenario set differs from baseline (current only: ${currentOnly.join(", ") || "none"}; baseline only: ${baselineOnly.join(", ") || "none"})`
+    );
   }
   return warnings;
 }

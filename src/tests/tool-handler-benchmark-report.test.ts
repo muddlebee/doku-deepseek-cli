@@ -8,7 +8,7 @@ test("tool-handler benchmark report schema includes raw samples and median/p95 s
     id: "read-test",
     tool: "Read",
     description: "Test scenario.",
-    args: {},
+    args: { file_path: "/tmp/doku-tool-benchmark-random/docs/large-source.txt" },
     execution: "single",
   };
   const samples = [sample(1, 3), sample(2, 9)];
@@ -17,7 +17,6 @@ test("tool-handler benchmark report schema includes raw samples and median/p95 s
     {
       ok: true,
       resultName: "read",
-      outputBytes: 42,
       returnedCount: 1,
       totalCount: 1,
       truncated: false,
@@ -39,7 +38,9 @@ test("tool-handler benchmark report schema includes raw samples and median/p95 s
       sourceFileCount: 1,
       visibleEntryCount: 7,
       readTargetPath: "/tmp/doku-tool-benchmark-random/docs/large-source.txt",
+      contentFingerprint: "fixture-abc",
     },
+    scenarioDefinitions: [scenario],
     scenarios: [scenarioReport],
     runtime: {
       nodeVersion: "v24.0.0",
@@ -53,7 +54,7 @@ test("tool-handler benchmark report schema includes raw samples and median/p95 s
     },
   });
 
-  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.schemaVersion, 2);
   assert.equal(report.benchmark, "doku-tool-handlers");
   assert.equal(report.configuration.sampleCount, 2);
   assert.equal("readTargetPath" in report.configuration.fixture, false);
@@ -68,6 +69,9 @@ test("tool-handler benchmark report schema includes raw samples and median/p95 s
   });
   assert.equal(report.runtime.gitSha, "abc123");
   assert.equal(report.runtime.cpuModel, "Test CPU");
+  assert.equal(report.configuration.workload.fixtureContentFingerprint, "fixture-abc");
+  assert.equal(report.configuration.workload.fingerprint.length, 64);
+  assert.equal(report.configuration.workload.scenarios[0]?.args.file_path, "$FIXTURE_ROOT/docs/large-source.txt");
 });
 
 function sample(iteration: number, wallTimeMs: number): BenchmarkSample {
@@ -88,6 +92,6 @@ function sample(iteration: number, wallTimeMs: number): BenchmarkSample {
       externalBytes: 100,
       arrayBuffersBytes: 50,
     },
-    maxRssKilobytes: 100,
+    outputBytes: 42,
   };
 }

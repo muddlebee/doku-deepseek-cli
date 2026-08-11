@@ -1,4 +1,4 @@
-export const TOOL_HANDLER_BENCHMARK_SCHEMA_VERSION = 1;
+export const TOOL_HANDLER_BENCHMARK_SCHEMA_VERSION = 2;
 
 export type BenchmarkTool = "Read" | "Grep" | "ListFiles";
 
@@ -9,6 +9,7 @@ export type BenchmarkFixtureManifest = {
   sourceFileCount: number;
   visibleEntryCount: number;
   readTargetPath: string;
+  contentFingerprint: string;
 };
 
 export type BenchmarkScenario = {
@@ -33,13 +34,12 @@ export type BenchmarkSample = {
   cpuSystemMicros: number;
   memoryBefore: ProcessMemorySnapshot;
   memoryAfter: ProcessMemorySnapshot;
-  maxRssKilobytes: number;
+  outputBytes: number;
 };
 
 export type BenchmarkObservation = {
   ok: true;
   resultName: string;
-  outputBytes: number;
   returnedCount: number | null;
   totalCount: number | null;
   truncated: boolean | null;
@@ -66,7 +66,7 @@ export type BenchmarkSummary = {
   heapUsedDeltaBytes: MetricDistribution;
   externalDeltaBytes: MetricDistribution;
   arrayBuffersDeltaBytes: MetricDistribution;
-  maxRssKilobytes: MetricDistribution;
+  outputBytes: MetricDistribution;
 };
 
 export type ScenarioReport = {
@@ -96,9 +96,22 @@ export type ToolHandlerBenchmarkReport = {
     sampleCount: number;
     warmupCount: number;
     fixture: Omit<BenchmarkFixtureManifest, "readTargetPath">;
+    workload: BenchmarkWorkloadIdentity;
   };
   scenarios: ScenarioReport[];
   comparison?: BaselineComparison;
+};
+
+export type BenchmarkWorkloadIdentity = {
+  version: number;
+  fingerprint: string;
+  fixtureContentFingerprint: string;
+  scenarios: Array<{
+    id: string;
+    tool: BenchmarkTool;
+    execution: BenchmarkScenario["execution"];
+    args: Record<string, unknown>;
+  }>;
 };
 
 export type MetricDelta = {

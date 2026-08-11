@@ -1,5 +1,6 @@
 import { collectBenchmarkRuntime, type BenchmarkRuntime } from "./environment";
 import { summarizeSamples } from "./statistics";
+import { createWorkloadIdentity } from "./workload";
 import {
   TOOL_HANDLER_BENCHMARK_SCHEMA_VERSION,
   type BenchmarkFixtureManifest,
@@ -30,6 +31,7 @@ export function createBenchmarkReport(options: {
   sampleCount: number;
   warmupCount: number;
   fixture: BenchmarkFixtureManifest;
+  scenarioDefinitions: BenchmarkScenario[];
   scenarios: ScenarioReport[];
   runtime?: BenchmarkRuntime;
 }): ToolHandlerBenchmarkReport {
@@ -39,6 +41,7 @@ export function createBenchmarkReport(options: {
     readLineCount: options.fixture.readLineCount,
     sourceFileCount: options.fixture.sourceFileCount,
     visibleEntryCount: options.fixture.visibleEntryCount,
+    contentFingerprint: options.fixture.contentFingerprint,
   };
   return {
     schemaVersion: TOOL_HANDLER_BENCHMARK_SCHEMA_VERSION,
@@ -49,6 +52,7 @@ export function createBenchmarkReport(options: {
       sampleCount: options.sampleCount,
       warmupCount: options.warmupCount,
       fixture,
+      workload: createWorkloadIdentity(options.fixture, options.scenarioDefinitions),
     },
     scenarios: options.scenarios,
   };

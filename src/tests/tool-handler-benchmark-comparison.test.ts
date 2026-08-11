@@ -24,6 +24,21 @@ test("baseline comparison reports median and p95 deltas without thresholds", () 
   });
 });
 
+test("baseline comparison warns when workload fingerprints and scenario sets differ", () => {
+  const baseline = report("2026-08-11T00:00:00.000Z", [sample(1, 4)]);
+  const current = structuredClone(baseline);
+  current.configuration.workload.fingerprint = "different";
+  current.configuration.workload.scenarios = [];
+
+  const comparison = compareBenchmarkReports(current, baseline, "/tmp/baseline.json");
+
+  assert.equal(comparison.warnings.includes("workload fingerprint differs from baseline"), true);
+  assert.equal(
+    comparison.warnings.some((warning) => warning.startsWith("scenario set differs")),
+    true
+  );
+});
+
 const scenario: BenchmarkScenario = {
   id: "read-large-text",
   tool: "Read",
@@ -35,7 +50,6 @@ const scenario: BenchmarkScenario = {
 const observation: BenchmarkObservation = {
   ok: true,
   resultName: "read",
-  outputBytes: 10,
   returnedCount: 1,
   totalCount: 1,
   truncated: false,
@@ -57,7 +71,9 @@ function report(generatedAt: string, samples: BenchmarkSample[]): ToolHandlerBen
       sourceFileCount: 1,
       visibleEntryCount: 7,
       readTargetPath: "/tmp/file",
+      contentFingerprint: "fixture-abc",
     },
+    scenarioDefinitions: [scenario],
     scenarios: [createScenarioReport(scenario, observation, samples)],
     runtime: {
       nodeVersion: "v24",
@@ -80,6 +96,6 @@ function sample(iteration: number, wallTimeMs: number): BenchmarkSample {
     cpuSystemMicros: wallTimeMs,
     memoryBefore: { rssBytes: 100, heapUsedBytes: 50, externalBytes: 10, arrayBuffersBytes: 5 },
     memoryAfter: { rssBytes: 110, heapUsedBytes: 55, externalBytes: 10, arrayBuffersBytes: 5 },
-    maxRssKilobytes: 1,
+    outputBytes: 10,
   };
 }
