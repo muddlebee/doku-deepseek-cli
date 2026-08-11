@@ -24,6 +24,12 @@ export type ProviderCredential = {
   source?: "environment" | "settings";
 };
 
+type SettingsCredential = {
+  apiKey: string;
+  associated: boolean;
+  generic: boolean;
+};
+
 export function getProviderApiKeyEnv(provider: string, configured?: string): string | undefined {
   return trim(configured) || BUILTIN_PROVIDER_API_KEY_ENV[provider];
 }
@@ -42,58 +48,65 @@ export function resolveProviderCredential(input: ProviderCredentialInput): Provi
   const systemGeneric = value(input.systemEnv, GENERIC_API_KEY_ENV);
   if (systemGeneric) return environmentCredential(systemGeneric);
 
-  const generic = settingsGenericCredential(input);
-  const providerSettings = settingsProviderCredential(input, providerKey);
-  const associatedGeneric = generic.provider === input.provider ? generic.value : "";
-  const associatedProvider = providerSettings.provider === input.provider ? providerSettings.value : "";
-  const eligibleGeneric = generic.provider && generic.provider !== input.provider ? "" : generic.value;
   const systemProvider = providerKey ? value(input.systemEnv, providerKey) : "";
   const processProvider = providerKey ? value(input.processEnv, providerKey) : "";
+  const settingsCredential =
+    credentialFromSettingsScope(
+      input.projectEnv,
+      input.projectCredentialProvider,
+      input.provider,
+      providerKey,
+      input.explicitProvider
+    ) ??
+    credentialFromSettingsScope(
+      input.userEnv,
+      input.userCredentialProvider,
+      input.provider,
+      providerKey,
+      input.explicitProvider
+    );
 
-  if (input.explicitProvider) {
-    if (systemProvider) return environmentCredential(systemProvider);
-    if (associatedProvider) return settingsCredential(associatedProvider);
-    if (associatedGeneric) return settingsCredential(associatedGeneric);
-    if (processProvider) return environmentCredential(processProvider);
-    if (providerSettings.value) return settingsCredential(providerSettings.value);
-    if (eligibleGeneric) return settingsCredential(eligibleGeneric);
-    return {};
-  }
-
-  if (eligibleGeneric) return settingsCredential(eligibleGeneric);
   if (systemProvider) return environmentCredential(systemProvider);
+  if (settingsCredential?.associated || (!input.explicitProvider && settingsCredential?.generic)) {
+    return storedCredential(settingsCredential.apiKey);
+  }
   if (processProvider) return environmentCredential(processProvider);
-  if (providerSettings.value) return settingsCredential(providerSettings.value);
+  if (settingsCredential) return storedCredential(settingsCredential.apiKey);
   return {};
 }
 
-function settingsProviderCredential(
-  input: ProviderCredentialInput,
-  providerKey: string | undefined
-): { value: string; provider?: string } {
-  if (!providerKey) return { value: "" };
-  const projectValue = value(input.projectEnv, providerKey);
-  if (projectValue) {
-    return { value: projectValue, provider: trim(input.projectCredentialProvider) || undefined };
-  }
-  const userValue = value(input.userEnv, providerKey);
-  return { value: userValue, provider: trim(input.userCredentialProvider) || undefined };
+function credentialFromSettingsScope(
+  env: Env,
+  credentialProvider: string | undefined,
+  provider: string,
+  providerKey: string | undefined,
+  explicitProvider: boolean
+): SettingsCredential | undefined {
+  const associatedProvider = trim(credentialProvider);
+  const associated = associatedProvider === provider;
+  const genericEligible = !associatedProvider || associated;
+  const genericValue = genericEligible ? value(env, GENERIC_API_KEY_ENV) : "";
+  const providerValue = providerKey ? value(env, providerKey) : "";
+
+  const candidates = explicitProvider
+    ? [providerCredential(providerValue, associated), genericCredential(genericValue, associated)]
+    : [genericCredential(genericValue, associated), providerCredential(providerValue, associated)];
+  return candidates.find((candidate): candidate is SettingsCredential => Boolean(candidate));
 }
 
-function settingsGenericCredential(input: ProviderCredentialInput): { value: string; provider?: string } {
-  const projectValue = value(input.projectEnv, GENERIC_API_KEY_ENV);
-  if (projectValue) {
-    return { value: projectValue, provider: trim(input.projectCredentialProvider) || undefined };
-  }
-  const userValue = value(input.userEnv, GENERIC_API_KEY_ENV);
-  return { value: userValue, provider: trim(input.userCredentialProvider) || undefined };
+function providerCredential(apiKey: string, associated: boolean): SettingsCredential | undefined {
+  return apiKey ? { apiKey, associated, generic: false } : undefined;
+}
+
+function genericCredential(apiKey: string, associated: boolean): SettingsCredential | undefined {
+  return apiKey ? { apiKey, associated, generic: true } : undefined;
 }
 
 function environmentCredential(apiKey: string): ProviderCredential {
   return { apiKey, source: "environment" };
 }
 
-function settingsCredential(apiKey: string): ProviderCredential {
+function storedCredential(apiKey: string): ProviderCredential {
   return { apiKey, source: "settings" };
 }
 

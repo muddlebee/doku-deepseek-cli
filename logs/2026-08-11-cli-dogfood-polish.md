@@ -14,6 +14,7 @@ Refine the existing terminal experience for reliable OpenAI and DeepSeek dogfood
 - Added a retry screen when project or environment overrides still win after setup, avoiding a loop back into an ineffective wizard.
 - Added credential-source reporting and responsive welcome layouts for narrow and wide terminals.
 - Centralized provider credential environment names and precedence, including provider association for wizard-saved keys.
+- Preserved project-over-user credential precedence across generic and provider-specific key forms.
 - Centralized chat status priority across failures, user approvals, active tools, reasoning, cancellation, completion, and idle state.
 - Removed fake interruption transcript entries and made `/continue` discoverable after a stopped turn.
 - Kept failed process-stop diagnostics and live process metadata visible when interruption cannot terminate a command.
@@ -24,7 +25,7 @@ Refine the existing terminal experience for reliable OpenAI and DeepSeek dogfood
 
 ## Verification
 
-- All 412 deterministic tests pass.
+- All 419 deterministic tests pass.
 - TypeScript, ESLint, Prettier, bundle generation, dependency audit, and diff checks pass; the production dependency audit reports zero vulnerabilities.
 - The live OpenAI runtime completed a first answer, context-dependent follow-up, Read tool call, AskUserQuestion pause and restart-resume, cancellation, and `/continue` recovery.
 - The live DeepSeek runtime completed the same matrix through the isolated DeepSeek adapter.

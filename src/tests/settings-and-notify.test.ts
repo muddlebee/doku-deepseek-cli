@@ -632,6 +632,23 @@ test("named provider credentials can be configured in settings env", () => {
   assert.equal(processOverridesSettings.apiKeySource, "environment");
 });
 
+test("project generic credentials override setup-associated user provider credentials", () => {
+  const resolved = resolveSettingsSources(
+    {
+      provider: "openai",
+      credentialProvider: "openai",
+      env: { OPENAI_API_KEY: "user-key" },
+    },
+    { env: { API_KEY: "project-key" } },
+    { model: "gpt-5.6-sol", baseURL: "https://api.openai.com/v1" },
+    {}
+  );
+
+  assert.equal(resolved.provider, "openai");
+  assert.equal(resolved.apiKey, "project-key");
+  assert.equal(resolved.apiKeySource, "settings");
+});
+
 test("provider-specific DOKU credentials are supported", () => {
   const resolved = resolveSettingsSources(
     { provider: "openai", model: "gpt-5" },

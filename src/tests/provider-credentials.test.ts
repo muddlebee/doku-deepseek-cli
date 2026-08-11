@@ -89,6 +89,83 @@ test("credential association follows the settings scope that supplied the key", 
   assert.deepEqual(resolved, { apiKey: "shell-key", source: "environment" });
 });
 
+test("project generic credentials outrank user-associated provider credentials", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: true,
+    userCredentialProvider: "openai",
+    systemEnv: empty,
+    processEnv: empty,
+    projectEnv: { API_KEY: "project-key" },
+    userEnv: { OPENAI_API_KEY: "user-key" },
+  });
+  assert.deepEqual(resolved, { apiKey: "project-key", source: "settings" });
+});
+
+test("project provider credentials outrank user-associated generic credentials", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: true,
+    userCredentialProvider: "openai",
+    systemEnv: empty,
+    processEnv: empty,
+    projectEnv: { OPENAI_API_KEY: "project-key" },
+    userEnv: { API_KEY: "user-key" },
+  });
+  assert.deepEqual(resolved, { apiKey: "project-key", source: "settings" });
+});
+
+test("standard shell credentials still override unassociated project credentials", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: true,
+    systemEnv: empty,
+    processEnv: { OPENAI_API_KEY: "shell-key" },
+    projectEnv: { OPENAI_API_KEY: "project-key" },
+    userEnv: empty,
+  });
+  assert.deepEqual(resolved, { apiKey: "shell-key", source: "environment" });
+});
+
+test("project association prevents a standard shell credential from replacing the selected project key", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: true,
+    projectCredentialProvider: "openai",
+    systemEnv: empty,
+    processEnv: { OPENAI_API_KEY: "shell-key" },
+    projectEnv: { API_KEY: "project-key" },
+    userEnv: empty,
+  });
+  assert.deepEqual(resolved, { apiKey: "project-key", source: "settings" });
+});
+
+test("inferred providers preserve project-over-user credential scope", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: false,
+    systemEnv: empty,
+    processEnv: empty,
+    projectEnv: { OPENAI_API_KEY: "project-key" },
+    userEnv: { API_KEY: "user-key" },
+  });
+  assert.deepEqual(resolved, { apiKey: "project-key", source: "settings" });
+});
+
+test("credentials associated with another provider are skipped within their scope", () => {
+  const resolved = resolveProviderCredential({
+    provider: "openai",
+    explicitProvider: true,
+    projectCredentialProvider: "deepseek",
+    userCredentialProvider: "openai",
+    systemEnv: empty,
+    processEnv: empty,
+    projectEnv: { API_KEY: "deepseek-project-key" },
+    userEnv: { API_KEY: "openai-user-key" },
+  });
+  assert.deepEqual(resolved, { apiKey: "openai-user-key", source: "settings" });
+});
+
 test("unassociated generic credentials retain provider-neutral fallback behavior", () => {
   const resolved = resolveProviderCredential({
     provider: "gateway",
