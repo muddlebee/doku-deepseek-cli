@@ -48,6 +48,7 @@
     "test": "node src/tests/run-tests.mjs",
     "test:single": "tsx --test",
     "test:live": "tsx src/tests/live/run-live-benchmark.ts --scenario src/tests/live/scenarios/tool-call-perf.json",
+    "benchmark:tools": "node --expose-gc --import tsx src/benchmarks/tool-handlers/run.ts",
     "prepack": "npm run build",
     "prepare": "husky"
   },
