@@ -86,7 +86,7 @@ export const BUILT_IN_TOOL_CATALOG = [
     },
     ["plan"],
     [],
-    "parallel"
+    "serial"
   ),
   entry(
     "FinalizePlan",

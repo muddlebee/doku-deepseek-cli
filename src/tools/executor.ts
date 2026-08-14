@@ -68,6 +68,8 @@ export type ToolExecutionHooks = {
   onAfterFileMutation?: (filePath: string) => void;
   onNeedsWebSearchSetup?: () => void;
   shouldStop?: () => boolean;
+  getToolRejection?: (toolCallId: string, toolName: string) => ToolExecutionResult | undefined;
+  onToolResult?: (toolCallId: string, result: ToolExecutionResult) => void;
   bashTimeoutMs?: number;
   bashMinTimeoutMs?: number;
 };
@@ -163,7 +165,7 @@ export class ToolExecutor {
         return;
       }
       const toolCall = parsedCalls[index];
-      const result = await this.executeToolCall(sessionId, toolCall, hooks);
+      const result = await this.executeToolCallWithHooks(sessionId, toolCall, hooks);
       executionsByIndex[index] = { toolCallId: toolCall.id, content: this.formatToolResult(result), result };
       if (hooks?.shouldStop?.()) {
         shouldStop = true;
@@ -214,7 +216,7 @@ export class ToolExecutor {
     const executions: ToolCallExecution[] = [];
     for (const toolCall of parsedCalls) {
       if (hooks?.shouldStop?.()) break;
-      const result = await this.executeToolCall(sessionId, toolCall, hooks);
+      const result = await this.executeToolCallWithHooks(sessionId, toolCall, hooks);
       executions.push({ toolCallId: toolCall.id, content: this.formatToolResult(result), result });
       if (hooks?.shouldStop?.()) break;
     }
@@ -223,6 +225,17 @@ export class ToolExecutor {
 
   private canRunInParallel(toolName: string): boolean {
     return getBuiltInToolExecutionClass(toolName) === "parallel";
+  }
+
+  private async executeToolCallWithHooks(
+    sessionId: string,
+    toolCall: ToolCall,
+    hooks?: ToolExecutionHooks
+  ): Promise<ToolExecutionResult> {
+    const rejected = hooks?.getToolRejection?.(toolCall.id, toolCall.function.name);
+    const result = rejected ?? (await this.executeToolCall(sessionId, toolCall, hooks));
+    hooks?.onToolResult?.(toolCall.id, result);
+    return result;
   }
 
   private registerToolHandlers(): void {

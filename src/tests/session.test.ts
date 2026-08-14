@@ -233,6 +233,69 @@ test("Plan mode omits WebSearch when resolved settings configure an executable s
   assert.equal(requestedToolNames[0]?.includes("FinalizePlan"), true);
 });
 
+test("FinalizePlan rejects later plan updates until the next user planning turn", async () => {
+  const workspace = createTempDir("doku-terminal-finalize-plan-workspace-");
+  const home = createTempDir("doku-terminal-finalize-plan-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallsResponse([
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Keep the finalized scope" },
+        id: "finalize-terminal-plan",
+      },
+      {
+        name: "UpdatePlan",
+        args: { plan: "- [ ] Replace finalized scope unexpectedly" },
+        id: "update-after-finalize",
+      },
+    ]),
+    createChatResponse("The first plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createToolCallsResponse([
+      {
+        name: "UpdatePlan",
+        args: { plan: "- [ ] Keep the finalized scope\n- [ ] Add migration tests" },
+        id: "update-after-user-revision",
+      },
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Keep the finalized scope\n- [ ] Add migration tests" },
+        id: "finalize-user-revision",
+      },
+    ]),
+    createChatResponse("The revised plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+
+  const sessionId = await manager.createSession({
+    text: "Plan the migration",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+
+  const firstPlan = manager.getSession(sessionId)?.workflow.plan;
+  assert.equal(firstPlan?.status, PLAN_STATUS.READY);
+  assert.equal(firstPlan?.revision, 1);
+  assert.equal(firstPlan?.markdown, "- [ ] Keep the finalized scope");
+  const rejectedUpdate = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "update-after-finalize";
+  });
+  assert.ok(rejectedUpdate);
+  const rejectedContent = rejectedUpdate.content;
+  assert.ok(rejectedContent);
+  assert.deepEqual(JSON.parse(rejectedContent), {
+    ok: false,
+    name: "UpdatePlan",
+    error: "The plan is already finalized for this turn. Wait for a new user planning message before revising it.",
+  });
+
+  await manager.replySession(sessionId, { text: "Add migration tests", workflowMode: WORKFLOW_MODE.PLAN });
+
+  const revisedPlan = manager.getSession(sessionId)?.workflow.plan;
+  assert.equal(revisedPlan?.status, PLAN_STATUS.READY);
+  assert.equal(revisedPlan?.revision, 2);
+  assert.equal(revisedPlan?.markdown, "- [ ] Keep the finalized scope\n- [ ] Add migration tests");
+});
+
 test("an approved implementation remains active when the turn limit is reached", async () => {
   const workspace = createTempDir("doku-plan-turn-limit-workspace-");
   const home = createTempDir("doku-plan-turn-limit-home-");
@@ -2585,18 +2648,20 @@ function createMockedClientSessionManagerWithClient(
 class APIUserAbortError extends Error {}
 
 function createToolCallResponse(name: string, args: Record<string, unknown>, id: string): unknown {
+  return createToolCallsResponse([{ name, args, id }]);
+}
+
+function createToolCallsResponse(calls: Array<{ name: string; args: Record<string, unknown>; id: string }>): unknown {
   return {
     choices: [
       {
         message: {
           content: "",
-          tool_calls: [
-            {
-              id,
-              type: "function",
-              function: { name, arguments: JSON.stringify(args) },
-            },
-          ],
+          tool_calls: calls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: JSON.stringify(call.args) },
+          })),
         },
       },
     ],

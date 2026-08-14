@@ -13,6 +13,8 @@ import {
   startPlanning,
   updatePlanDraft,
 } from "../session/workflow";
+import { applyPlanToolUpdate } from "../session/workflow-session";
+import type { SessionEntry } from "../session/types";
 
 test("workflow defaults missing state to build mode", () => {
   assert.deepEqual(normalizeWorkflow(undefined), createBuildWorkflow());
@@ -65,3 +67,46 @@ test("first planning turn after a mode switch captures the request", () => {
   assert.equal(prepared.plan?.request, "Add JSON export");
   assert.equal(prepared.plan?.status, PLAN_STATUS.DRAFT);
 });
+
+test("a finalized plan remains terminal until a new planning turn reopens it", () => {
+  const ready = finalizePlan(startPlanning("Add JSON export"), "- [ ] Add JSON export", "2026-01-01T00:02:00.000Z");
+  const entry = buildWorkflowEntry(ready);
+  const ignored = applyPlanToolUpdate(
+    entry,
+    { kind: "draft", markdown: "- [ ] Replace the finalized plan" },
+    "2026-01-01T00:03:00.000Z"
+  );
+
+  assert.equal(ignored, entry);
+  assert.equal(ignored.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(ignored.workflow.plan?.markdown, "- [ ] Add JSON export");
+
+  const reopened = preparePlanningTurn(ready, "Refine the export plan", "2026-01-01T00:04:00.000Z");
+  const updated = applyPlanToolUpdate(
+    buildWorkflowEntry(reopened),
+    { kind: "draft", markdown: "- [ ] Add CSV export" },
+    "2026-01-01T00:05:00.000Z"
+  );
+  assert.equal(updated.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  assert.equal(updated.workflow.plan?.markdown, "- [ ] Add CSV export");
+});
+
+function buildWorkflowEntry(workflow: SessionEntry["workflow"]): SessionEntry {
+  return {
+    id: "workflow-test",
+    summary: "workflow test",
+    status: "pending",
+    usage: null,
+    usagePerModel: null,
+    activeTokens: 0,
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
+    toolCalls: null,
+    failReason: null,
+    createTime: "2026-01-01T00:00:00.000Z",
+    updateTime: "2026-01-01T00:00:00.000Z",
+    workflow,
+    processes: null,
+  };
+}

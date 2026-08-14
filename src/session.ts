@@ -41,6 +41,7 @@ import {
   applyPlanToolUpdate,
   buildPlanHandoff,
   getBuildMessagePlan,
+  getPlanToolRejection,
   parsePlanToolUpdate,
   prepareWorkflowEntry,
   restoreWorkflowFromMessages,
@@ -190,6 +191,7 @@ export class SessionManager {
       isInterrupted: (sessionId) => this.isInterrupted(sessionId),
       onStdout: options.onProcessStdout,
       onNeedsWebSearchSetup: options.onNeedsWebSearchSetup,
+      getToolRejection: (sessionId, toolName) => getPlanToolRejection(this.getSession(sessionId)?.workflow, toolName),
       onToolResult: (sessionId, result) => {
         const workflowSnapshot = this.handleWorkflowToolResult(sessionId, result);
         return workflowSnapshot ? { workflowSnapshot } : undefined;

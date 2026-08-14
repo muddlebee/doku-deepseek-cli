@@ -187,7 +187,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       canContinue: () => {
         const manager = sessionManagerRef.current;
         const sessionId = manager?.getActiveSessionId();
-        return !manager || !sessionId || !shouldPausePromptQueue(manager.getSession(sessionId)?.status);
+        if (!manager || !sessionId) return true;
+        const session = manager.getSession(sessionId);
+        return !shouldPausePromptQueue(session?.status, session?.workflow.plan?.status);
       },
     });
   }
@@ -852,7 +854,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       ) : shouldShowPlanHandoff && activePlan && activePlanDismissalKey && !busy ? (
         <PlanHandoffPrompt
           revision={activePlan.revision}
-          onImplement={() => void handlePrompt({ text: "/build", imageUrls: [], command: "build" })}
+          onImplement={() => {
+            handleSubmit({ text: "/build", imageUrls: [], command: "build" });
+          }}
           onKeepPlanning={() => {
             setDismissedPlanRevisions((current) => new Set(current).add(activePlanDismissalKey));
           }}

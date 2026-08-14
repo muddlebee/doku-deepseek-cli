@@ -1,6 +1,7 @@
 import { BUILTIN_SKILL_NAME } from "../common/builtin-skills";
 import type { ToolExecutionResult } from "../tools/executor";
 import {
+  PLAN_STATUS,
   WORKFLOW_MODE,
   type SessionEntry,
   type SessionMessage,
@@ -54,6 +55,7 @@ export function applyPlanToolUpdate(
   now = new Date().toISOString()
 ): SessionEntry {
   if (entry.workflow.mode !== WORKFLOW_MODE.PLAN) return entry;
+  if (entry.workflow.plan?.status === PLAN_STATUS.READY) return entry;
   return {
     ...entry,
     workflow:
@@ -61,6 +63,19 @@ export function applyPlanToolUpdate(
         ? finalizePlan(entry.workflow, update.markdown, now)
         : updatePlanDraft(entry.workflow, update.markdown, now),
     updateTime: now,
+  };
+}
+
+export function getPlanToolRejection(
+  workflow: SessionWorkflow | null | undefined,
+  toolName: string
+): ToolExecutionResult | undefined {
+  if (toolName !== "UpdatePlan" && toolName !== "FinalizePlan") return undefined;
+  if (workflow?.mode !== WORKFLOW_MODE.PLAN || workflow.plan?.status !== PLAN_STATUS.READY) return undefined;
+  return {
+    ok: false,
+    name: toolName,
+    error: "The plan is already finalized for this turn. Wait for a new user planning message before revising it.",
   };
 }
 

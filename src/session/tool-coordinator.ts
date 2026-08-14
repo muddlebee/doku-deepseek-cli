@@ -18,6 +18,7 @@ export type ToolCoordinatorDependencies = {
   isInterrupted: (sessionId: string) => boolean;
   onStdout?: (pid: number, chunk: string) => void;
   onNeedsWebSearchSetup?: () => void;
+  getToolRejection?: (sessionId: string, toolName: string) => ToolExecutionResult | undefined;
   onToolResult?: (sessionId: string, result: ToolExecutionResult) => MessageMeta | undefined;
 };
 
@@ -52,6 +53,7 @@ export class SessionToolCoordinator {
     pendingApproval = false,
     includeAgentImages = false
   ): Promise<{ waitingForUser: boolean; agentOutput?: AgentToolOutput }> {
+    const resultMetaByToolCallId = new Map<string, MessageMeta>();
     const executions = await this.deps.executor.executeToolCalls(sessionId, toolCalls, {
       signal,
       onProcessStart: (pid, command) => this.deps.processes.add(sessionId, pid, command),
@@ -62,6 +64,11 @@ export class SessionToolCoordinator {
       onAfterFileMutation: (filePath) => this.deps.checkpoints.recordMutation(sessionId, filePath),
       onNeedsWebSearchSetup: this.deps.onNeedsWebSearchSetup,
       shouldStop: () => this.deps.isInterrupted(sessionId),
+      getToolRejection: (_toolCallId, toolName) => this.deps.getToolRejection?.(sessionId, toolName),
+      onToolResult: (toolCallId, result) => {
+        const resultMeta = this.deps.onToolResult?.(sessionId, result);
+        if (resultMeta) resultMetaByToolCallId.set(toolCallId, resultMeta);
+      },
     });
     if (this.deps.isInterrupted(sessionId)) return { waitingForUser: false };
 
@@ -71,7 +78,7 @@ export class SessionToolCoordinator {
     for (const execution of executions) {
       waitingForUser ||= execution.result.awaitUserResponse === true;
       const toolFunction = findToolFunction(toolCalls, execution.toolCallId);
-      const resultMeta = this.deps.onToolResult?.(sessionId, execution.result);
+      const resultMeta = resultMetaByToolCallId.get(execution.toolCallId);
       const message = this.deps.buildTool(sessionId, execution.toolCallId, execution.content, toolFunction);
       if (resultMeta) message.meta = { ...message.meta, ...resultMeta };
       if (pendingApproval) message.meta = { ...message.meta, pendingApproval: true };

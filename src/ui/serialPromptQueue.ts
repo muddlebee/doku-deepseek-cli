@@ -1,4 +1,4 @@
-import type { SessionStatus } from "../session/types";
+import { PLAN_STATUS, type PlanStatus, type SessionStatus } from "../session/types";
 import type { PromptSubmission } from "./promptSubmission";
 
 export type QueuedPrompt<T> = Readonly<{
@@ -89,8 +89,13 @@ export class SerialPromptQueue<T> {
   }
 }
 
-export function shouldPausePromptQueue(status: SessionStatus | null | undefined): boolean {
-  return status === "waiting_for_user" || status === "needs_continuation";
+export function shouldPausePromptQueue(
+  status: SessionStatus | null | undefined,
+  planStatus: PlanStatus | null | undefined
+): boolean {
+  const implementationStopped =
+    planStatus === PLAN_STATUS.IMPLEMENTING && (status === "interrupted" || status === "failed");
+  return status === "waiting_for_user" || status === "needs_continuation" || implementationStopped;
 }
 
 export function shouldResumePromptQueueAfterContinuation(status: SessionStatus | null | undefined): boolean {

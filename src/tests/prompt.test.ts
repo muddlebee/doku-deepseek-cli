@@ -36,6 +36,7 @@ test("built-in catalog supplies tool definitions, aliases, and execution classes
   assert.equal(normalizeBuiltInToolName("Write"), "write");
   assert.equal(getBuiltInToolExecutionClass("Read"), "parallel");
   assert.equal(getBuiltInToolExecutionClass("edit"), "serial");
+  assert.equal(getBuiltInToolExecutionClass("UpdatePlan"), "serial");
   assert.equal(getBuiltInToolExecutionClass("AskUserQuestion"), "blocking");
 });
 
