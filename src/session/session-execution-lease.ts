@@ -242,6 +242,10 @@ function getProcessState(pid: number): ProcessState {
   }
 }
 
+export function isProcessDefinitelyDead(pid: number): boolean {
+  return getProcessState(pid) === "dead";
+}
+
 function validateSessionId(sessionId: string): void {
   if (!sessionId || path.basename(sessionId) !== sessionId) throw new Error("Invalid session identifier.");
 }

@@ -20,11 +20,11 @@ export type SessionInitializerOptions = {
 export function initializeSession(options: SessionInitializerOptions): void {
   const { sessionId, userPrompt, store, messages } = options;
   const now = new Date().toISOString();
-  const index = store.loadIndex();
-  index.entries.push(buildEntry(sessionId, userPrompt, now));
-  index.entries.sort((a, b) => compareUpdateTime(a, b));
-  const dropped = index.entries.splice(MAX_SESSION_ENTRIES);
-  store.saveIndex(index);
+  const dropped = store.updateIndex((index) => {
+    index.entries.push(buildEntry(sessionId, userPrompt, now));
+    index.entries.sort((a, b) => compareUpdateTime(a, b));
+    return index.entries.splice(MAX_SESSION_ENTRIES);
+  });
   options.removeSessions(dropped.map((entry) => entry.id));
 
   const promptOptions = { model: options.model, webSearchEnabled: true };
