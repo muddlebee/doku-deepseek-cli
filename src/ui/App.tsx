@@ -52,7 +52,8 @@ import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
 import {
   SerialPromptQueue,
-  shouldBypassPromptQueue,
+  PROMPT_ROUTE,
+  resolvePromptRoute,
   shouldDiscardPromptQueueAfterSessionSelection,
   shouldDiscardPromptQueueAfterUndoRestore,
   shouldDiscardPromptQueueForCommand,
@@ -292,11 +293,6 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         openSecondaryView("session-list");
         return;
       }
-      if (submission.command === "continue" && isCurrentSessionEmpty(sessionManager)) {
-        refreshSessionsList();
-        openSecondaryView("session-list");
-        return;
-      }
       if (submission.command === "undo") {
         const activeSessionId = sessionManager.getActiveSessionId();
         if (!activeSessionId) {
@@ -332,7 +328,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         (selectedSkillNames.length > 0 ? `Use skills: ${selectedSkillNames.join(", ")}` : "") ||
         (submission.imageUrls.length > 0 ? "[Image]" : "");
 
-      if (userDisplayContent && submission.command !== "continue") {
+      if (userDisplayContent) {
         setMessages((prev) => [...prev, buildSyntheticUserMessage(userDisplayContent, submission.imageUrls.length)]);
       }
 
@@ -442,7 +438,27 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       if (shouldPausePromptQueue(session?.status, session?.workflow.plan?.status)) {
         promptQueue?.pause();
       }
-      if (shouldBypassPromptQueue(submission, promptQueue?.isPaused() ?? false)) {
+      const route = resolvePromptRoute(
+        submission,
+        session?.status,
+        session?.workflow.plan?.status,
+        promptQueue?.isPaused() ?? false
+      );
+      if (route === PROMPT_ROUTE.DIRECT_RECOVERY) {
+        const accepted =
+          promptQueue?.enqueuePriority(submission, () => {
+            const recoveredSessionId = sessionManager.getActiveSessionId();
+            const recoveredStatus = recoveredSessionId
+              ? sessionManager.getSession(recoveredSessionId)?.status
+              : undefined;
+            return shouldResumePromptQueueAfterRecovery(route, submission.command, recoveredStatus);
+          }) ?? false;
+        if (!accepted) {
+          setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
+        }
+        return accepted;
+      }
+      if (route === PROMPT_ROUTE.DIRECT_COMMAND) {
         if (shouldDiscardPromptQueueForCommand(submission.command)) {
           promptQueue?.clear();
         }
@@ -451,7 +467,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           const recoveredStatus = recoveredSessionId
             ? sessionManager.getSession(recoveredSessionId)?.status
             : undefined;
-          if (shouldResumePromptQueueAfterRecovery(submission.command, recoveredStatus)) {
+          if (shouldResumePromptQueueAfterRecovery(route, submission.command, recoveredStatus)) {
             promptQueue?.resume();
           }
         });
@@ -762,14 +778,21 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     return messages;
   }, [mode, showWelcome, view, messages, welcomeItem]);
 
+  const resumePromptQueueAfterQuestion = useCallback((): void => {
+    const sessionId = sessionManager.getActiveSessionId();
+    if (sessionId && sessionManager.getSession(sessionId)?.status === "completed") {
+      promptQueueRef.current?.resume();
+    }
+  }, [sessionManager]);
+
   const handleQuestionAnswers = useCallback(
     (answers: AskUserQuestionAnswers) => {
       promptQueueRef.current?.pause();
-      void handlePrompt({ text: formatAskUserQuestionAnswers(answers), imageUrls: [] }).finally(() =>
-        promptQueueRef.current?.resume()
+      void handlePrompt({ text: formatAskUserQuestionAnswers(answers), imageUrls: [] }).finally(
+        resumePromptQueueAfterQuestion
       );
     },
-    [handlePrompt]
+    [handlePrompt, resumePromptQueueAfterQuestion]
   );
 
   const handleQuestionCancel = useCallback(() => {
@@ -778,10 +801,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
     promptQueueRef.current?.pause();
-    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] }).finally(() =>
-      promptQueueRef.current?.resume()
-    );
-  }, [handlePrompt, pendingQuestion]);
+    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] }).finally(resumePromptQueueAfterQuestion);
+  }, [handlePrompt, pendingQuestion, resumePromptQueueAfterQuestion]);
 
   if (mode === RawMode.Raw) {
     return <RawModeExitPrompt onExit={(prev) => handleRawModeChange(prev)} />;
@@ -970,11 +991,6 @@ function extractImageUrlsFromContentParams(contentParams: unknown): string[] {
     }
   }
   return imageUrls;
-}
-
-function isCurrentSessionEmpty(sessionManager: SessionManager): boolean {
-  const activeSessionId = sessionManager.getActiveSessionId();
-  return !activeSessionId || !sessionManager.getSession(activeSessionId);
 }
 
 function chatStatusColor(kind: ReturnType<typeof buildChatStatus>["kind"]): string {

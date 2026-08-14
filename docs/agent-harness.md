@@ -245,8 +245,8 @@ instructions therefore change together when the workflow profile changes; Build 
 and Plan does not advertise mutating tools it cannot call.
 
 The profile is resolved from the persisted workflow mode once per user turn. Every internal runtime recreation and
-tool refresh reapplies that same profile. A restored pending tool call is checked against the active profile before
-execution and receives a recorded tool error when it is no longer allowed.
+tool refresh reapplies that same profile. A fresh recovery instruction supersedes unresolved pre-interruption tool
+calls; canonical history records those calls with incomplete results instead of executing them later.
 
 ## Workflow modes
 
@@ -288,9 +288,9 @@ matching durable handoff if the lifecycle write was interrupted.
 ## Prompt queue boundary
 
 `src/ui/serialPromptQueue.ts` serializes user-level operations before they reach `SessionManager`. Ordinary prompts,
-`/build`, and Enter on the plan handoff all enter this same queue. Bypass commands are limited to operations such as
-`/exit` and recovery through `/continue` or an approved `/build` when the queue is paused. Before each submission, the
-UI synchronizes the in-memory pause flag from the persisted session so recovery works immediately after `/resume`.
+`/build`, and Enter on the plan handoff all enter this same queue. The UI resolves each submission to an enqueue,
+direct-command, or direct-recovery route from durable session state. An ordinary message uses direct recovery after a
+turn limit or a stopped implementation, so it runs before older queued follow-ups even immediately after `/resume`.
 
 The queue pauses instead of draining when the active session:
 
@@ -298,8 +298,9 @@ The queue pauses instead of draining when the active session:
 - reaches the user-level turn limit and needs continuation; or
 - has an `IMPLEMENTING` plan whose turn failed or was interrupted.
 
-After a successful `/continue` or approved `/build`, the queue resumes only when the recovered session is genuinely
-`completed`. This prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
+After a successful natural recovery or approved `/build`, the queue resumes only when the recovered session is
+genuinely `completed`. Another interruption, failure, turn limit, or user question leaves older prompts paused. This
+prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
 The plan handoff accepts Enter only once per revision, preventing repeated keypresses from creating duplicate builds.
 
 Switching from a stopped implementation back to Plan explicitly abandons that build. The queue discards its stale
@@ -373,15 +374,14 @@ The definitions are supplied to `AgentRuntime` alongside built-in tools. `ToolEx
 
 A turn performs these steps:
 
-1. Revalidate and execute any trailing pending tool calls needed for `/continue` or recovery.
-2. Construct `AgentRuntime` with the resolved provider, fixed agent profile, and filtered tools.
-3. Restore a persisted approval state when resuming a human-in-the-loop interaction.
-4. Open the session's `FileAgentSession`.
-5. Build the current turn input or seed SDK history from an existing transcript.
-6. Run one Agents SDK model segment with streaming and cancellation.
-7. Persist history and usage, compact if necessary, refresh the runtime, and continue with empty input when another
+1. Construct `AgentRuntime` with the resolved provider, fixed agent profile, and filtered tools.
+2. Restore a persisted approval state when resuming a human-in-the-loop interaction.
+3. Open the session's `FileAgentSession`.
+4. Build the new transcript input or seed SDK history from an existing transcript.
+5. Run one Agents SDK model segment with streaming and cancellation.
+6. Persist history and usage, compact if necessary, refresh the runtime, and continue with empty input when another
    model segment is required.
-8. Persist an interruption or update the completed response, reasoning, usage, and active token count.
+7. Persist an interruption or update the completed response, reasoning, usage, and active token count.
 
 The loop returns one explicit outcome:
 
@@ -422,8 +422,8 @@ compact context, refresh tools, reapply the fixed profile, and enforce a durable
 generations without implementing either provider protocol itself.
 
 If the configured outer limit is reached, the complete run history remains in `FileAgentSession`, the session becomes
-`needs_continuation`, and the UI offers `/continue`. Continuing starts another bounded loop with the prior function
-calls and results intact.
+`needs_continuation`, and the UI asks for another message. That message starts another bounded loop with the prior
+function calls and results intact.
 
 ## Session history
 
@@ -457,8 +457,8 @@ This preserves provider response items, reasoning, function calls, tool results,
 `src/session/agent-history.ts` converts existing application messages into Agents items when an older session does not yet have SDK history. Subsequent turns append native SDK items instead of reconstructing all history.
 
 Handled terminal conditions are persisted at the same boundary. Refusals retain their native response item, and
-turn-limit exhaustion retains the complete run history so the next `/continue` request resumes rather than replaying
-the original prompt.
+turn-limit exhaustion retains the complete run history so the next natural instruction continues from it rather than
+replaying the original prompt.
 
 Provider capabilities are consulted during conversion. Images are omitted when `supportsImages` is false.
 

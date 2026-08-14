@@ -26,7 +26,6 @@ test("buildSlashCommands groups built-ins before skills", () => {
     "new",
     "init",
     "resume",
-    "continue",
     "undo",
     "mcp",
     "raw",
@@ -90,11 +89,10 @@ test("findExactSlashCommand returns built-in /init", () => {
   assert.equal(item?.description, "Initialize an AGENTS.md file with instructions for LLM");
 });
 
-test("findExactSlashCommand returns built-in /continue", () => {
+test("findExactSlashCommand treats /continue as ordinary text", () => {
   const items = buildSlashCommands(skills);
   const item = findExactSlashCommand(items, "/continue");
-  assert.ok(item);
-  assert.equal(item?.kind, "continue");
+  assert.equal(item, null);
 });
 
 test("findExactSlashCommand returns built-in /undo", () => {

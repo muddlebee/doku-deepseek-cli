@@ -2,7 +2,7 @@ import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
 import type { ToolExecutionResult, ToolExecutor } from "../tools/executor";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
 import type { SessionProcessTracker } from "./process-tracker";
-import { findToolFunction, getToolCallIdentity } from "./tool-calls";
+import { findToolFunction } from "./tool-calls";
 import type { MessageMeta, SessionMessage } from "./types";
 
 export type ToolCoordinatorDependencies = {
@@ -100,18 +100,6 @@ export class SessionToolCoordinator {
     }
     followUps.forEach((message) => this.deps.appendMessage(sessionId, message));
     return { waitingForUser, ...(agentOutput ? { agentOutput } : {}) };
-  }
-
-  reject(sessionId: string, toolCalls: unknown[], reason: string): void {
-    for (const toolCall of toolCalls) {
-      const identity = getToolCallIdentity(toolCall);
-      if (!identity) continue;
-      const content = JSON.stringify({ ok: false, name: identity.name, error: reason });
-      const toolFunction = findToolFunction(toolCalls, identity.id);
-      const message = this.deps.buildTool(sessionId, identity.id, content, toolFunction);
-      this.deps.appendMessage(sessionId, message);
-      this.deps.emitMessage(message, true);
-    }
   }
 }
 

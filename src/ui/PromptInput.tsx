@@ -830,10 +830,6 @@ export const PromptInput = React.memo(function PromptInput({
       submitAndReset({ text: "", imageUrls: [], command: "resume" });
       return;
     }
-    if (item.kind === "continue") {
-      submitAndReset({ text: "/continue", imageUrls: [], command: "continue" });
-      return;
-    }
     if (item.kind === "undo") {
       submitAndReset({ text: "/undo", imageUrls: [], command: "undo" });
       return;

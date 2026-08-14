@@ -17,7 +17,6 @@ import {
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
 import type { AgentProfile } from "../agent/profiles";
-import { isToolAllowedForProfile } from "../agent/profiles";
 import {
   agentUsageToModelUsage,
   buildAgentInputItems,
@@ -37,9 +36,7 @@ import {
 } from "./agent-turn-state";
 import type { FileSessionStore } from "./file-session-store";
 import { buildToolResultSnippet } from "./tool-presentation";
-import { getToolCallIdentity, getTrailingPendingToolCalls } from "./tool-calls";
 import type { LlmStreamProgress, SessionEntry, SessionMessage } from "./types";
-import { hasProcessStopFailure } from "./process-tracker";
 import { accumulateUsage, accumulateUsagePerModel } from "./usage";
 
 export { agentHistoryPath as getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState } from "./agent-turn-state";
@@ -66,7 +63,6 @@ export type AgentTurnDependencies = {
   ) => SessionMessage;
   onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
   appendTools: AppendTools;
-  rejectTools?: (sessionId: string, toolCalls: unknown[], reason: string) => void;
   executeTool: (
     sessionId: string,
     invocation: AgentToolInvocation,
@@ -97,49 +93,11 @@ export type AgentTurnOptions = {
   maxTurns: number;
   tracingEnabled: boolean;
   controller: AbortController;
-  continueExisting: boolean;
   profile?: AgentProfile;
 };
 
 export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDependencies): Promise<AgentTurnOutcome> {
   const { sessionId, provider, controller } = options;
-  const pendingToolCalls = getTrailingPendingToolCalls(deps.listMessages(sessionId));
-  if (pendingToolCalls.length) {
-    const allowedPendingToolCalls = pendingToolCalls.filter((toolCall) => {
-      const identity = getToolCallIdentity(toolCall);
-      return identity && (!options.profile || isToolAllowedForProfile(identity.name, options.profile));
-    });
-    const rejectedPendingToolCalls = pendingToolCalls.filter((toolCall) => !allowedPendingToolCalls.includes(toolCall));
-    if (rejectedPendingToolCalls.length) {
-      if (!deps.rejectTools) throw new Error("Pending tool-call rejection is not configured.");
-      deps.rejectTools(
-        sessionId,
-        rejectedPendingToolCalls,
-        `Tool execution is not allowed in ${options.profile?.name ?? "the active"} profile.`
-      );
-    }
-    const execution = allowedPendingToolCalls.length
-      ? await deps.appendTools(sessionId, allowedPendingToolCalls, controller.signal)
-      : { waitingForUser: false };
-    if (execution.waitingForUser || deps.isInterrupted(sessionId)) {
-      let failed = false;
-      deps.updateEntry(sessionId, (entry) => {
-        failed = hasProcessStopFailure(entry);
-        return {
-          ...entry,
-          toolCalls: allowedPendingToolCalls,
-          status: execution.waitingForUser ? "waiting_for_user" : failed ? "failed" : "interrupted",
-          updateTime: new Date().toISOString(),
-        };
-      });
-      return execution.waitingForUser
-        ? AGENT_TURN_OUTCOME.WAITING_FOR_USER
-        : failed
-          ? AGENT_TURN_OUTCOME.FAILED
-          : AGENT_TURN_OUTCOME.INTERRUPTED;
-    }
-  }
-
   const progress = new AgentTurnProgress(sessionId, deps.onProgress);
   let pendingReasoning = "";
   let latestReasoning = "";
@@ -192,7 +150,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
     };
     const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, deps.store.projectDir));
     let runtime = createRuntime();
-    let input = await buildRunInput(options, deps, runtime, agentSession, context, pausedState, pendingToolCalls);
+    let input = await buildRunInput(options, deps, runtime, agentSession, context, pausedState);
 
     progress.start();
     const maxTurns = Math.max(1, options.maxTurns);
@@ -281,8 +239,7 @@ async function buildRunInput(
   runtime: AgentRuntime,
   agentSession: FileAgentSession,
   context: AgentRuntimeContext,
-  pausedState: string | null,
-  pendingToolCalls: unknown[]
+  pausedState: string | null
 ): Promise<AgentInputItem[] | RunState<AgentRuntimeContext, Agent<AgentRuntimeContext>>> {
   if (pausedState) {
     const state = await RunState.fromStringWithContext<AgentRuntimeContext, typeof runtime.initialAgent>(
@@ -319,28 +276,12 @@ async function buildRunInput(
     }
   }
   if (!persistedItems.length) {
-    await agentSession.replaceItems(
-      buildAgentInputItems(
-        options.continueExisting ? messages : historyMessages,
-        options.provider.supportsImages,
-        deps.renderContent
-      )
+    await persistReplayableAgentHistory(
+      agentSession,
+      buildAgentInputItems(historyMessages, options.provider.supportsImages, deps.renderContent)
     );
   }
-  if (!options.continueExisting) {
-    return buildAgentInputItems(turnMessages, options.provider.supportsImages, deps.renderContent);
-  }
-  const pendingCallId = (pendingToolCalls[0] as { id?: unknown } | undefined)?.id;
-  const pendingIndex =
-    typeof pendingCallId === "string"
-      ? messages.findIndex((message) => {
-          const params = message.messageParams as { tool_calls?: Array<{ id?: unknown }> } | null;
-          return params?.tool_calls?.some((call) => call.id === pendingCallId) ?? false;
-        })
-      : -1;
-  return persistedItems.length && pendingIndex >= 0
-    ? buildAgentInputItems(messages.slice(pendingIndex), options.provider.supportsImages, deps.renderContent)
-    : [];
+  return buildAgentInputItems(turnMessages, options.provider.supportsImages, deps.renderContent);
 }
 
 async function sanitizeResumedStateImages(
