@@ -38,7 +38,10 @@ export class SessionToolCoordinator {
     const assistant = this.deps.buildAssistant(sessionId, "", [toolCall]);
     this.deps.appendMessage(sessionId, assistant);
     this.deps.emitMessage(assistant, true);
-    const execution = await this.append(sessionId, [toolCall], invocation.signal, false, supportsImages);
+    const rejection = invocation.rejectionReason
+      ? { toolCallId: invocation.callId, reason: invocation.rejectionReason }
+      : undefined;
+    const execution = await this.append(sessionId, [toolCall], invocation.signal, false, supportsImages, rejection);
     const result = [...this.deps.listMessages(sessionId)].reverse().find((message) => {
       const params = message.messageParams as { tool_call_id?: unknown } | null;
       return message.role === "tool" && params?.tool_call_id === invocation.callId;
@@ -51,7 +54,8 @@ export class SessionToolCoordinator {
     toolCalls: unknown[],
     signal?: AbortSignal,
     pendingApproval = false,
-    includeAgentImages = false
+    includeAgentImages = false,
+    rejection?: Readonly<{ toolCallId: string; reason: string }>
   ): Promise<{ waitingForUser: boolean; agentOutput?: AgentToolOutput }> {
     const resultMetaByToolCallId = new Map<string, MessageMeta>();
     const executions = await this.deps.executor.executeToolCalls(sessionId, toolCalls, {
@@ -64,7 +68,10 @@ export class SessionToolCoordinator {
       onAfterFileMutation: (filePath) => this.deps.checkpoints.recordMutation(sessionId, filePath),
       onNeedsWebSearchSetup: this.deps.onNeedsWebSearchSetup,
       shouldStop: () => this.deps.isInterrupted(sessionId),
-      getToolRejection: (_toolCallId, toolName) => this.deps.getToolRejection?.(sessionId, toolName),
+      getToolRejection: (toolCallId, toolName) =>
+        rejection?.toolCallId === toolCallId
+          ? { ok: false, name: toolName, error: rejection.reason }
+          : this.deps.getToolRejection?.(sessionId, toolName),
       onToolResult: (toolCallId, result) => {
         const resultMeta = this.deps.onToolResult?.(sessionId, result);
         if (resultMeta) resultMetaByToolCallId.set(toolCallId, resultMeta);

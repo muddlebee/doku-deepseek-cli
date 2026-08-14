@@ -8,11 +8,15 @@ import {
   type RunStreamEvent,
   type Session,
 } from "@openai/agents";
-import type { ToolDefinition } from "../prompt";
+import { getToolInstructions, type ToolDefinition } from "../prompt";
 import type { ResolvedProvider } from "../providers/registry";
 import { AgentToolScheduler } from "./tool-scheduler";
 import { getAgentProfile, type AgentProfile } from "./profiles";
+import { PendingQuestionBarrier } from "./pending-question-barrier";
 import { WORKFLOW_MODE } from "../session/types";
+
+const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
+const FINALIZE_PLAN_TOOL_NAME = "FinalizePlan";
 
 export type AgentRuntimeContext = {
   sessionId: string;
@@ -24,6 +28,7 @@ export type AgentToolInvocation = {
   arguments: Record<string, unknown>;
   argumentsJson: string;
   callId: string;
+  rejectionReason?: string;
   signal?: AbortSignal;
 };
 
@@ -35,6 +40,7 @@ export type AgentRuntimeOptions = {
   provider: ResolvedProvider;
   profile?: AgentProfile;
   tools: ToolDefinition[];
+  modelName?: string;
   maxTurns?: number;
   tracingEnabled?: boolean;
   executeTool: (invocation: AgentToolInvocation) => Promise<AgentToolOutput>;
@@ -75,35 +81,43 @@ export class AgentRuntime {
       toolNotFoundBehavior: "return_error_to_model",
     });
     const profile = options.profile ?? getAgentProfile(WORKFLOW_MODE.BUILD);
+    const pendingQuestionBarrier = new PendingQuestionBarrier();
+    const instructions = [profile.instructions, getToolInstructions(options.tools, { model: options.modelName })]
+      .filter(Boolean)
+      .join("\n\n");
     this.agent = new Agent<AgentRuntimeContext>({
       name: profile.name,
-      instructions: profile.instructions,
+      instructions,
       model: options.provider.model,
       modelSettings: options.provider.modelSettings,
       tools: options.tools.map((definition) => {
+        const toolName = definition.function.name;
         const parameters = {
           ...definition.function.parameters,
           required: definition.function.parameters.required ?? [],
           additionalProperties: true as const,
         } as Extract<ToolInputParameters, { type: "object"; additionalProperties: true }>;
         return tool({
-          name: definition.function.name,
+          name: toolName,
           description: definition.function.description,
           parameters,
           strict: false,
-          needsApproval: definition.function.name === "AskUserQuestion",
+          needsApproval: () => pendingQuestionBarrier.registerTool(toolName === ASK_USER_QUESTION_TOOL_NAME),
           execute: async (input, runContext, details) => {
-            if (definition.function.name === "AskUserQuestion" && runContext?.context.askUserAnswer) {
+            if (toolName === ASK_USER_QUESTION_TOOL_NAME && runContext?.context.askUserAnswer) {
               const callId = details?.toolCall?.callId;
               if (callId) options.onAskUserAnswered?.(callId, runContext.context.askUserAnswer);
               return runContext.context.askUserAnswer;
             }
             const args = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
             const invocation: AgentToolInvocation = {
-              name: definition.function.name,
+              name: toolName,
               arguments: args,
               argumentsJson: JSON.stringify(args),
               callId: details?.toolCall?.callId || crypto.randomUUID().replaceAll("-", ""),
+              ...(toolName === FINALIZE_PLAN_TOOL_NAME
+                ? { rejectionReason: pendingQuestionBarrier.getFinalizationRejection() }
+                : {}),
               signal: details?.signal,
             };
             return this.toolScheduler.schedule(invocation.name, () => options.executeTool(invocation));

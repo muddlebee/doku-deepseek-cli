@@ -227,7 +227,7 @@ OpenAI Agents JS has no `profile` or built-in plan-mode API. `AgentRuntime` comp
 ```ts
 this.agent = new Agent({
   name: profile.name,
-  instructions: profile.instructions,
+  instructions: [profile.instructions, getToolInstructions(filteredTools)].filter(Boolean).join("\n\n"),
   model: options.provider.model,
   modelSettings: options.provider.modelSettings,
   tools: filteredTools,
@@ -238,6 +238,11 @@ Build uses the normal `doku` agent and excludes `FinalizePlan`. Plan uses `doku-
 an allowlist containing `read`, `Grep`, `ListFiles`, `AskUserQuestion`, `UpdatePlan`, `FinalizePlan`, and safe
 provider-backed `WebSearch`. Plan omits arbitrary configured search executables because the harness cannot guarantee
 that a local command is read-only. An allowlist also keeps future or dynamically discovered tools denied by default.
+
+The stable session system prompt does not advertise tool documentation. `getToolInstructions()` selects documentation
+from the same filtered definitions supplied to the SDK and adds it to the active agent instructions. Schemas and
+instructions therefore change together when the workflow profile changes; Build does not advertise `FinalizePlan`,
+and Plan does not advertise mutating tools it cannot call.
 
 The profile is resolved from the persisted workflow mode once per user turn. Every internal runtime recreation and
 tool refresh reapplies that same profile. A restored pending tool call is checked against the active profile before
@@ -270,6 +275,11 @@ time, before a later lifecycle call can run. Once `FinalizePlan` makes a plan `R
 the same model response are rejected. A new user planning message explicitly reopens the plan as `DRAFT`, so later
 revisions remain supported.
 
+Agents JS handles approval-required calls before doku's tool scheduler. A per-response approval barrier registers
+sibling calls before execution; if `AskUserQuestion` is present, `FinalizePlan` receives a recorded rejection and must
+be called again after the answer has been incorporated. This prevents SDK history from claiming that a still-ambiguous
+plan was finalized.
+
 Plan approval is not an Agents SDK handoff or a subagent transfer. doku ends the planning turn, waits for the user,
 then starts another turn in the same `FileAgentSession` with the Build profile and the exact approved plan embedded in
 the handoff input.
@@ -288,6 +298,9 @@ The queue pauses instead of draining when the active session:
 
 After a successful `/continue`, the queue resumes only when the continued session is genuinely `completed`. This
 prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
+
+Switching from a stopped implementation back to Plan explicitly abandons that build. The queue discards its stale
+Build follow-ups and unpauses, allowing the next planning prompt to run without resuming the abandoned implementation.
 
 ## Auxiliary model calls
 

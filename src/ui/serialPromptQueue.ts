@@ -1,4 +1,4 @@
-import { PLAN_STATUS, type PlanStatus, type SessionStatus } from "../session/types";
+import { PLAN_STATUS, WORKFLOW_MODE, type PlanStatus, type SessionStatus, type WorkflowMode } from "../session/types";
 import type { PromptSubmission } from "./promptSubmission";
 
 export type QueuedPrompt<T> = Readonly<{
@@ -100,6 +100,14 @@ export function shouldPausePromptQueue(
 
 export function shouldResumePromptQueueAfterContinuation(status: SessionStatus | null | undefined): boolean {
   return status === "completed";
+}
+
+export function shouldDiscardPromptQueueForModeChange(
+  isPaused: boolean,
+  planStatus: PlanStatus | null | undefined,
+  nextMode: WorkflowMode
+): boolean {
+  return isPaused && planStatus === PLAN_STATUS.IMPLEMENTING && nextMode === WORKFLOW_MODE.PLAN;
 }
 
 export function shouldBypassPromptQueue(submission: PromptSubmission, isPaused: boolean): boolean {

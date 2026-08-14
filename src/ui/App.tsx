@@ -53,6 +53,7 @@ import { transitionView, type AppView } from "./view-state";
 import {
   SerialPromptQueue,
   shouldBypassPromptQueue,
+  shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterContinuation,
   type QueuedPrompt,
@@ -474,7 +475,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         return;
       }
       try {
+        const promptQueue = promptQueueRef.current;
+        const planStatus = sessionManager.getSession(sessionId)?.workflow.plan?.status;
+        const discardPausedImplementation = shouldDiscardPromptQueueForModeChange(
+          promptQueue?.isPaused() ?? false,
+          planStatus,
+          nextMode
+        );
         sessionManager.setWorkflowMode(sessionId, nextMode);
+        if (discardPausedImplementation) promptQueue?.clear();
         setErrorLine(null);
       } catch (error) {
         setErrorLine(error instanceof Error ? error.message : String(error));

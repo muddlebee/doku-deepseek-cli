@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import { getDefaultSkillPrompt, getRuntimeContext, getSystemPrompt, getTools } from "../prompt";
+import { getDefaultSkillPrompt, getRuntimeContext, getSystemPrompt, getToolInstructions, getTools } from "../prompt";
 import { BUILT_IN_TOOL_CATALOG, getBuiltInToolExecutionClass, normalizeBuiltInToolName } from "../tools/catalog";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -77,19 +77,24 @@ test("tool prompt templates contain guidance without duplicate JSON schemas", ()
   }
 });
 
-test("getSystemPrompt always includes WebSearch docs", () => {
-  const prompt = getSystemPrompt("/tmp/project");
+test("getToolInstructions includes docs for the supplied tools", () => {
+  const prompt = getToolInstructions(getTools());
   assert.equal(prompt.includes("## WebSearch"), true);
-});
-
-test("getSystemPrompt includes UpdatePlan docs", () => {
-  const prompt = getSystemPrompt("/tmp/project");
   assert.equal(prompt.includes("## UpdatePlan"), true);
   assert.equal(prompt.includes("The `plan` argument is a markdown string, not an array of step objects."), true);
+  assert.match(prompt, /## FinalizePlan/);
 });
 
-test("getSystemPrompt includes FinalizePlan docs", () => {
-  assert.match(getSystemPrompt("/tmp/project"), /## FinalizePlan/);
+test("getToolInstructions omits docs for tools outside the supplied profile", () => {
+  const prompt = getToolInstructions(
+    getTools().filter((tool) => ["read", "Grep", "FinalizePlan"].includes(tool.function.name))
+  );
+  assert.match(prompt, /## Read/);
+  assert.match(prompt, /## Grep/);
+  assert.match(prompt, /## FinalizePlan/);
+  assert.doesNotMatch(prompt, /## Bash/);
+  assert.doesNotMatch(prompt, /## Write/);
+  assert.doesNotMatch(prompt, /## AskUserQuestion/);
 });
 
 test("getSystemPrompt includes compact workflow skill guidance without full skill bodies", () => {
@@ -107,8 +112,8 @@ test("getSystemPrompt includes compact workflow skill guidance without full skil
   assert.equal(prompt.includes("## The Stop-the-Line Rule"), false);
 });
 
-test("getSystemPrompt Read docs direct directory inspection to ListFiles", () => {
-  const prompt = getSystemPrompt("/tmp/project");
+test("Read tool instructions direct directory inspection to ListFiles", () => {
+  const prompt = getToolInstructions(getTools());
   assert.equal(prompt.includes("To inspect directories, use the ListFiles tool."), true);
   assert.equal(prompt.includes("use an ls command via the Bash tool"), false);
 });
@@ -117,6 +122,7 @@ test("getSystemPrompt does not include runtime context", () => {
   const prompt = getSystemPrompt("/tmp/project");
   assert.equal(prompt.includes("# Local Workspace Environment"), false);
   assert.equal(prompt.includes('"root path": "/tmp/project"'), false);
+  assert.equal(prompt.includes("# Available Tools"), false);
 });
 
 test("getDefaultSkillPrompt loads default skill templates in order", () => {
@@ -146,8 +152,8 @@ test("getRuntimeContext includes current date and model guidance", () => {
   assert.equal(prompt.includes('"root path": "/tmp/project"'), true);
 });
 
-test("getSystemPrompt renders Read docs for non-multimodal models", () => {
-  const prompt = getSystemPrompt("/tmp/project", { model: "deepseek-chat" });
+test("getToolInstructions renders Read docs for non-multimodal models", () => {
+  const prompt = getToolInstructions(getTools(), { model: "deepseek-chat" });
   assert.equal(prompt.includes("the current model is not multimodal"), true);
   assert.equal(prompt.includes("the contents are presented visually"), false);
 });

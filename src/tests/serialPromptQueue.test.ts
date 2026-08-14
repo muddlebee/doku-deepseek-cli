@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PLAN_STATUS, type SessionStatus } from "../session/types";
+import { PLAN_STATUS, WORKFLOW_MODE, type SessionStatus } from "../session/types";
 import {
   SerialPromptQueue,
   shouldBypassPromptQueue,
+  shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterContinuation,
 } from "../ui/serialPromptQueue";
@@ -31,6 +32,13 @@ test("prompt queues resume after a continuation only when the turn completes", (
   assert.equal(shouldResumePromptQueueAfterContinuation("needs_continuation"), false);
   assert.equal(shouldResumePromptQueueAfterContinuation("interrupted"), false);
   assert.equal(shouldResumePromptQueueAfterContinuation("failed"), false);
+});
+
+test("only abandoning a paused implementation discards its queued build prompts", () => {
+  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.PLAN), true);
+  assert.equal(shouldDiscardPromptQueueForModeChange(false, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.PLAN), false);
+  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.DRAFT, WORKFLOW_MODE.PLAN), false);
+  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.BUILD), false);
 });
 
 test("SerialPromptQueue processes submissions in order and exposes only waiting prompts", async () => {

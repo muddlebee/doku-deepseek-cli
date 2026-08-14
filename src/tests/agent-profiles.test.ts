@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { filterToolsForProfile, getAgentProfile } from "../agent/profiles";
-import type { ToolDefinition } from "../prompt";
+import { getToolInstructions, getTools, type ToolDefinition } from "../prompt";
 import { WORKFLOW_MODE } from "../session/types";
 
 const TOOL_NAMES = [
@@ -44,6 +44,21 @@ test("build profile preserves existing tools without exposing plan finalization"
     filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.BUILD)).map((tool) => tool.function.name),
     TOOL_NAMES.filter((name) => name !== "FinalizePlan")
   );
+});
+
+test("profile-filtered schemas and tool instructions advertise the same capabilities", () => {
+  const tools = getTools();
+  const buildTools = filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.BUILD));
+  const planTools = filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.PLAN));
+  const buildInstructions = getToolInstructions(buildTools);
+  const planInstructions = getToolInstructions(planTools);
+
+  assert.match(buildInstructions, /## Bash/);
+  assert.doesNotMatch(buildInstructions, /## FinalizePlan/);
+  assert.match(planInstructions, /## FinalizePlan/);
+  assert.doesNotMatch(planInstructions, /## Bash/);
+  assert.doesNotMatch(planInstructions, /## Write/);
+  assert.doesNotMatch(planInstructions, /## Edit/);
 });
 
 function createTool(name: string): ToolDefinition {

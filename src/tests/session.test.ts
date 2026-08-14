@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { PENDING_QUESTION_FINALIZE_ERROR } from "../agent/pending-question-barrier";
 import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
@@ -213,6 +214,7 @@ test("Plan mode omits WebSearch when resolved settings configure an executable s
   const home = createTempDir("doku-plan-web-search-home-");
   setHomeDir(home);
   const requestedToolNames: string[][] = [];
+  const requestedMessages: unknown[][] = [];
   const manager = createMockedClientSessionManager(
     workspace,
     [createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 })],
@@ -222,6 +224,7 @@ test("Plan mode omits WebSearch when resolved settings configure an executable s
         requestedToolNames.push(
           request.tools?.flatMap((tool) => (tool.function?.name ? [tool.function.name] : [])) ?? []
         );
+        requestedMessages.push(request.messages ?? []);
       },
     }
   );
@@ -231,6 +234,12 @@ test("Plan mode omits WebSearch when resolved settings configure an executable s
   assert.equal(requestedToolNames.length, 1);
   assert.equal(requestedToolNames[0]?.includes("WebSearch"), false);
   assert.equal(requestedToolNames[0]?.includes("FinalizePlan"), true);
+  const advertisedTools = JSON.stringify(requestedMessages[0]);
+  assert.match(advertisedTools, /## FinalizePlan/);
+  assert.doesNotMatch(advertisedTools, /## WebSearch/);
+  assert.doesNotMatch(advertisedTools, /## Bash/);
+  assert.doesNotMatch(advertisedTools, /## Write/);
+  assert.doesNotMatch(advertisedTools, /## Edit/);
 });
 
 test("FinalizePlan rejects later plan updates until the next user planning turn", async () => {
@@ -294,6 +303,61 @@ test("FinalizePlan rejects later plan updates until the next user planning turn"
   assert.equal(revisedPlan?.status, PLAN_STATUS.READY);
   assert.equal(revisedPlan?.revision, 2);
   assert.equal(revisedPlan?.markdown, "- [ ] Keep the finalized scope\n- [ ] Add migration tests");
+});
+
+test("FinalizePlan waits for a sibling AskUserQuestion before making the plan ready", async () => {
+  const workspace = createTempDir("doku-question-finalize-workspace-");
+  const home = createTempDir("doku-question-finalize-home-");
+  setHomeDir(home);
+  const finalPlan = "- [ ] Apply the user's selected migration strategy";
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallsResponse([
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Use an assumed migration strategy" },
+        id: "finalize-before-answer",
+      },
+      {
+        name: "AskUserQuestion",
+        args: {
+          questions: [
+            {
+              question: "Which migration strategy should the plan use?",
+              options: [{ label: "Incremental" }, { label: "One-shot" }],
+            },
+          ],
+        },
+        id: "ask-sibling-of-finalize",
+      },
+    ]),
+    createToolCallResponse("FinalizePlan", { plan: finalPlan }, "finalize-after-answer"),
+    createChatResponse("The answered plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+
+  const sessionId = await manager.createSession({
+    text: "Plan the migration",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+
+  assert.equal(manager.getSession(sessionId)?.status, "waiting_for_user");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.revision, 0);
+  const rejectedFinalize = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "finalize-before-answer";
+  });
+  assert.deepEqual(JSON.parse(rejectedFinalize?.content ?? ""), {
+    ok: false,
+    name: "FinalizePlan",
+    error: PENDING_QUESTION_FINALIZE_ERROR,
+  });
+
+  await manager.replySession(sessionId, { text: "Incremental", workflowMode: WORKFLOW_MODE.PLAN });
+
+  assert.equal(manager.getSession(sessionId)?.status, "completed");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.revision, 1);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.markdown, finalPlan);
 });
 
 test("an approved implementation remains active when the turn limit is reached", async () => {
@@ -853,7 +917,7 @@ test("createSession stores /init and sends the active .doku project AGENTS path 
   assert.ok(!systemContents.includes("root project instructions"));
 });
 
-test("createSession appends default system prompts in prefix-cache-friendly order", async () => {
+test("createSession appends stable system prompts in prefix-cache-friendly order", async () => {
   const workspace = createTempDir("doku-system-order-workspace-");
   const home = createTempDir("doku-system-order-home-");
   setHomeDir(home);
@@ -871,7 +935,8 @@ test("createSession appends default system prompts in prefix-cache-friendly orde
     .map((message) => message.content ?? "");
 
   assert.equal(systemContents.length >= 4, true);
-  assert.match(systemContents[0] ?? "", /# Available Tools/);
+  assert.doesNotMatch(systemContents[0] ?? "", /# Available Tools/);
+  assert.match(systemContents[0] ?? "", /# Operating Principles/);
   assert.doesNotMatch(systemContents[0] ?? "", /# Local Workspace Environment/);
   assert.doesNotMatch(systemContents[0] ?? "", /The current LLM model is test-model/);
   assert.match(systemContents[1] ?? "", /<agent-drift-guard-skill>/);
@@ -2613,6 +2678,7 @@ function createMockedClientSessionManager(
 
 type MockChatRequest = {
   stream?: boolean;
+  messages?: unknown[];
   tools?: Array<{ function?: { name?: string } }>;
 };
 

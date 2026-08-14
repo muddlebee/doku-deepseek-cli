@@ -150,6 +150,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
       provider,
       profile: options.profile,
       tools: deps.getTools?.() ?? options.tools,
+      modelName: options.model,
       maxTurns: 1,
       tracingEnabled: options.tracingEnabled,
       executeTool: (invocation) => deps.executeTool(sessionId, invocation, provider.supportsImages),
