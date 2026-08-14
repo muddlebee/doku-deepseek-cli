@@ -34,6 +34,14 @@ test("workflow moves from planning through implementation without changing the a
   assert.equal(completed.plan?.markdown, "- [ ] Add JSON export");
 });
 
+test("each planning cycle receives a unique identity even when revisions restart", () => {
+  const first = completeImplementation(startImplementation(approvePlan(finalizePlan(startPlanning("First"), "First"))));
+  const second = changeWorkflowMode(first, WORKFLOW_MODE.PLAN);
+
+  assert.notEqual(first.plan?.planId, second.plan?.planId);
+  assert.equal(second.plan?.revision, 0);
+});
+
 test("workflow requires a finalized plan before approval", () => {
   assert.throws(() => approvePlan(startPlanning("Add exports")), /not ready/i);
 });

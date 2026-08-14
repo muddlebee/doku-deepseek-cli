@@ -36,8 +36,9 @@ export function getAgentProfile(mode: WorkflowMode): AgentProfile {
 }
 
 export function filterToolsForProfile(tools: ToolDefinition[], profile: AgentProfile): ToolDefinition[] {
-  return tools.filter((tool) => {
-    const name = tool.function.name;
-    return (!profile.allowedTools || profile.allowedTools.has(name)) && !profile.excludedTools?.has(name);
-  });
+  return tools.filter((tool) => isToolAllowedForProfile(tool.function.name, profile));
+}
+
+export function isToolAllowedForProfile(name: string, profile: AgentProfile): boolean {
+  return (!profile.allowedTools || profile.allowedTools.has(name)) && !profile.excludedTools?.has(name);
 }

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import type { SkillCatalog } from "./skill-catalog";
 import { BUILTIN_SKILL_NAME } from "../common/builtin-skills";
-import type { SessionMessage, SkillInfo, UserPromptContent } from "./types";
+import { WORKFLOW_MODE, type SessionMessage, type SkillInfo, type UserPromptContent } from "./types";
 
 const MAX_AUTOMATIC_SKILLS = 1;
 
@@ -20,7 +20,7 @@ export async function appendPromptSkills(
   existingSession: boolean,
   deps: PromptSkillDependencies
 ): Promise<void> {
-  if (prompt.text && !hasExplicitSkills(prompt)) {
+  if (prompt.text && prompt.workflowMode !== WORKFLOW_MODE.PLAN && !hasExplicitSkills(prompt)) {
     const skills = await deps.catalog.list(existingSession ? sessionId : undefined);
     const names = await deps.identify(skills, prompt.text, signal, existingSession ? sessionId : undefined);
     throwIfAborted(signal);

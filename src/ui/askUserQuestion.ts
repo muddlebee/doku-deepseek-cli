@@ -47,10 +47,11 @@ export function findPendingAskUserQuestion(
 }
 
 export function formatAskUserQuestionAnswers(answers: AskUserQuestionAnswers): string {
-  const answersText = Object.entries(answers)
-    .map(([question, answer]) => `"${escapeAnswerPart(question)}"="${escapeAnswerPart(answer)}"`)
-    .join(", ");
-  return `Answers to your questions: ${answersText}. Continue with these answers.`;
+  const answerLines = Object.entries(answers).flatMap(([question, answer]) => [
+    `- ${normalizeAnswerPart(question)}`,
+    `  Answer: ${normalizeAnswerPart(answer)}`,
+  ]);
+  return ["Answers to your questions:", ...answerLines, "", "Continue with these answers."].join("\n");
 }
 
 export function formatAskUserQuestionDecline(): string {
@@ -128,6 +129,6 @@ function normalizeOption(raw: unknown): AskUserQuestionOption | null {
   };
 }
 
-function escapeAnswerPart(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s+/g, " ").trim();
+function normalizeAnswerPart(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }

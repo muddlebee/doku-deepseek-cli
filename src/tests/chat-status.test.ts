@@ -50,6 +50,19 @@ test("chat status follows error, waiting, tool, and reasoning priority", () => {
   );
 });
 
+test("chat status distinguishes a turn limit from a completed turn", () => {
+  assert.deepEqual(
+    buildChatStatus({
+      error: null,
+      waitingForUser: false,
+      busy: false,
+      loadingText: null,
+      entry: entry({ status: "needs_continuation" }),
+    }),
+    { kind: "stopped", text: "Turn limit reached · Run /continue to keep going" }
+  );
+});
+
 test("chat status confirms interruption and advertises continue", () => {
   const result = buildChatStatus({
     error: null,

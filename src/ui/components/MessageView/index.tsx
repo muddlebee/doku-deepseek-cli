@@ -203,11 +203,7 @@ function PlanPreview({ lines }: { lines: string[] }): React.ReactElement {
     <Box flexDirection="column" marginLeft={2}>
       <Text dimColor>└ Plan</Text>
       <Box flexDirection="column" marginLeft={2}>
-        {lines.map((line, index) => (
-          <Text key={`${index}-${line}`} wrap="wrap">
-            {line}
-          </Text>
-        ))}
+        <Text wrap="wrap">{renderMarkdown(lines.join("\n"))}</Text>
       </Box>
     </Box>
   );

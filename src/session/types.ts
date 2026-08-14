@@ -1,4 +1,11 @@
-export type SessionStatus = "failed" | "pending" | "processing" | "waiting_for_user" | "completed" | "interrupted";
+export type SessionStatus =
+  | "failed"
+  | "pending"
+  | "processing"
+  | "waiting_for_user"
+  | "needs_continuation"
+  | "completed"
+  | "interrupted";
 
 export const WORKFLOW_MODE = {
   BUILD: "build",
@@ -18,6 +25,7 @@ export const PLAN_STATUS = {
 export type PlanStatus = (typeof PLAN_STATUS)[keyof typeof PLAN_STATUS];
 
 export type SessionPlan = {
+  planId: string;
   status: PlanStatus;
   revision: number;
   request: string;
@@ -99,6 +107,7 @@ export type MessageMeta = {
   skill?: SkillInfo;
   pendingApproval?: boolean;
   notice?: "error";
+  workflowSnapshot?: SessionWorkflow;
 };
 
 export type SessionMessageRole = "system" | "user" | "assistant" | "tool";

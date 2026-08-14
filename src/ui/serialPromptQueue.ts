@@ -1,0 +1,77 @@
+export type QueuedPrompt<T> = Readonly<{
+  id: string;
+  submission: T;
+}>;
+
+type SerialPromptQueueOptions<T> = {
+  process: (submission: T) => Promise<void>;
+  onPendingChange: (pending: readonly QueuedPrompt<T>[]) => void;
+  onError: (error: unknown) => void;
+  canContinue?: () => boolean;
+  createId?: () => string;
+  maxPending?: number;
+};
+
+const DEFAULT_MAX_PENDING = 20;
+
+export class SerialPromptQueue<T> {
+  private readonly pending: QueuedPrompt<T>[] = [];
+  private processing = false;
+  private paused = false;
+  private readonly createId: () => string;
+  private readonly maxPending: number;
+
+  constructor(private readonly options: SerialPromptQueueOptions<T>) {
+    this.createId = options.createId ?? (() => crypto.randomUUID());
+    this.maxPending = options.maxPending ?? DEFAULT_MAX_PENDING;
+  }
+
+  enqueue(submission: T): boolean {
+    if (this.pending.length >= this.maxPending) return false;
+    this.pending.push({ id: this.createId(), submission });
+    this.emitPending();
+    this.startDrain();
+    return true;
+  }
+
+  resume(): void {
+    this.paused = false;
+    this.startDrain();
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.pending.length > 0) {
+        const next = this.pending.shift();
+        this.emitPending();
+        if (!next) continue;
+        try {
+          await this.options.process(next.submission);
+        } catch (error) {
+          this.options.onError(error);
+        }
+        if (this.options.canContinue && !this.options.canContinue()) {
+          this.paused = true;
+          break;
+        }
+      }
+    } finally {
+      this.processing = false;
+      this.emitPending();
+    }
+  }
+
+  private emitPending(): void {
+    this.options.onPendingChange([...this.pending]);
+  }
+
+  private startDrain(): void {
+    if (this.processing || this.paused || this.pending.length === 0) return;
+    if (this.options.canContinue && !this.options.canContinue()) {
+      this.paused = true;
+      return;
+    }
+    this.processing = true;
+    void this.drain();
+  }
+}

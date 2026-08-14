@@ -127,12 +127,27 @@ test("planning workflow persists revisions and hands the finalized plan to build
     .reverse()
     .find((message) => message.role === "user" && message.content === "/build");
   const handoff = (manager as any).renderAgentMessageContent(buildMessage) as string;
+  assert.equal(
+    buildMessage?.meta?.workflowSnapshot?.plan?.markdown,
+    "- [ ] Add export model\n- [ ] Add migration tests"
+  );
   assert.match(handoff, /Original request:\nAdd session export support/);
   assert.match(handoff, /Approved revision: 2/);
   assert.match(handoff, /Add migration tests/);
 
   const restored = createSessionManager(workspace, "machine-id-plan-workflow-restored");
   assert.deepEqual(restored.getSession(sessionId)?.workflow, implementing);
+
+  const nextPlanningCycle = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+  assert.notEqual(nextPlanningCycle.workflow.plan?.planId, implementing?.plan?.planId);
+  (manager as any).handleWorkflowToolResult(sessionId, {
+    ok: true,
+    name: "FinalizePlan",
+    metadata: { plan: "- [ ] Replace the export feature with imports" },
+  });
+  const historicalHandoff = (manager as any).renderAgentMessageContent(buildMessage) as string;
+  assert.match(historicalHandoff, /Add migration tests/);
+  assert.doesNotMatch(historicalHandoff, /Replace the export feature/);
 });
 
 test("workflow mode can switch before a planning prompt without running the agent", async () => {
@@ -149,9 +164,14 @@ test("workflow mode can switch before a planning prompt without running the agen
   assert.equal(planning.workflow.plan?.status, PLAN_STATUS.DRAFT);
   assert.equal(planning.workflow.plan?.request, "");
 
-  (manager as any).identifyMatchingSkillNames = async () => ["planning-and-task-breakdown"];
+  let automaticSkillMatchingRan = false;
+  manager.identifyMatchingSkillNames = async () => {
+    automaticSkillMatchingRan = true;
+    return ["planning-and-task-breakdown"];
+  };
   await manager.replySession(sessionId, { text: "Plan export support", workflowMode: WORKFLOW_MODE.PLAN });
   assert.equal(manager.getSession(sessionId)?.workflow.plan?.request, "Plan export support");
+  assert.equal(automaticSkillMatchingRan, false);
   assert.equal(
     manager
       .listSessionMessages(sessionId)
@@ -159,9 +179,57 @@ test("workflow mode can switch before a planning prompt without running the agen
     false
   );
 
+  await manager.replySession(sessionId, { text: "Keep the plan concise" });
+  assert.equal(automaticSkillMatchingRan, false);
+
   const build = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
   assert.equal(build.workflow.mode, WORKFLOW_MODE.BUILD);
   assert.equal(build.workflow.plan?.status, PLAN_STATUS.DRAFT);
+});
+
+test("an approved implementation remains active when the turn limit is reached", async () => {
+  const workspace = createTempDir("doku-plan-turn-limit-workspace-");
+  const home = createTempDir("doku-plan-turn-limit-home-");
+  setHomeDir(home);
+  const notePath = path.join(workspace, "note.txt");
+  fs.writeFileSync(notePath, "context\n", "utf8");
+  const manager = createMockedClientSessionManager(
+    workspace,
+    [
+      {
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "read-before-turn-limit",
+                  type: "function",
+                  function: { name: "read", arguments: JSON.stringify({ file_path: notePath }) },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      },
+    ],
+    { maxTurns: 1 }
+  );
+  const activateSession = manager.activateSession.bind(manager);
+  manager.activateSession = async () => {};
+  const sessionId = await manager.createSession({ text: "Plan the implementation", workflowMode: WORKFLOW_MODE.PLAN });
+  (manager as any).handleWorkflowToolResult(sessionId, {
+    ok: true,
+    name: "FinalizePlan",
+    metadata: { plan: "- [ ] Read the context\n- [ ] Implement the change" },
+  });
+  manager.activateSession = activateSession;
+
+  await manager.approveAndBuild(sessionId);
+
+  assert.equal(manager.getSession(sessionId)?.status, "needs_continuation");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.IMPLEMENTING);
 });
 
 test("automatic skill matching cannot silently switch the default build workflow into plan mode", async () => {
@@ -1321,6 +1389,59 @@ test("restoreSessionConversation truncates messages before the selected user pro
   assert.equal(manager.getSession(sessionId)?.assistantReply, "first answer");
 });
 
+test("restoreSessionConversation rolls workflow state back with the retained conversation", async () => {
+  const workspace = createTempDir("doku-undo-workflow-workspace-");
+  const home = createTempDir("doku-undo-workflow-home-");
+  setHomeDir(home);
+
+  const finalizedPlan = "- [ ] Add session export support";
+  const manager = createMockedClientSessionManager(workspace, [
+    {
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "finalize-before-undo",
+                type: "function",
+                function: { name: "FinalizePlan", arguments: JSON.stringify({ plan: finalizedPlan }) },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({
+    text: "Plan session export support",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  const finalizedTool = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "finalize-before-undo";
+  });
+  assert.equal(finalizedTool?.meta?.workflowSnapshot?.plan?.status, PLAN_STATUS.READY);
+
+  manager.activateSession = async () => {};
+  await manager.replySession(sessionId, { text: "Refine the plan" });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  const userPrompts = manager.listSessionMessages(sessionId).filter((message) => message.role === "user");
+  const initialPrompt = userPrompts[0];
+  const refinementPrompt = userPrompts[1];
+  assert.ok(initialPrompt);
+  assert.ok(refinementPrompt);
+
+  manager.restoreSessionConversation(sessionId, refinementPrompt.id);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.markdown, finalizedPlan);
+
+  manager.restoreSessionConversation(sessionId, initialPrompt.id);
+  assert.deepEqual(manager.getSession(sessionId)?.workflow, { mode: WORKFLOW_MODE.BUILD, plan: null });
+});
+
 test("restoreSessionCode restores project files from the recorded Git checkpoint", async (t) => {
   if (!hasGit()) {
     t.skip("git is not available");
@@ -1399,6 +1520,58 @@ test("replySession /continue runs trailing pending tool calls before requesting 
     userMessages.some((message) => message.content === "/continue"),
     false
   );
+});
+
+test("Plan mode rejects a pending mutating tool call before continuing", async () => {
+  const workspace = createTempDir("doku-plan-pending-tool-workspace-");
+  const home = createTempDir("doku-plan-pending-tool-home-");
+  setHomeDir(home);
+
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("The pending write was not executed.", {
+      prompt_tokens: 9,
+      completion_tokens: 2,
+      total_tokens: 11,
+    }),
+  ]);
+  const activateSession = manager.activateSession.bind(manager);
+  manager.activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "first prompt" });
+  const targetPath = path.join(workspace, "should-not-exist.txt");
+  const pendingAssistant: SessionMessage = {
+    ...buildTestMessage("pending-write", sessionId, "assistant", "I will write the file."),
+    messageParams: {
+      tool_calls: [
+        {
+          id: "call-pending-write",
+          type: "function",
+          function: {
+            name: "write",
+            arguments: JSON.stringify({ file_path: targetPath, content: "unsafe\n" }),
+          },
+        },
+      ],
+    },
+  };
+  const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
+  fs.appendFileSync(
+    path.join(home, ".doku", "projects", projectCode, `${sessionId}.jsonl`),
+    `${JSON.stringify(pendingAssistant)}\n`,
+    "utf8"
+  );
+  manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+  manager.activateSession = activateSession;
+
+  await manager.replySession(sessionId, { text: "/continue" });
+
+  assert.equal(fs.existsSync(targetPath), false);
+  const rejection = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "call-pending-write";
+  });
+  assert.match(rejection?.content ?? "", /not allowed in doku-planner profile/i);
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.PLAN);
 });
 
 test("replySession preserves raw session messages when a previous tool call is pending", async () => {

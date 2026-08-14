@@ -177,7 +177,15 @@ export class FileSessionStore {
 }
 
 function normalizeStatus(status: unknown): SessionStatus {
-  return ["failed", "pending", "processing", "waiting_for_user", "completed", "interrupted"].includes(String(status))
+  return [
+    "failed",
+    "pending",
+    "processing",
+    "waiting_for_user",
+    "needs_continuation",
+    "completed",
+    "interrupted",
+  ].includes(String(status))
     ? (status as SessionStatus)
     : "pending";
 }

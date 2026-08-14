@@ -17,6 +17,7 @@ import {
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
 import type { AgentProfile } from "../agent/profiles";
+import { isToolAllowedForProfile } from "../agent/profiles";
 import {
   agentUsageToModelUsage,
   buildAgentInputItems,
@@ -36,7 +37,7 @@ import {
 } from "./agent-turn-state";
 import type { FileSessionStore } from "./file-session-store";
 import { buildToolResultSnippet } from "./tool-presentation";
-import { getTrailingPendingToolCalls } from "./tool-calls";
+import { getToolCallIdentity, getTrailingPendingToolCalls } from "./tool-calls";
 import type { LlmStreamProgress, SessionEntry, SessionMessage } from "./types";
 import { hasProcessStopFailure } from "./process-tracker";
 import { accumulateUsage, accumulateUsagePerModel } from "./usage";
@@ -65,6 +66,7 @@ export type AgentTurnDependencies = {
   ) => SessionMessage;
   onAssistantMessage: (message: SessionMessage, shouldConnect: boolean) => void;
   appendTools: AppendTools;
+  rejectTools?: (sessionId: string, toolCalls: unknown[], reason: string) => void;
   executeTool: (
     sessionId: string,
     invocation: AgentToolInvocation,
@@ -76,6 +78,16 @@ export type AgentTurnDependencies = {
   getTools?: () => ToolDefinition[];
   compactIfNeeded?: (activeTokens: number, signal?: AbortSignal) => Promise<void>;
 };
+
+export const AGENT_TURN_OUTCOME = {
+  COMPLETED: "completed",
+  FAILED: "failed",
+  INTERRUPTED: "interrupted",
+  NEEDS_CONTINUATION: "needs_continuation",
+  WAITING_FOR_USER: "waiting_for_user",
+} as const;
+
+export type AgentTurnOutcome = (typeof AGENT_TURN_OUTCOME)[keyof typeof AGENT_TURN_OUTCOME];
 
 export type AgentTurnOptions = {
   sessionId: string;
@@ -89,19 +101,42 @@ export type AgentTurnOptions = {
   profile?: AgentProfile;
 };
 
-export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDependencies): Promise<void> {
+export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDependencies): Promise<AgentTurnOutcome> {
   const { sessionId, provider, controller } = options;
   const pendingToolCalls = getTrailingPendingToolCalls(deps.listMessages(sessionId));
   if (pendingToolCalls.length) {
-    const execution = await deps.appendTools(sessionId, pendingToolCalls, controller.signal);
+    const allowedPendingToolCalls = pendingToolCalls.filter((toolCall) => {
+      const identity = getToolCallIdentity(toolCall);
+      return identity && (!options.profile || isToolAllowedForProfile(identity.name, options.profile));
+    });
+    const rejectedPendingToolCalls = pendingToolCalls.filter((toolCall) => !allowedPendingToolCalls.includes(toolCall));
+    if (rejectedPendingToolCalls.length) {
+      if (!deps.rejectTools) throw new Error("Pending tool-call rejection is not configured.");
+      deps.rejectTools(
+        sessionId,
+        rejectedPendingToolCalls,
+        `Tool execution is not allowed in ${options.profile?.name ?? "the active"} profile.`
+      );
+    }
+    const execution = allowedPendingToolCalls.length
+      ? await deps.appendTools(sessionId, allowedPendingToolCalls, controller.signal)
+      : { waitingForUser: false };
     if (execution.waitingForUser || deps.isInterrupted(sessionId)) {
-      deps.updateEntry(sessionId, (entry) => ({
-        ...entry,
-        toolCalls: pendingToolCalls,
-        status: execution.waitingForUser ? "waiting_for_user" : hasProcessStopFailure(entry) ? "failed" : "interrupted",
-        updateTime: new Date().toISOString(),
-      }));
-      return;
+      let failed = false;
+      deps.updateEntry(sessionId, (entry) => {
+        failed = hasProcessStopFailure(entry);
+        return {
+          ...entry,
+          toolCalls: allowedPendingToolCalls,
+          status: execution.waitingForUser ? "waiting_for_user" : failed ? "failed" : "interrupted",
+          updateTime: new Date().toISOString(),
+        };
+      });
+      return execution.waitingForUser
+        ? AGENT_TURN_OUTCOME.WAITING_FOR_USER
+        : failed
+          ? AGENT_TURN_OUTCOME.FAILED
+          : AGENT_TURN_OUTCOME.INTERRUPTED;
     }
   }
 
@@ -169,11 +204,11 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
         if (deps.isInterrupted(sessionId)) {
           await persistReplayableAgentHistory(agentSession, result.state.history);
           recordAgentTurnUsage(sessionId, options.model, result.runContext.usage, deps);
-          return;
+          return AGENT_TURN_OUTCOME.INTERRUPTED;
         }
         if (result.interruptions.length) {
           await persistInterruption(sessionId, result.state, result.interruptions[0], deps);
-          return;
+          return AGENT_TURN_OUTCOME.WAITING_FOR_USER;
         }
 
         removePausedAgentState(sessionId, deps.store.projectDir);
@@ -193,7 +228,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
           failReason: refusal,
           updateTime: new Date().toISOString(),
         }));
-        return;
+        return refusal ? AGENT_TURN_OUTCOME.FAILED : AGENT_TURN_OUTCOME.COMPLETED;
       } catch (error) {
         const state = getAgentRuntimeState(error);
         consumeResumedAnswer(sessionId, deps.store.projectDir, context, resumedAnswerConsumed);
@@ -204,7 +239,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
           const activeTokens = recordAgentTurnUsage(sessionId, options.model, state.usage, deps);
           if (turn === maxTurns) {
             completeAgentTurnAtLimit(sessionId, deps);
-            return;
+            return AGENT_TURN_OUTCOME.NEEDS_CONTINUATION;
           }
           await deps.compactIfNeeded?.(activeTokens, controller.signal);
           runtime = createRuntime();
@@ -223,7 +258,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
             agentSession,
             deps
           );
-          return;
+          return AGENT_TURN_OUTCOME.FAILED;
         }
 
         if (state) {
@@ -236,6 +271,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
   } finally {
     progress.end();
   }
+  return AGENT_TURN_OUTCOME.NEEDS_CONTINUATION;
 }
 
 async function buildRunInput(

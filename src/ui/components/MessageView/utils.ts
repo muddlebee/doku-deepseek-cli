@@ -10,7 +10,9 @@ export function isPlainRecord(value: unknown): value is Record<string, unknown> 
 
 /** Capitalizes the first character of a tool status name, falling back to "Tool". */
 export function formatStatusName(value: string): string {
-  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "Tool";
+  if (!value) return "Tool";
+  const spaced = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return `${spaced.charAt(0).toUpperCase()}${spaced.slice(1)}`;
 }
 
 /** Truncates a string to the given maximum length, appending an ellipsis when truncated. */

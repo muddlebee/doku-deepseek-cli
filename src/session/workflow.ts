@@ -1,9 +1,14 @@
+import * as crypto from "node:crypto";
 import { PLAN_STATUS, WORKFLOW_MODE, type SessionPlan, type SessionWorkflow } from "./types";
 
 const PLAN_STATUSES: ReadonlySet<unknown> = new Set(Object.values(PLAN_STATUS));
 
 export function createBuildWorkflow(): SessionWorkflow {
   return { mode: WORKFLOW_MODE.BUILD, plan: null };
+}
+
+export function createWorkflowSnapshot(workflow: SessionWorkflow): SessionWorkflow {
+  return { mode: workflow.mode, plan: workflow.plan ? { ...workflow.plan } : null };
 }
 
 export function changeWorkflowMode(
@@ -50,6 +55,7 @@ export function startPlanning(request: string, now = new Date().toISOString()): 
   return {
     mode: WORKFLOW_MODE.PLAN,
     plan: {
+      planId: crypto.randomUUID(),
       status: PLAN_STATUS.DRAFT,
       revision: 0,
       request: request.trim(),
@@ -154,6 +160,10 @@ function normalizePlan(value: unknown): SessionPlan | null {
   if (!isRecord(value) || !isPlanStatus(value.status)) return null;
   const now = new Date().toISOString();
   return {
+    planId:
+      typeof value.planId === "string" && value.planId
+        ? value.planId
+        : `legacy:${typeof value.updatedAt === "string" ? value.updatedAt : now}:${typeof value.revision === "number" ? value.revision : 0}`,
     status: value.status,
     revision: typeof value.revision === "number" && value.revision >= 0 ? value.revision : 0,
     request: typeof value.request === "string" ? value.request : "",

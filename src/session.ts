@@ -23,16 +23,29 @@ import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
 import { isUndoTargetMessage, SessionCheckpointManager } from "./session/checkpoint-manager";
-import { getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState, runAgentTurn } from "./session/agent-turn";
+import {
+  AGENT_TURN_OUTCOME,
+  getAgentHistoryPath,
+  hasPausedAgentTurn,
+  removeAgentTurnState,
+  runAgentTurn,
+} from "./session/agent-turn";
 import {
   approvePlan,
   changeWorkflowMode,
   completeImplementation,
-  finalizePlan,
-  preparePlanningTurn,
+  createWorkflowSnapshot,
   startImplementation,
-  updatePlanDraft,
 } from "./session/workflow";
+import {
+  applyPlanToolUpdate,
+  buildPlanHandoff,
+  getBuildMessagePlan,
+  parsePlanToolUpdate,
+  prepareWorkflowEntry,
+  restoreWorkflowFromMessages,
+  stampLatestWorkflowSnapshot,
+} from "./session/workflow-session";
 import {
   WORKFLOW_MODE,
   type BashTimeoutAdjustment,
@@ -40,6 +53,7 @@ import {
   type MessageMeta,
   type SessionEntry,
   type SessionMessage,
+  type SessionWorkflow,
   type SkillInfo,
   type UndoTarget,
   type UserPromptContent,
@@ -176,7 +190,10 @@ export class SessionManager {
       isInterrupted: (sessionId) => this.isInterrupted(sessionId),
       onStdout: options.onProcessStdout,
       onNeedsWebSearchSetup: options.onNeedsWebSearchSetup,
-      onToolResult: (sessionId, result) => this.handleWorkflowToolResult(sessionId, result),
+      onToolResult: (sessionId, result) => {
+        const workflowSnapshot = this.handleWorkflowToolResult(sessionId, result);
+        return workflowSnapshot ? { workflowSnapshot } : undefined;
+      },
     });
     this.mcpManager.prepare(this.getResolvedSettings().mcpServers);
   }
@@ -323,9 +340,11 @@ export class SessionManager {
       messages: this.messageFactory,
       removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
     });
-    this.prepareWorkflowForPrompt(sessionId, userPrompt);
+    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+    if (workflow) this.stampLatestMessageWorkflow(sessionId, workflow);
+    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
 
-    await this.appendSkills(sessionId, userPrompt, signal, false);
+    await this.appendSkills(sessionId, preparedPrompt, signal, false);
 
     this.activeSessionId = sessionId;
     await this.activateSession(sessionId, controller);
@@ -357,11 +376,12 @@ export class SessionManager {
     this.reportNewPrompt();
 
     this.checkpoints.ensureSession(sessionId);
-    this.prepareWorkflowForPrompt(sessionId, userPrompt);
-    const userMessage = this.buildUserMessage(sessionId, userPrompt);
+    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
+    const userMessage = this.buildUserMessage(sessionId, preparedPrompt, workflow ?? undefined);
     this.appendSessionMessage(sessionId, userMessage);
 
-    await this.appendSkills(sessionId, userPrompt, signal, true);
+    await this.appendSkills(sessionId, preparedPrompt, signal, true);
 
     this.activeSessionId = sessionId;
     await this.activateSession(sessionId, controller);
@@ -462,7 +482,7 @@ export class SessionManager {
           sessionController.signal
         );
       }
-      await runAgentTurn(
+      const turnOutcome = await runAgentTurn(
         {
           sessionId,
           provider: activeProvider,
@@ -485,6 +505,7 @@ export class SessionManager {
           onAssistantMessage: this.onAssistantMessage,
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
+          rejectTools: (id, calls, reason) => this.toolCoordinator.reject(id, calls, reason),
           executeTool: (id, invocation, supportsImages) => this.executeAgentTool(id, invocation, supportsImages),
           renderContent: (message) => this.renderAgentMessageContent(message),
           onProgress: this.onLlmStreamProgress,
@@ -498,7 +519,7 @@ export class SessionManager {
           },
         }
       );
-      this.completeActiveImplementation(sessionId);
+      if (turnOutcome === AGENT_TURN_OUTCOME.COMPLETED) this.completeActiveImplementation(sessionId);
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);
       const aborted = this.isAbortLikeError(error) || sessionController.signal.aborted;
@@ -562,54 +583,28 @@ export class SessionManager {
     }
   }
 
-  private prepareWorkflowForPrompt(sessionId: string, prompt: UserPromptContent): void {
-    this.updateSessionEntry(sessionId, (entry) => {
-      const requestedMode = this.resolveRequestedWorkflowMode(prompt);
-      const now = new Date().toISOString();
-      const workflow = requestedMode ? changeWorkflowMode(entry.workflow, requestedMode, now) : entry.workflow;
-      if (workflow.mode !== WORKFLOW_MODE.PLAN) {
-        if (workflow === entry.workflow) return entry;
-        return { ...entry, workflow, updateTime: now };
-      }
-      return {
-        ...entry,
-        workflow: preparePlanningTurn(workflow, prompt.text ?? "", now),
-        updateTime: now,
-      };
-    });
-  }
-
-  private resolveRequestedWorkflowMode(prompt: UserPromptContent): WorkflowMode | undefined {
-    if (prompt.workflowMode) return prompt.workflowMode;
-    if (prompt.skills?.some((skill) => skill.name === BUILTIN_SKILL_NAME.PLAN)) return WORKFLOW_MODE.PLAN;
-    if (prompt.skills?.some((skill) => skill.name === BUILTIN_SKILL_NAME.BUILD)) return WORKFLOW_MODE.BUILD;
-    return undefined;
+  private prepareWorkflowForPrompt(sessionId: string, prompt: UserPromptContent): SessionWorkflow | null {
+    const updated = this.updateSessionEntry(sessionId, (entry) => prepareWorkflowEntry(entry, prompt));
+    return updated?.workflow ?? null;
   }
 
   private completeActiveImplementation(sessionId: string): void {
-    this.updateSessionEntry(sessionId, (entry) => ({
+    const current = this.getSession(sessionId);
+    if (!current) return;
+    const workflow = completeImplementation(current.workflow);
+    if (workflow === current.workflow) return;
+    const updated = this.updateSessionEntry(sessionId, (entry) => ({
       ...entry,
-      workflow: entry.status === "completed" ? completeImplementation(entry.workflow) : entry.workflow,
+      workflow,
     }));
+    if (updated) this.stampLatestMessageWorkflow(sessionId, updated.workflow);
   }
 
-  private buildPlanHandoff(plan: NonNullable<SessionEntry["workflow"]["plan"]>): string {
-    return `# Approved Implementation Plan\n\nOriginal request:\n${plan.request}\n\nApproved revision: ${plan.revision}\n\n${plan.markdown}\n\nImplement this approved plan now. Preserve its scope and report any required deviation before making it.`;
-  }
-
-  private handleWorkflowToolResult(sessionId: string, result: ToolExecutionResult): void {
-    if (!result.ok || (result.name !== "UpdatePlan" && result.name !== "FinalizePlan")) return;
-    const plan = result.metadata?.plan;
-    if (typeof plan !== "string") return;
-    this.updateSessionEntry(sessionId, (entry) => {
-      if (entry.workflow.mode !== WORKFLOW_MODE.PLAN) return entry;
-      return {
-        ...entry,
-        workflow:
-          result.name === "FinalizePlan" ? finalizePlan(entry.workflow, plan) : updatePlanDraft(entry.workflow, plan),
-        updateTime: new Date().toISOString(),
-      };
-    });
+  private handleWorkflowToolResult(sessionId: string, result: ToolExecutionResult): SessionWorkflow | undefined {
+    const update = parsePlanToolUpdate(result);
+    if (!update) return undefined;
+    const updated = this.updateSessionEntry(sessionId, (entry) => applyPlanToolUpdate(entry, update));
+    return updated ? createWorkflowSnapshot(updated.workflow) : undefined;
   }
 
   private getPausedRunStatePath(sessionId: string): string {
@@ -793,9 +788,11 @@ export class SessionManager {
       | { tool_calls?: unknown[]; reasoning_content?: string }
       | null
       | undefined;
+    const workflow = restoreWorkflowFromMessages(keptMessages);
 
     this.updateSessionEntry(sessionId, (entry) => ({
       ...entry,
+      workflow,
       assistantReply: latestAssistant?.content ?? null,
       assistantThinking:
         typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
@@ -837,8 +834,12 @@ export class SessionManager {
     return this.sessionStore.updateEntry(sessionId, updater);
   }
 
-  private buildUserMessage(sessionId: string, prompt: UserPromptContent): SessionMessage {
-    return this.messageFactory.user(sessionId, prompt);
+  private buildUserMessage(
+    sessionId: string,
+    prompt: UserPromptContent,
+    workflowSnapshot?: SessionWorkflow
+  ): SessionMessage {
+    return this.messageFactory.user(sessionId, prompt, workflowSnapshot);
   }
 
   private renderInitCommandPrompt(): string {
@@ -894,10 +895,19 @@ export class SessionManager {
   private renderAgentMessageContent(message: SessionMessage): string {
     if (message.role === "user" && message.content === "/init") return this.renderInitCommandPrompt();
     if (message.role === "user" && message.content === "/build") {
-      const plan = this.getSession(message.sessionId)?.workflow.plan;
-      if (plan) return this.buildPlanHandoff(plan);
+      const workflow = this.getSession(message.sessionId)?.workflow;
+      if (workflow) {
+        const plan = getBuildMessagePlan(message, workflow);
+        if (plan) return buildPlanHandoff(plan);
+      }
     }
     return message.content ?? "";
+  }
+
+  private stampLatestMessageWorkflow(sessionId: string, workflow: SessionWorkflow): void {
+    const messages = this.listSessionMessages(sessionId);
+    if (messages.length === 0) return;
+    this.saveSessionMessages(sessionId, stampLatestWorkflowSnapshot(messages, workflow));
   }
 
   private maybeNotifyTaskCompletion(

@@ -10,10 +10,12 @@ import {
   IMAGE_ATTACHMENT_CLEAR_HINT,
   addUniqueSkill,
   formatImageAttachmentStatus,
+  formatQueuedPrompt,
   formatSelectedSkillsStatus,
   getPromptCursorPlacement,
   getPromptFooterHints,
   getNextWorkflowMode,
+  reconcileWorkflowSkills,
   getPromptReturnKeyAction,
   isClearImageAttachmentsShortcut,
   parseTerminalInput,
@@ -272,6 +274,12 @@ test("buildInitPromptSubmission preserves manually selected skills", () => {
     selectedSkills: [skill],
   });
   assert.deepEqual(buildInitPromptSubmission([]), { text: "/init", imageUrls: [], selectedSkills: undefined });
+  assert.deepEqual(buildInitPromptSubmission([skill], WORKFLOW_MODE.PLAN), {
+    text: "/init",
+    imageUrls: [],
+    selectedSkills: [skill],
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
 });
 
 test("buildSkillPromptSubmission submits slash command arguments with selected skill", () => {
@@ -417,4 +425,40 @@ test("prompt footer keeps only essential hints in narrow terminals", () => {
 test("workflow mode shortcut alternates between build and plan", () => {
   assert.equal(getNextWorkflowMode(WORKFLOW_MODE.BUILD), WORKFLOW_MODE.PLAN);
   assert.equal(getNextWorkflowMode(WORKFLOW_MODE.PLAN), WORKFLOW_MODE.BUILD);
+});
+
+test("visible workflow mode removes conflicting workflow skills", () => {
+  const planSkill: SkillInfo = {
+    name: "planning-and-task-breakdown",
+    path: "builtin:planning-and-task-breakdown",
+    description: "Plan",
+  };
+  const buildSkill: SkillInfo = {
+    name: "incremental-implementation",
+    path: "builtin:incremental-implementation",
+    description: "Build",
+  };
+  const generalSkill: SkillInfo = { name: "testing", path: "/testing/SKILL.md", description: "Test" };
+
+  assert.deepEqual(reconcileWorkflowSkills([buildSkill, planSkill, generalSkill], WORKFLOW_MODE.PLAN), [
+    planSkill,
+    generalSkill,
+  ]);
+  assert.deepEqual(reconcileWorkflowSkills([buildSkill, planSkill, generalSkill], WORKFLOW_MODE.BUILD), [
+    buildSkill,
+    generalSkill,
+  ]);
+});
+
+test("queued prompts use a compact terminal label", () => {
+  assert.equal(formatQueuedPrompt({ text: "Review\nthis change", imageUrls: [] }), "Review this change");
+  assert.equal(formatQueuedPrompt({ text: "", imageUrls: ["data:image/png;base64,test"] }), "[1 image]");
+  assert.equal(
+    formatQueuedPrompt({
+      text: "",
+      imageUrls: [],
+      selectedSkills: [{ name: "testing", path: "/testing/SKILL.md", description: "Test" }],
+    }),
+    "Use skills: testing"
+  );
 });

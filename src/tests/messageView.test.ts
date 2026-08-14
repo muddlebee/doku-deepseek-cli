@@ -151,7 +151,7 @@ test("renderMessageToStdout renders UpdatePlan tool messages with Plan preview a
     meta: { resultMd: "Plan updated successfully" },
   });
   const output = renderMessageToStdout(msg, RawMode.Raw);
-  assert.ok(output.includes("UpdatePlan"));
+  assert.ok(output.includes("Update Plan"));
   assert.ok(output.includes("└ Plan"));
   assert.ok(output.includes("Step 1: Analyze"));
   assert.ok(output.includes(" Result"));
@@ -166,7 +166,7 @@ test("renderMessageToStdout renders UpdatePlan tool messages with Plan preview",
   });
   const msg = makeSessionMessage({ role: "tool", content: payload });
   const output = renderMessageToStdout(msg, RawMode.Raw);
-  assert.ok(output.includes("UpdatePlan"));
+  assert.ok(output.includes("Update Plan"));
   assert.ok(output.includes("└ Plan"));
   assert.ok(output.includes("Step 1: Analyze"));
   assert.ok(output.includes("Step 2: Implement"));
@@ -182,7 +182,7 @@ test("renderMessageToStdout renders the finalized plan before approval", () => {
   });
   const output = renderMessageToStdout(makeSessionMessage({ role: "tool", content: payload }), RawMode.Raw);
 
-  assert.ok(output.includes("FinalizePlan"));
+  assert.ok(output.includes("Finalize Plan"));
   assert.ok(output.includes("└ Plan"));
   assert.ok(output.includes("Step 1: Analyze"));
   assert.ok(output.includes("Step 3: Test"));

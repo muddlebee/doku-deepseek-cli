@@ -2,8 +2,8 @@ import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
 import type { ToolExecutionResult, ToolExecutor } from "../tools/executor";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
 import type { SessionProcessTracker } from "./process-tracker";
-import { findToolFunction } from "./tool-calls";
-import type { SessionMessage } from "./types";
+import { findToolFunction, getToolCallIdentity } from "./tool-calls";
+import type { MessageMeta, SessionMessage } from "./types";
 
 export type ToolCoordinatorDependencies = {
   executor: ToolExecutor;
@@ -18,7 +18,7 @@ export type ToolCoordinatorDependencies = {
   isInterrupted: (sessionId: string) => boolean;
   onStdout?: (pid: number, chunk: string) => void;
   onNeedsWebSearchSetup?: () => void;
-  onToolResult?: (sessionId: string, result: ToolExecutionResult) => void;
+  onToolResult?: (sessionId: string, result: ToolExecutionResult) => MessageMeta | undefined;
 };
 
 export class SessionToolCoordinator {
@@ -71,11 +71,12 @@ export class SessionToolCoordinator {
     for (const execution of executions) {
       waitingForUser ||= execution.result.awaitUserResponse === true;
       const toolFunction = findToolFunction(toolCalls, execution.toolCallId);
+      const resultMeta = this.deps.onToolResult?.(sessionId, execution.result);
       const message = this.deps.buildTool(sessionId, execution.toolCallId, execution.content, toolFunction);
+      if (resultMeta) message.meta = { ...message.meta, ...resultMeta };
       if (pendingApproval) message.meta = { ...message.meta, pendingApproval: true };
       this.deps.appendMessage(sessionId, message);
       this.deps.emitMessage(message, true);
-      this.deps.onToolResult?.(sessionId, execution.result);
       for (const followUp of execution.result.followUpMessages ?? []) {
         if (followUp.role === "system") {
           followUps.push(this.deps.buildSystem(sessionId, followUp.content, followUp.contentParams ?? null));
@@ -87,6 +88,18 @@ export class SessionToolCoordinator {
     }
     followUps.forEach((message) => this.deps.appendMessage(sessionId, message));
     return { waitingForUser, ...(agentOutput ? { agentOutput } : {}) };
+  }
+
+  reject(sessionId: string, toolCalls: unknown[], reason: string): void {
+    for (const toolCall of toolCalls) {
+      const identity = getToolCallIdentity(toolCall);
+      if (!identity) continue;
+      const content = JSON.stringify({ ok: false, name: identity.name, error: reason });
+      const toolFunction = findToolFunction(toolCalls, identity.id);
+      const message = this.deps.buildTool(sessionId, identity.id, content, toolFunction);
+      this.deps.appendMessage(sessionId, message);
+      this.deps.emitMessage(message, true);
+    }
   }
 }
 

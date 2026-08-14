@@ -16,6 +16,7 @@ test("formatSessionStatus maps status values to display labels", () => {
   assert.equal(formatSessionStatus("processing"), "running");
   assert.equal(formatSessionStatus("pending"), "pending");
   assert.equal(formatSessionStatus("waiting_for_user"), "waiting");
+  assert.equal(formatSessionStatus("needs_continuation"), "continue");
   assert.equal(formatSessionStatus("failed"), "failed");
   assert.equal(formatSessionStatus("interrupted"), "stopped");
   assert.equal(formatSessionStatus("unknown_status" as any), "unknown_status");

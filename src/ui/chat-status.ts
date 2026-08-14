@@ -32,6 +32,9 @@ export function buildChatStatus(input: ChatStatusInput): ChatStatus {
   if (input.entry?.status === "interrupted") {
     return { kind: "stopped", text: "Turn stopped · Run /continue to resume" };
   }
+  if (input.entry?.status === "needs_continuation") {
+    return { kind: "stopped", text: "Turn limit reached · Run /continue to keep going" };
+  }
   if (input.entry?.status === "completed") {
     const tokenText =
       input.entry.activeTokens > 0 ? ` · ${input.entry.activeTokens.toLocaleString()} context tokens` : "";

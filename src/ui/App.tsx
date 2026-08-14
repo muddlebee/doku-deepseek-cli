@@ -49,6 +49,7 @@ import { PlanHandoffPrompt } from "./PlanHandoffPrompt";
 import { PLAN_STATUS, WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
+import { SerialPromptQueue, type QueuedPrompt } from "./serialPromptQueue";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -70,6 +71,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const writeRef = useRef(write);
   const lastRenderedColumnsRef = useRef<number | null>(null);
   const messagesRef = useRef<SessionMessage[]>([]);
+  const sessionManagerRef = useRef<SessionManager | null>(null);
+  const promptProcessorRef = useRef<((submission: PromptSubmission) => Promise<void>) | null>(null);
+  const promptQueueRef = useRef<SerialPromptQueue<PromptSubmission> | null>(null);
   const [view, setView] = useState<AppView>("chat");
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -91,6 +95,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [mcpStatuses, setMcpStatuses] = useState<ReturnType<typeof sessionManager.getMcpStatus>>([]);
   const [showProcessStdout, setShowProcessStdout] = useState(false);
   const [pendingWorkflowMode, setPendingWorkflowMode] = useState<WorkflowMode>(WORKFLOW_MODE.BUILD);
+  const [queuedPrompts, setQueuedPrompts] = useState<readonly QueuedPrompt<PromptSubmission>[]>([]);
 
   const openSecondaryView = useCallback((nextView: Exclude<AppView, "chat">): void => {
     setShowWelcome(false);
@@ -155,6 +160,24 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       },
     });
   }, [openSecondaryView, projectRoot]);
+  sessionManagerRef.current = sessionManager;
+
+  if (!promptQueueRef.current) {
+    promptQueueRef.current = new SerialPromptQueue({
+      process: async (submission) => {
+        const processor = promptProcessorRef.current;
+        if (!processor) throw new Error("The prompt processor is not ready.");
+        await processor(submission);
+      },
+      onPendingChange: setQueuedPrompts,
+      onError: (error) => setErrorLine(error instanceof Error ? error.message : String(error)),
+      canContinue: () => {
+        const manager = sessionManagerRef.current;
+        const sessionId = manager?.getActiveSessionId();
+        return !manager || !sessionId || manager.getSession(sessionId)?.status !== "waiting_for_user";
+      },
+    });
+  }
 
   const closeSecondaryView = useCallback((): void => {
     setView((current) => transitionView(current, { type: "close" }));
@@ -397,12 +420,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     [projectRoot, redrawStaticChat, sessionManager]
   );
 
-  const handleSubmit = useCallback(
-    (submission: PromptSubmission) => {
-      void handlePrompt(submission);
-    },
-    [handlePrompt]
-  );
+  const handleSubmit = useCallback((submission: PromptSubmission) => {
+    if (!promptQueueRef.current?.enqueue(submission)) {
+      setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
+    }
+  }, []);
+
+  promptProcessorRef.current = handlePrompt;
 
   const handleWorkflowModeChange = useCallback(
     (nextMode: WorkflowMode): void => {
@@ -628,7 +652,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   );
   const shouldShowQuestionPrompt = Boolean(pendingQuestion && !dismissedQuestionIds.has(pendingQuestion.messageId));
   const activePlan = activeEntry?.workflow.plan ?? null;
-  const activePlanDismissalKey = activeEntry && activePlan ? `${activeEntry.id}:${activePlan.revision}` : null;
+  const activePlanDismissalKey =
+    activeEntry && activePlan ? `${activeEntry.id}:${activePlan.planId}:${activePlan.revision}` : null;
   const shouldShowPlanHandoff = Boolean(
     activeEntry?.workflow.mode === WORKFLOW_MODE.PLAN &&
     activePlan?.status === PLAN_STATUS.READY &&
@@ -680,10 +705,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleQuestionAnswers = useCallback(
     (answers: AskUserQuestionAnswers) => {
-      void handlePrompt({
-        text: formatAskUserQuestionAnswers(answers),
-        imageUrls: [],
-      });
+      void handlePrompt({ text: formatAskUserQuestionAnswers(answers), imageUrls: [] }).finally(() =>
+        promptQueueRef.current?.resume()
+      );
     },
     [handlePrompt]
   );
@@ -693,7 +717,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       return;
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
-    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] });
+    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] }).finally(() =>
+      promptQueueRef.current?.resume()
+    );
   }, [handlePrompt, pendingQuestion]);
 
   if (mode === RawMode.Raw) {
@@ -733,6 +759,18 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         <Box marginLeft={1} gap={1}>
           <Text color={chatStatusColor(chatStatus.kind)}>{chatStatusSymbol(chatStatus.kind)}</Text>
           <Text dimColor>{chatStatus.text}</Text>
+        </Box>
+      ) : null}
+      {view === "chat" && queuedPrompts.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          {queuedPrompts.map((queuedPrompt) => (
+            <Box key={queuedPrompt.id} gap={1}>
+              <Text color="gray">Queued</Text>
+              <Text dimColor wrap="wrap">
+                {formatQueuedPrompt(queuedPrompt.submission)}
+              </Text>
+            </Box>
+          ))}
         </Box>
       ) : null}
       {showProcessStdout ? (
@@ -838,6 +876,15 @@ function buildSyntheticUserMessage(content: string, imageCount: number): Session
     createTime: now,
     updateTime: now,
   };
+}
+
+export function formatQueuedPrompt(submission: PromptSubmission): string {
+  const text = submission.text.trim();
+  if (text) return text.replace(/\s+/g, " ");
+  const skillNames = submission.selectedSkills?.map((skill) => skill.name).filter(Boolean) ?? [];
+  if (skillNames.length > 0) return `Use skills: ${skillNames.join(", ")}`;
+  const imageCount = submission.imageUrls.length;
+  return imageCount === 1 ? "[1 image]" : `[${imageCount} images]`;
 }
 
 export function buildPromptDraftFromSessionMessage(message: SessionMessage, nonce: number): PromptDraft {
