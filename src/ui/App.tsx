@@ -49,7 +49,12 @@ import { PlanHandoffPrompt } from "./PlanHandoffPrompt";
 import { PLAN_STATUS, WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
-import { SerialPromptQueue, shouldPausePromptQueue, type QueuedPrompt } from "./serialPromptQueue";
+import {
+  SerialPromptQueue,
+  shouldPausePromptQueue,
+  shouldResumePromptQueueAfterContinuation,
+  type QueuedPrompt,
+} from "./serialPromptQueue";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -428,14 +433,19 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleSubmit = useCallback(
     (submission: PromptSubmission) => {
-      const sessionId = sessionManager.getActiveSessionId();
-      const status = sessionId ? sessionManager.getSession(sessionId)?.status : undefined;
-      if (status === "needs_continuation" && submission.command) {
+      if (promptQueueRef.current?.isPaused() && submission.command) {
         if (QUEUE_DISCARD_COMMANDS.has(submission.command)) {
           promptQueueRef.current?.clear();
         }
         void handlePrompt(submission).finally(() => {
-          if (submission.command === "continue") promptQueueRef.current?.resume();
+          if (submission.command !== "continue") return;
+          const continuedSessionId = sessionManager.getActiveSessionId();
+          const continuedStatus = continuedSessionId
+            ? sessionManager.getSession(continuedSessionId)?.status
+            : undefined;
+          if (shouldResumePromptQueueAfterContinuation(continuedStatus)) {
+            promptQueueRef.current?.resume();
+          }
         });
         return;
       }

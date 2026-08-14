@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionStatus } from "../session/types";
-import { SerialPromptQueue, shouldPausePromptQueue } from "../ui/serialPromptQueue";
+import {
+  SerialPromptQueue,
+  shouldPausePromptQueue,
+  shouldResumePromptQueueAfterContinuation,
+} from "../ui/serialPromptQueue";
 
 test("prompt queues pause only for statuses that require user-controlled resumption", () => {
   assert.equal(shouldPausePromptQueue("waiting_for_user"), true);
   assert.equal(shouldPausePromptQueue("needs_continuation"), true);
   assert.equal(shouldPausePromptQueue("completed"), false);
   assert.equal(shouldPausePromptQueue(null), false);
+});
+
+test("prompt queues resume after a continuation only when the turn completes", () => {
+  assert.equal(shouldResumePromptQueueAfterContinuation("completed"), true);
+  assert.equal(shouldResumePromptQueueAfterContinuation("needs_continuation"), false);
+  assert.equal(shouldResumePromptQueueAfterContinuation("interrupted"), false);
+  assert.equal(shouldResumePromptQueueAfterContinuation("failed"), false);
 });
 
 test("SerialPromptQueue processes submissions in order and exposes only waiting prompts", async () => {
@@ -145,11 +156,13 @@ test("SerialPromptQueue pauses pending prompts when a turn needs continuation", 
   await firstProcessed;
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(processed, ["first"]);
+  assert.equal(queue.isPaused(), true);
 
   status = "completed";
   queue.resume();
   await secondProcessed;
   assert.deepEqual(processed, ["first", "second"]);
+  assert.equal(queue.isPaused(), false);
 });
 
 test("SerialPromptQueue can discard pending prompts when a paused session is abandoned", async () => {
@@ -178,4 +191,5 @@ test("SerialPromptQueue can discard pending prompts when a paused session is aba
   queue.clear();
 
   assert.deepEqual(pendingSnapshots.at(-1), []);
+  assert.equal(queue.isPaused(), false);
 });
