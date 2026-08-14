@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef } from "react";
 import { Box, Text } from "ink";
 import { useTerminalInput } from "./prompt";
 import type { InputKey } from "./prompt";
@@ -6,7 +6,7 @@ import { UI_COLOR } from "./theme";
 
 type Props = {
   revision: number;
-  onImplement: () => void;
+  onImplement: () => boolean;
   onKeepPlanning: () => void;
   onSwitchMode: () => void;
 };
@@ -20,10 +20,13 @@ export const PLAN_HANDOFF_ACTION = {
 type PlanHandoffAction = (typeof PLAN_HANDOFF_ACTION)[keyof typeof PLAN_HANDOFF_ACTION];
 
 export function PlanHandoffPrompt({ revision, onImplement, onKeepPlanning, onSwitchMode }: Props): React.ReactElement {
+  const submittedRevisionRef = useRef<number | null>(null);
   useTerminalInput((_input, key) => {
+    if (submittedRevisionRef.current === revision) return;
     const action = getPlanHandoffAction(key);
-    if (action === PLAN_HANDOFF_ACTION.IMPLEMENT) onImplement();
-    else if (action === PLAN_HANDOFF_ACTION.KEEP_PLANNING) onKeepPlanning();
+    if (action === PLAN_HANDOFF_ACTION.IMPLEMENT) {
+      submittedRevisionRef.current = submitPlanHandoffOnce(submittedRevisionRef.current, revision, onImplement);
+    } else if (action === PLAN_HANDOFF_ACTION.KEEP_PLANNING) onKeepPlanning();
     else if (action === PLAN_HANDOFF_ACTION.SWITCH_MODE) onSwitchMode();
   });
 
@@ -41,6 +44,15 @@ export function PlanHandoffPrompt({ revision, onImplement, onKeepPlanning, onSwi
       </Box>
     </Box>
   );
+}
+
+export function submitPlanHandoffOnce(
+  submittedRevision: number | null,
+  revision: number,
+  submit: () => boolean
+): number | null {
+  if (submittedRevision === revision) return submittedRevision;
+  return submit() ? revision : submittedRevision;
 }
 
 export function getPlanHandoffAction(

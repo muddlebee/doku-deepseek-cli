@@ -6,7 +6,7 @@ import {
   shouldBypassPromptQueue,
   shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
-  shouldResumePromptQueueAfterContinuation,
+  shouldResumePromptQueueAfterRecovery,
 } from "../ui/serialPromptQueue";
 
 test("exit bypasses the prompt queue while a turn is active", () => {
@@ -27,11 +27,21 @@ test("prompt queues pause only for states that require user-controlled resumptio
   assert.equal(shouldPausePromptQueue(null, PLAN_STATUS.IMPLEMENTING), false);
 });
 
-test("prompt queues resume after a continuation only when the turn completes", () => {
-  assert.equal(shouldResumePromptQueueAfterContinuation("completed"), true);
-  assert.equal(shouldResumePromptQueueAfterContinuation("needs_continuation"), false);
-  assert.equal(shouldResumePromptQueueAfterContinuation("interrupted"), false);
-  assert.equal(shouldResumePromptQueueAfterContinuation("failed"), false);
+test("prompt queues resume only after a successful continuation or handoff build", () => {
+  assert.equal(shouldResumePromptQueueAfterRecovery("continue", "completed"), true);
+  assert.equal(shouldResumePromptQueueAfterRecovery("build", "completed"), true);
+  assert.equal(shouldResumePromptQueueAfterRecovery("continue", "needs_continuation"), false);
+  assert.equal(shouldResumePromptQueueAfterRecovery("build", "failed"), false);
+  assert.equal(shouldResumePromptQueueAfterRecovery("new", "completed"), false);
+});
+
+test("persisted recovery state bypasses the queue before its in-memory pause flag is initialized", () => {
+  const persistedPause = shouldPausePromptQueue("needs_continuation", PLAN_STATUS.READY);
+  assert.equal(persistedPause, true);
+  assert.equal(
+    shouldBypassPromptQueue({ text: "/continue", imageUrls: [], command: "continue" }, persistedPause),
+    true
+  );
 });
 
 test("only abandoning a paused implementation discards its queued build prompts", () => {
@@ -256,4 +266,29 @@ test("SerialPromptQueue can discard pending prompts when a paused session is aba
 
   assert.deepEqual(pendingSnapshots.at(-1), []);
   assert.equal(queue.isPaused(), false);
+});
+
+test("SerialPromptQueue can synchronize a persisted pause before accepting new submissions", async () => {
+  const processed: string[] = [];
+  let resolveProcessed: (() => void) | undefined;
+  const processedAfterResume = new Promise<void>((resolve) => {
+    resolveProcessed = resolve;
+  });
+  const queue = new SerialPromptQueue<string>({
+    process: async (submission) => {
+      processed.push(submission);
+      resolveProcessed?.();
+    },
+    onPendingChange: () => {},
+    onError: (error) => assert.fail(String(error)),
+  });
+
+  queue.pause();
+  queue.enqueue("wait for recovery");
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(processed, []);
+
+  queue.resume();
+  await processedAfterResume;
+  assert.deepEqual(processed, ["wait for recovery"]);
 });

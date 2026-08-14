@@ -55,7 +55,7 @@ import {
   shouldBypassPromptQueue,
   shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
-  shouldResumePromptQueueAfterContinuation,
+  shouldResumePromptQueueAfterRecovery,
   type QueuedPrompt,
 } from "./serialPromptQueue";
 
@@ -440,17 +440,21 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const handleSubmit = useCallback(
     (submission: PromptSubmission): boolean => {
       const promptQueue = promptQueueRef.current;
+      const sessionId = sessionManager.getActiveSessionId();
+      const session = sessionId ? sessionManager.getSession(sessionId) : null;
+      if (shouldPausePromptQueue(session?.status, session?.workflow.plan?.status)) {
+        promptQueue?.pause();
+      }
       if (shouldBypassPromptQueue(submission, promptQueue?.isPaused() ?? false)) {
         if (submission.command && QUEUE_DISCARD_COMMANDS.has(submission.command)) {
           promptQueue?.clear();
         }
         void handlePrompt(submission).finally(() => {
-          if (submission.command !== "continue") return;
-          const continuedSessionId = sessionManager.getActiveSessionId();
-          const continuedStatus = continuedSessionId
-            ? sessionManager.getSession(continuedSessionId)?.status
+          const recoveredSessionId = sessionManager.getActiveSessionId();
+          const recoveredStatus = recoveredSessionId
+            ? sessionManager.getSession(recoveredSessionId)?.status
             : undefined;
-          if (shouldResumePromptQueueAfterContinuation(continuedStatus)) {
+          if (shouldResumePromptQueueAfterRecovery(submission.command, recoveredStatus)) {
             promptQueue?.resume();
           }
         });
@@ -752,6 +756,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleQuestionAnswers = useCallback(
     (answers: AskUserQuestionAnswers) => {
+      promptQueueRef.current?.pause();
       void handlePrompt({ text: formatAskUserQuestionAnswers(answers), imageUrls: [] }).finally(() =>
         promptQueueRef.current?.resume()
       );
@@ -764,6 +769,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       return;
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
+    promptQueueRef.current?.pause();
     void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] }).finally(() =>
       promptQueueRef.current?.resume()
     );
@@ -863,9 +869,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       ) : shouldShowPlanHandoff && activePlan && activePlanDismissalKey && !busy ? (
         <PlanHandoffPrompt
           revision={activePlan.revision}
-          onImplement={() => {
-            handleSubmit({ text: "/build", imageUrls: [], command: "build" });
-          }}
+          onImplement={() => handleSubmit({ text: "/build", imageUrls: [], command: "build" })}
           onKeepPlanning={() => {
             setDismissedPlanRevisions((current) => new Set(current).add(activePlanDismissalKey));
           }}

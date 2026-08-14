@@ -288,7 +288,8 @@ the handoff input.
 
 `src/ui/serialPromptQueue.ts` serializes user-level operations before they reach `SessionManager`. Ordinary prompts,
 `/build`, and Enter on the plan handoff all enter this same queue. Bypass commands are limited to operations such as
-`/exit` and recovery through `/continue` when the queue is paused.
+`/exit` and recovery through `/continue` or an approved `/build` when the queue is paused. Before each submission, the
+UI synchronizes the in-memory pause flag from the persisted session so recovery works immediately after `/resume`.
 
 The queue pauses instead of draining when the active session:
 
@@ -296,8 +297,9 @@ The queue pauses instead of draining when the active session:
 - reaches the user-level turn limit and needs continuation; or
 - has an `IMPLEMENTING` plan whose turn failed or was interrupted.
 
-After a successful `/continue`, the queue resumes only when the continued session is genuinely `completed`. This
-prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
+After a successful `/continue` or approved `/build`, the queue resumes only when the recovered session is genuinely
+`completed`. This prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
+The plan handoff accepts Enter only once per revision, preventing repeated keypresses from creating duplicate builds.
 
 Switching from a stopped implementation back to Plan explicitly abandons that build. The queue discards its stale
 Build follow-ups and unpauses, allowing the next planning prompt to run without resuming the abandoned implementation.

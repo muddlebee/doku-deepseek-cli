@@ -42,6 +42,10 @@ export class SerialPromptQueue<T> {
     this.startDrain();
   }
 
+  pause(): void {
+    this.paused = true;
+  }
+
   isPaused(): boolean {
     return this.paused;
   }
@@ -98,8 +102,11 @@ export function shouldPausePromptQueue(
   return status === "waiting_for_user" || status === "needs_continuation" || implementationStopped;
 }
 
-export function shouldResumePromptQueueAfterContinuation(status: SessionStatus | null | undefined): boolean {
-  return status === "completed";
+export function shouldResumePromptQueueAfterRecovery(
+  command: PromptSubmission["command"],
+  status: SessionStatus | null | undefined
+): boolean {
+  return (command === "continue" || command === "build") && status === "completed";
 }
 
 export function shouldDiscardPromptQueueForModeChange(
