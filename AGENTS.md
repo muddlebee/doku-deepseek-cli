@@ -70,6 +70,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 
 ## Coding Style & Naming Conventions
 
+- Before changing TypeScript or TSX, read and follow [`docs/typescript-practices.md`](docs/typescript-practices.md). It is the repository's required implementation and review checklist; this file takes precedence if the two conflict.
 - Use TypeScript ES modules; keep imports explicit.
 - Prefer small, focused functions; centralize filesystem path construction when a path is reused across files.
 - Two-space indentation, Prettier-compatible formatting.
@@ -79,6 +80,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 ## Testing Guidelines
 
 - Add or update tests in `src/tests/` when changing command behavior, prompt rendering, session flow, tools, or settings.
+- For any terminal interaction or Ink UI change, also run a live smoke test in a real PTY and follow the relevant journey in [`docs/dogfooding.md`](docs/dogfooding.md). Piped stdin or captured non-TTY output is not a substitute.
 - Use Node's built-in `node:test` and `node:assert/strict` APIs to match existing tests.
 - Keep tests deterministic: use temporary directories (`fs.mkdtempSync`) and mock network calls where needed.
 - Temp dir prefixes follow the `doku-<purpose>-` convention.
