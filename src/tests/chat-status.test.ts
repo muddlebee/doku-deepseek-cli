@@ -19,6 +19,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     createTime: "2026-01-01T00:00:00.000Z",
     updateTime: "2026-01-01T00:00:00.000Z",
     processes: null,
+    workflow: { mode: "build", plan: null },
     ...overrides,
   };
 }

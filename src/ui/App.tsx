@@ -25,7 +25,7 @@ import {
   resolveSettingsSources,
 } from "../settings";
 import { loadProjectEnv } from "../common/project-env";
-import { PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
+import { getNextWorkflowMode, PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
 import { MessageView, RawModeExitPrompt } from "./components";
 import { SessionList } from "./SessionList";
 import { UndoSelector, type UndoRestoreMode } from "./UndoSelector";
@@ -45,6 +45,8 @@ import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
+import { PlanHandoffPrompt } from "./PlanHandoffPrompt";
+import { PLAN_STATUS, WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
 
@@ -80,6 +82,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [runningProcesses, setRunningProcesses] = useState<SessionEntry["processes"]>(null);
   const [activeEntry, setActiveEntry] = useState<SessionEntry | null>(null);
   const [dismissedQuestionIds, setDismissedQuestionIds] = useState<Set<string>>(() => new Set());
+  const [dismissedPlanRevisions, setDismissedPlanRevisions] = useState<Set<string>>(() => new Set());
   const [isExiting, setIsExiting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeNonce, setWelcomeNonce] = useState(0);
@@ -87,6 +90,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [nowTick, setNowTick] = useState(0);
   const [mcpStatuses, setMcpStatuses] = useState<ReturnType<typeof sessionManager.getMcpStatus>>([]);
   const [showProcessStdout, setShowProcessStdout] = useState(false);
+  const [pendingWorkflowMode, setPendingWorkflowMode] = useState<WorkflowMode>(WORKFLOW_MODE.BUILD);
 
   const openSecondaryView = useCallback((nextView: Exclude<AppView, "chat">): void => {
     setShowWelcome(false);
@@ -237,6 +241,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           setErrorLine(null);
           setRunningProcesses(null);
           setActiveEntry(null);
+          setPendingWorkflowMode(WORKFLOW_MODE.BUILD);
           setDismissedQuestionIds(new Set());
           setShowWelcome(true);
           setWelcomeNonce((n) => n + 1);
@@ -278,6 +283,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const prompt: UserPromptContent = {
         text: submission.text,
         imageUrls: submission.imageUrls,
+        workflowMode: submission.workflowMode,
         skills:
           submission.selectedSkills && submission.selectedSkills.length > 0 ? submission.selectedSkills : undefined,
       };
@@ -299,7 +305,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       setShowProcessStdout(false);
       processStdoutRef.current.clear();
       try {
-        await sessionManager.handleUserPrompt(prompt);
+        if (submission.command === "build") {
+          const sessionId = sessionManager.getActiveSessionId();
+          if (!sessionId) throw new Error("No finalized plan is ready to implement.");
+          await sessionManager.approveAndBuild(sessionId);
+        } else {
+          await sessionManager.handleUserPrompt(prompt);
+        }
         await refreshSkills();
         refreshSessionsList();
       } catch (error) {
@@ -390,6 +402,23 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       void handlePrompt(submission);
     },
     [handlePrompt]
+  );
+
+  const handleWorkflowModeChange = useCallback(
+    (nextMode: WorkflowMode): void => {
+      const sessionId = sessionManager.getActiveSessionId();
+      if (!sessionId) {
+        setPendingWorkflowMode(nextMode);
+        return;
+      }
+      try {
+        sessionManager.setWorkflowMode(sessionId, nextMode);
+        setErrorLine(null);
+      } catch (error) {
+        setErrorLine(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [sessionManager]
   );
 
   const reloadActiveSessionView = useCallback(
@@ -598,6 +627,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     [activeEntry?.status, messages]
   );
   const shouldShowQuestionPrompt = Boolean(pendingQuestion && !dismissedQuestionIds.has(pendingQuestion.messageId));
+  const activePlan = activeEntry?.workflow.plan ?? null;
+  const activePlanDismissalKey = activeEntry && activePlan ? `${activeEntry.id}:${activePlan.revision}` : null;
+  const shouldShowPlanHandoff = Boolean(
+    activeEntry?.workflow.mode === WORKFLOW_MODE.PLAN &&
+    activePlan?.status === PLAN_STATUS.READY &&
+    activePlanDismissalKey &&
+    !dismissedPlanRevisions.has(activePlanDismissalKey)
+  );
+  const currentWorkflowMode = activeEntry?.workflow.mode ?? pendingWorkflowMode;
   const loadingText = useMemo(
     () => (busy ? buildLoadingText({ progress: streamProgress, processes: runningProcesses, now: Date.now() }) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick forces periodic recalculation for spinner animation
@@ -737,6 +775,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           onSubmit={handleQuestionAnswers}
           onCancel={handleQuestionCancel}
         />
+      ) : shouldShowPlanHandoff && activePlan && activePlanDismissalKey && !busy ? (
+        <PlanHandoffPrompt
+          revision={activePlan.revision}
+          onImplement={() => void handlePrompt({ text: "/build", imageUrls: [], command: "build" })}
+          onKeepPlanning={() => {
+            setDismissedPlanRevisions((current) => new Set(current).add(activePlanDismissalKey));
+          }}
+          onSwitchMode={() => handleWorkflowModeChange(getNextWorkflowMode(currentWorkflowMode))}
+        />
       ) : isExiting ? null : (
         <PromptInput
           projectRoot={projectRoot}
@@ -747,10 +794,12 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           busy={busy}
           runningProcesses={runningProcesses}
           promptDraft={promptDraft}
+          workflowMode={currentWorkflowMode}
           onSubmit={handleSubmit}
           onModelConfigChange={handleModelConfigChange}
           onRawModeChange={handleRawModeChange}
           onInterrupt={handleInterrupt}
+          onWorkflowModeChange={handleWorkflowModeChange}
           onToggleProcessStdout={handleToggleProcessStdout}
           placeholder="Type your message..."
         />

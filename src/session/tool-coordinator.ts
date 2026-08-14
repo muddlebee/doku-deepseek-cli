@@ -1,5 +1,5 @@
 import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
-import type { ToolExecutor } from "../tools/executor";
+import type { ToolExecutionResult, ToolExecutor } from "../tools/executor";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
 import type { SessionProcessTracker } from "./process-tracker";
 import { findToolFunction } from "./tool-calls";
@@ -18,6 +18,7 @@ export type ToolCoordinatorDependencies = {
   isInterrupted: (sessionId: string) => boolean;
   onStdout?: (pid: number, chunk: string) => void;
   onNeedsWebSearchSetup?: () => void;
+  onToolResult?: (sessionId: string, result: ToolExecutionResult) => void;
 };
 
 export class SessionToolCoordinator {
@@ -74,6 +75,7 @@ export class SessionToolCoordinator {
       if (pendingApproval) message.meta = { ...message.meta, pendingApproval: true };
       this.deps.appendMessage(sessionId, message);
       this.deps.emitMessage(message, true);
+      this.deps.onToolResult?.(sessionId, execution.result);
       for (const followUp of execution.result.followUpMessages ?? []) {
         if (followUp.role === "system") {
           followUps.push(this.deps.buildSystem(sessionId, followUp.content, followUp.contentParams ?? null));

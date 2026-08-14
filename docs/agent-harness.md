@@ -196,6 +196,22 @@ const result = await this.runner.run(this.agent, input, {
 
 There is no separate manual loop repeatedly calling Chat Completions.
 
+## Workflow modes
+
+doku owns build and plan modes above the Agents SDK. OpenAI Agents JS provides the shared turn runtime; it does not
+provide a built-in plan mode.
+
+- Build is the default and exposes the normal coding tools.
+- Plan uses the `doku-planner` profile and an explicit read-only tool allowlist.
+- `Shift+Tab` changes the persisted mode for the next prompt without approving or executing a plan.
+- `UpdatePlan` persists a draft. `FinalizePlan` marks a revision ready for user approval.
+- Enter on the plan handoff prompt or `/build` approves the finalized revision and starts a new build turn with the
+  plan embedded in the user handoff message.
+- Escape dismisses the handoff prompt while leaving the session in plan mode for more revisions.
+
+Mode, plan status, markdown, and revision are stored in the session entry. The application controls transitions; the
+model cannot switch modes or hand work to another agent by itself.
+
 ## Auxiliary model calls
 
 Some tool features need a short model call outside the main coding turn. Edit uses one to repair escaping-only

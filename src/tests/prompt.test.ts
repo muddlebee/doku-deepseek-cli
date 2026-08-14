@@ -20,6 +20,13 @@ test("getTools includes UpdatePlan with string plan schema", () => {
   assert.equal((tool.function.parameters.properties.plan as { type?: unknown }).type, "string");
 });
 
+test("getTools includes FinalizePlan with a required markdown plan", () => {
+  const tool = getTools().find((candidate) => candidate.function.name === "FinalizePlan");
+  assert.ok(tool);
+  assert.deepEqual(tool.function.parameters.required, ["plan"]);
+  assert.equal((tool.function.parameters.properties.plan as { type?: unknown }).type, "string");
+});
+
 test("built-in catalog supplies tool definitions, aliases, and execution classes", () => {
   assert.deepEqual(
     getTools().map((tool) => tool.function.name),
@@ -80,6 +87,10 @@ test("getSystemPrompt includes UpdatePlan docs", () => {
   assert.equal(prompt.includes("The `plan` argument is a markdown string, not an array of step objects."), true);
 });
 
+test("getSystemPrompt includes FinalizePlan docs", () => {
+  assert.match(getSystemPrompt("/tmp/project"), /## FinalizePlan/);
+});
+
 test("getSystemPrompt includes compact workflow skill guidance without full skill bodies", () => {
   const prompt = getSystemPrompt("/tmp/project");
   assert.equal(prompt.includes("# Operating Principles"), true);
@@ -110,11 +121,9 @@ test("getSystemPrompt does not include runtime context", () => {
 test("getDefaultSkillPrompt loads default skill templates in order", () => {
   const prompt = getDefaultSkillPrompt();
   const agentDriftIndex = prompt.indexOf("<agent-drift-guard-skill>");
-  const planIndex = prompt.indexOf("<plan-and-execute-skill>");
 
   assert.notEqual(agentDriftIndex, -1);
-  assert.notEqual(planIndex, -1);
-  assert.equal(agentDriftIndex < planIndex, true);
+  assert.equal(prompt.includes("<plan-and-execute-skill>"), false);
   assert.equal(prompt.includes("Use the skill documents below to assist the user:"), true);
   assert.equal(prompt.includes('path="templates/skills/'), false);
 });

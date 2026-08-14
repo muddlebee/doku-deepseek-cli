@@ -11,6 +11,8 @@ import {
 import type { ToolDefinition } from "../prompt";
 import type { ResolvedProvider } from "../providers/registry";
 import { AgentToolScheduler } from "./tool-scheduler";
+import { getAgentProfile, type AgentProfile } from "./profiles";
+import { WORKFLOW_MODE } from "../session/types";
 
 export type AgentRuntimeContext = {
   sessionId: string;
@@ -31,6 +33,7 @@ export type AgentToolOutput =
 
 export type AgentRuntimeOptions = {
   provider: ResolvedProvider;
+  profile?: AgentProfile;
   tools: ToolDefinition[];
   maxTurns?: number;
   tracingEnabled?: boolean;
@@ -71,9 +74,10 @@ export class AgentRuntime {
       traceIncludeSensitiveData: false,
       toolNotFoundBehavior: "return_error_to_model",
     });
+    const profile = options.profile ?? getAgentProfile(WORKFLOW_MODE.BUILD);
     this.agent = new Agent<AgentRuntimeContext>({
-      name: "doku",
-      instructions: "",
+      name: profile.name,
+      instructions: profile.instructions,
       model: options.provider.model,
       modelSettings: options.provider.modelSettings,
       tools: options.tools.map((definition) => {

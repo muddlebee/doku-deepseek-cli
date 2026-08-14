@@ -6,8 +6,8 @@ import {
   buildToolSummary,
   formatStatusName,
   formatToolStatusParams,
+  getPlanPreviewLines,
   getToolDiffPreviewLines,
-  getUpdatePlanPreviewLines,
 } from "./utils";
 import type { DiffPreviewLine, MessageViewProps } from "./types";
 import { RawMode, useRawModeContext } from "../../contexts";
@@ -76,7 +76,7 @@ export function MessageView({ message, collapsed, width = 80 }: MessageViewProps
   if (message.role === "tool") {
     const summary = buildToolSummary(message);
     const diffLines = getToolDiffPreviewLines(summary);
-    const planLines = getUpdatePlanPreviewLines(summary);
+    const planLines = getPlanPreviewLines(summary);
     return (
       <Box flexDirection="column" marginLeft={1} marginBottom={1} marginY={0}>
         <StatusLine

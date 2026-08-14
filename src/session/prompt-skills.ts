@@ -1,6 +1,9 @@
 import * as fs from "node:fs";
 import type { SkillCatalog } from "./skill-catalog";
+import { BUILTIN_SKILL_NAME } from "../common/builtin-skills";
 import type { SessionMessage, SkillInfo, UserPromptContent } from "./types";
+
+const MAX_AUTOMATIC_SKILLS = 1;
 
 export type PromptSkillDependencies = {
   catalog: SkillCatalog;
@@ -21,8 +24,8 @@ export async function appendPromptSkills(
     const skills = await deps.catalog.list(existingSession ? sessionId : undefined);
     const names = await deps.identify(skills, prompt.text, signal, existingSession ? sessionId : undefined);
     throwIfAborted(signal);
-    const nameSet = new Set(names);
-    const matched = skills.filter((skill) => nameSet.has(skill.name));
+    const nameSet = new Set(names.slice(0, MAX_AUTOMATIC_SKILLS));
+    const matched = skills.filter((skill) => nameSet.has(skill.name) && skill.name !== BUILTIN_SKILL_NAME.PLAN);
     if (Array.isArray(prompt.skills)) prompt.skills.push(...matched);
     else if (matched.length) prompt.skills = matched;
   }

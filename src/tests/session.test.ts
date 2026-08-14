@@ -8,6 +8,7 @@ import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
 import { hasProcessStopFailure } from "../session/process-tracker";
+import { PLAN_STATUS, WORKFLOW_MODE } from "../session/types";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleWarn = console.warn;
@@ -75,6 +76,111 @@ test("SessionManager normalizes legacy sessions without activeTokens to zero", (
 
   assert.equal(manager.getSession("legacy-session")?.activeTokens, 0);
   assert.equal(manager.getSession("legacy-session")?.usagePerModel, null);
+  assert.deepEqual(manager.getSession("legacy-session")?.workflow, { mode: WORKFLOW_MODE.BUILD, plan: null });
+});
+
+test("planning workflow persists revisions and hands the finalized plan to build mode", async () => {
+  const workspace = createTempDir("doku-plan-workflow-workspace-");
+  const home = createTempDir("doku-plan-workflow-home-");
+  setHomeDir(home);
+  const manager = createSessionManager(workspace, "machine-id-plan-workflow");
+  (manager as any).activateSession = async () => {};
+
+  const sessionId = await manager.createSession({
+    text: "Add session export support",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+  (manager as any).handleWorkflowToolResult(sessionId, {
+    ok: true,
+    name: "UpdatePlan",
+    metadata: { plan: "- [ ] Add export model" },
+  });
+  (manager as any).handleWorkflowToolResult(sessionId, {
+    ok: true,
+    name: "FinalizePlan",
+    metadata: { plan: "- [ ] Add export model\n- [ ] Add tests" },
+  });
+
+  const ready = manager.getSession(sessionId)?.workflow;
+  assert.equal(ready?.mode, WORKFLOW_MODE.PLAN);
+  assert.equal(ready?.plan?.status, PLAN_STATUS.READY);
+  assert.equal(ready?.plan?.revision, 1);
+
+  await manager.replySession(sessionId, { text: "Add a migration test" });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  (manager as any).handleWorkflowToolResult(sessionId, {
+    ok: true,
+    name: "FinalizePlan",
+    metadata: { plan: "- [ ] Add export model\n- [ ] Add migration tests" },
+  });
+
+  manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+
+  await manager.approveAndBuild(sessionId);
+
+  const implementing = manager.getSession(sessionId)?.workflow;
+  assert.equal(implementing?.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(implementing?.plan?.status, PLAN_STATUS.IMPLEMENTING);
+  const buildMessage = [...manager.listSessionMessages(sessionId)]
+    .reverse()
+    .find((message) => message.role === "user" && message.content === "/build");
+  const handoff = (manager as any).renderAgentMessageContent(buildMessage) as string;
+  assert.match(handoff, /Original request:\nAdd session export support/);
+  assert.match(handoff, /Approved revision: 2/);
+  assert.match(handoff, /Add migration tests/);
+
+  const restored = createSessionManager(workspace, "machine-id-plan-workflow-restored");
+  assert.deepEqual(restored.getSession(sessionId)?.workflow, implementing);
+});
+
+test("workflow mode can switch before a planning prompt without running the agent", async () => {
+  const workspace = createTempDir("doku-mode-switch-workspace-");
+  const home = createTempDir("doku-mode-switch-home-");
+  setHomeDir(home);
+  const manager = createSessionManager(workspace, "machine-id-mode-switch");
+  (manager as any).activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "Initial build request" });
+  const planning = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+
+  assert.equal(planning.workflow.mode, WORKFLOW_MODE.PLAN);
+  assert.equal(planning.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  assert.equal(planning.workflow.plan?.request, "");
+
+  (manager as any).identifyMatchingSkillNames = async () => ["planning-and-task-breakdown"];
+  await manager.replySession(sessionId, { text: "Plan export support", workflowMode: WORKFLOW_MODE.PLAN });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.request, "Plan export support");
+  assert.equal(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.skill?.name === "planning-and-task-breakdown"),
+    false
+  );
+
+  const build = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
+  assert.equal(build.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(build.workflow.plan?.status, PLAN_STATUS.DRAFT);
+});
+
+test("automatic skill matching cannot silently switch the default build workflow into plan mode", async () => {
+  const workspace = createTempDir("doku-plan-auto-match-workspace-");
+  const home = createTempDir("doku-plan-auto-match-home-");
+  setHomeDir(home);
+  const manager = createSessionManager(workspace, "machine-id-plan-auto-match");
+  (manager as any).identifyMatchingSkillNames = async () => ["planning-and-task-breakdown"];
+  (manager as any).activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "Implement a large feature" });
+
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.skill?.name === "planning-and-task-breakdown"),
+    false
+  );
 });
 
 test("SessionManager keeps usagePerModel null until response usage is available", async () => {
@@ -593,7 +699,7 @@ test("createSession appends default system prompts in prefix-cache-friendly orde
   assert.doesNotMatch(systemContents[0] ?? "", /# Local Workspace Environment/);
   assert.doesNotMatch(systemContents[0] ?? "", /The current LLM model is test-model/);
   assert.match(systemContents[1] ?? "", /<agent-drift-guard-skill>/);
-  assert.match(systemContents[1] ?? "", /<plan-and-execute-skill>/);
+  assert.doesNotMatch(systemContents[1] ?? "", /<plan-and-execute-skill>/);
   assert.doesNotMatch(systemContents[1] ?? "", /path="templates\/skills\//);
   assert.doesNotMatch(systemContents[1] ?? "", /The current LLM model is test-model/);
   assert.match(systemContents[2] ?? "", /# Local Workspace Environment/);
@@ -717,6 +823,34 @@ test("replySession does not auto-match extra skills when a skill is explicitly s
 
   assert.equal(autoMatched, false);
   assert.deepEqual(loadedSkillNames, ["idea-refine"]);
+});
+
+test("automatic skill matching loads only the strongest match", async () => {
+  const workspace = createTempDir("doku-auto-skill-limit-workspace-");
+  const home = createTempDir("doku-auto-skill-limit-home-");
+  setHomeDir(home);
+
+  for (const skillName of ["frontend-design", "delight", "playwright-cli"]) {
+    const skillDir = path.join(workspace, ".agents", "skills", skillName);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      `---\nname: ${skillName}\ndescription: ${skillName}\n---\n\n# ${skillName}\n`,
+      "utf8"
+    );
+  }
+
+  const manager = createSessionManager(workspace, "machine-id-auto-skill-limit");
+  manager.identifyMatchingSkillNames = async () => ["frontend-design", "delight", "playwright-cli"];
+  manager.activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "Build an animated web page" });
+  const loadedSkillNames = manager
+    .listSessionMessages(sessionId)
+    .filter((message) => message.role === "system" && message.meta?.skill)
+    .map((message) => message.meta?.skill?.name);
+
+  assert.deepEqual(loadedSkillNames, ["frontend-design"]);
 });
 
 test("replySession stores /init and sends the active root project AGENTS path to the LLM", async () => {

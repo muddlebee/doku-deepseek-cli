@@ -3,6 +3,7 @@ import type { ApiMode, ProviderProfile, ReasoningEffort } from "../settings";
 import { handleAskUserQuestionTool } from "./ask-user-question-handler";
 import { handleBashTool } from "./bash-handler";
 import { handleEditTool } from "./edit-handler";
+import { handleFinalizePlanTool } from "./finalize-plan-handler";
 import { handleGrepTool } from "./grep-handler";
 import { handleListFilesTool } from "./list-files-handler";
 import { handleReadTool } from "./read-handler";
@@ -231,6 +232,7 @@ export class ToolExecutor {
     this.toolHandlers.set("edit", handleEditTool);
     this.toolHandlers.set("AskUserQuestion", handleAskUserQuestionTool);
     this.toolHandlers.set("UpdatePlan", handleUpdatePlanTool);
+    this.toolHandlers.set("FinalizePlan", handleFinalizePlanTool);
     this.toolHandlers.set("WebSearch", handleWebSearchTool);
     this.toolHandlers.set("Grep", handleGrepTool);
     this.toolHandlers.set("ListFiles", handleListFilesTool);

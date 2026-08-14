@@ -1,5 +1,6 @@
 import type { SkillInfo } from "../session";
 import { BUILTIN_WORKFLOW_SKILLS } from "../common/builtin-skills";
+import { WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 
 export type SlashCommandKind =
   | "section"
@@ -14,7 +15,8 @@ export type SlashCommandKind =
   | "mcp"
   | "raw"
   | "exit"
-  | "setup-websearch";
+  | "setup-websearch"
+  | "workflow";
 
 export type SlashCommandItem = {
   kind: SlashCommandKind;
@@ -23,6 +25,7 @@ export type SlashCommandItem = {
   description: string;
   skill?: SkillInfo;
   args?: string[];
+  workflowMode?: WorkflowMode;
 };
 
 export const BUILTIN_SLASH_COMMANDS: SlashCommandItem[] = [
@@ -116,13 +119,15 @@ export function buildSlashCommands(skills: SkillInfo[]): SlashCommandItem[] {
     if (!skill) {
       return [];
     }
+    const workflowMode = getWorkflowModeForCommand(workflowSkill.command);
     return [
       {
-        kind: "skill",
+        kind: workflowMode ? "workflow" : "skill",
         name: workflowSkill.command,
         label: `/${workflowSkill.command}`,
         description: skill.description || workflowSkill.description,
         skill,
+        ...(workflowMode ? { workflowMode } : {}),
       },
     ];
   });
@@ -167,4 +172,10 @@ export function formatSlashCommandDescription(description: string): string {
 
 export function formatSlashCommandLabel(item: SlashCommandItem): string {
   return item.kind === "skill" && item.skill?.isLoaded ? `${item.label} ✓` : item.label;
+}
+
+function getWorkflowModeForCommand(command: string): WorkflowMode | undefined {
+  if (command === WORKFLOW_MODE.PLAN) return WORKFLOW_MODE.PLAN;
+  if (command === WORKFLOW_MODE.BUILD) return WORKFLOW_MODE.BUILD;
+  return undefined;
 }

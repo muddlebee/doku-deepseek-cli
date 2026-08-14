@@ -2,13 +2,15 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
 import { DEEPSEEK_V4_MODELS } from "./common/model-capabilities";
+import { BUILTIN_SKILL_NAME } from "./common/builtin-skills";
 import { getWebSearchApiKeyEnv } from "./common/web-search-provider";
 import { getTools, type ToolDefinition } from "./prompt";
-import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
+import { ToolExecutor, type CreateOpenAIClient, type ToolExecutionResult } from "./tools/executor";
 import { McpManager } from "./mcp/mcp-manager";
 import type { McpServerConfig } from "./settings";
 import type { ApiMode, ProviderProfile } from "./settings";
 import type { AgentToolInvocation, AgentToolOutput } from "./agent/runtime";
+import { filterToolsForProfile, getAgentProfile } from "./agent/profiles";
 import { ProviderRegistry } from "./providers/registry";
 import { FileSessionStore } from "./session/file-session-store";
 import { SkillCatalog } from "./session/skill-catalog";
@@ -22,15 +24,26 @@ import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
 import { isUndoTargetMessage, SessionCheckpointManager } from "./session/checkpoint-manager";
 import { getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState, runAgentTurn } from "./session/agent-turn";
-import type {
-  BashTimeoutAdjustment,
-  LlmStreamProgress,
-  MessageMeta,
-  SessionEntry,
-  SessionMessage,
-  SkillInfo,
-  UndoTarget,
-  UserPromptContent,
+import {
+  approvePlan,
+  changeWorkflowMode,
+  completeImplementation,
+  finalizePlan,
+  preparePlanningTurn,
+  startImplementation,
+  updatePlanDraft,
+} from "./session/workflow";
+import {
+  WORKFLOW_MODE,
+  type BashTimeoutAdjustment,
+  type LlmStreamProgress,
+  type MessageMeta,
+  type SessionEntry,
+  type SessionMessage,
+  type SkillInfo,
+  type UndoTarget,
+  type UserPromptContent,
+  type WorkflowMode,
 } from "./session/types";
 export type {
   BashTimeoutAdjustment,
@@ -163,6 +176,7 @@ export class SessionManager {
       isInterrupted: (sessionId) => this.isInterrupted(sessionId),
       onStdout: options.onProcessStdout,
       onNeedsWebSearchSetup: options.onNeedsWebSearchSetup,
+      onToolResult: (sessionId, result) => this.handleWorkflowToolResult(sessionId, result),
     });
     this.mcpManager.prepare(this.getResolvedSettings().mcpServers);
   }
@@ -253,6 +267,17 @@ export class SessionManager {
     this.activeSessionId = sessionId;
   }
 
+  setWorkflowMode(sessionId: string, mode: WorkflowMode): SessionEntry {
+    const now = new Date().toISOString();
+    const updated = this.updateSessionEntry(sessionId, (entry) => ({
+      ...entry,
+      workflow: changeWorkflowMode(entry.workflow, mode, now),
+      updateTime: now,
+    }));
+    if (!updated) throw new Error("No active session was found.");
+    return updated;
+  }
+
   addSessionSystemMessage(sessionId: string, content: string, visible?: boolean, meta?: MessageMeta): void {
     const message = this.buildSystemMessage(sessionId, content, null, visible, meta);
     if (sessionId) this.appendSessionMessage(sessionId, message);
@@ -298,6 +323,7 @@ export class SessionManager {
       messages: this.messageFactory,
       removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
     });
+    this.prepareWorkflowForPrompt(sessionId, userPrompt);
 
     await this.appendSkills(sessionId, userPrompt, signal, false);
 
@@ -331,6 +357,7 @@ export class SessionManager {
     this.reportNewPrompt();
 
     this.checkpoints.ensureSession(sessionId);
+    this.prepareWorkflowForPrompt(sessionId, userPrompt);
     const userMessage = this.buildUserMessage(sessionId, userPrompt);
     this.appendSessionMessage(sessionId, userMessage);
 
@@ -419,6 +446,9 @@ export class SessionManager {
       });
       const activeProvider = provider;
       const tracingEnabled = configuredTracing ?? resolvedSettings.tracingEnabled ?? false;
+      const profile = getAgentProfile(this.getSession(sessionId)?.workflow.mode ?? WORKFLOW_MODE.BUILD);
+      const getActiveTools = () =>
+        filterToolsForProfile(getTools(this.getPromptToolOptions(), this.mcpToolDefinitions), profile);
       const compactAtTokens = activeProvider.compactAtTokens ?? getCompactPromptTokenThreshold(model);
       if (
         (this.getSession(sessionId)?.activeTokens ?? 0) >= compactAtTokens &&
@@ -437,11 +467,12 @@ export class SessionManager {
           sessionId,
           provider: activeProvider,
           model,
-          tools: getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
+          tools: getActiveTools(),
           maxTurns: configuredMaxTurns ?? resolvedSettings.maxTurns ?? 100,
           tracingEnabled,
           controller: sessionController,
           continueExisting,
+          profile,
         },
         {
           store: this.sessionStore,
@@ -458,7 +489,7 @@ export class SessionManager {
           renderContent: (message) => this.renderAgentMessageContent(message),
           onProgress: this.onLlmStreamProgress,
           isInterrupted: (id) => this.isInterrupted(id),
-          getTools: () => getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
+          getTools: getActiveTools,
           compactIfNeeded: async (activeTokens, signal) => {
             if (activeTokens < compactAtTokens || hasPausedAgentTurn(sessionId, this.sessionStore.projectDir)) {
               return;
@@ -467,6 +498,7 @@ export class SessionManager {
           },
         }
       );
+      this.completeActiveImplementation(sessionId);
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);
       const aborted = this.isAbortLikeError(error) || sessionController.signal.aborted;
@@ -494,6 +526,90 @@ export class SessionManager {
     supportsImages: boolean
   ): Promise<AgentToolOutput> {
     return this.toolCoordinator.executeAgentTool(sessionId, invocation, supportsImages);
+  }
+
+  async approveAndBuild(sessionId: string): Promise<void> {
+    const controller = new AbortController();
+    this.activePromptController = controller;
+    try {
+      const entry = this.getSession(sessionId);
+      if (!entry) throw new Error("No active session was found.");
+      const workflow = startImplementation(approvePlan(entry.workflow));
+      this.updateSessionEntry(sessionId, (current) => ({
+        ...current,
+        workflow,
+        status: "pending",
+        failReason: null,
+        updateTime: new Date().toISOString(),
+      }));
+      this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
+      const buildSkill = (await this.skillCatalog.list(sessionId)).find(
+        (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
+      );
+      await this.replySession(
+        sessionId,
+        {
+          text: "/build",
+          skills: buildSkill ? [buildSkill] : undefined,
+          workflowMode: WORKFLOW_MODE.BUILD,
+        },
+        controller
+      );
+    } catch (error) {
+      if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
+    } finally {
+      if (this.activePromptController === controller) this.activePromptController = null;
+    }
+  }
+
+  private prepareWorkflowForPrompt(sessionId: string, prompt: UserPromptContent): void {
+    this.updateSessionEntry(sessionId, (entry) => {
+      const requestedMode = this.resolveRequestedWorkflowMode(prompt);
+      const now = new Date().toISOString();
+      const workflow = requestedMode ? changeWorkflowMode(entry.workflow, requestedMode, now) : entry.workflow;
+      if (workflow.mode !== WORKFLOW_MODE.PLAN) {
+        if (workflow === entry.workflow) return entry;
+        return { ...entry, workflow, updateTime: now };
+      }
+      return {
+        ...entry,
+        workflow: preparePlanningTurn(workflow, prompt.text ?? "", now),
+        updateTime: now,
+      };
+    });
+  }
+
+  private resolveRequestedWorkflowMode(prompt: UserPromptContent): WorkflowMode | undefined {
+    if (prompt.workflowMode) return prompt.workflowMode;
+    if (prompt.skills?.some((skill) => skill.name === BUILTIN_SKILL_NAME.PLAN)) return WORKFLOW_MODE.PLAN;
+    if (prompt.skills?.some((skill) => skill.name === BUILTIN_SKILL_NAME.BUILD)) return WORKFLOW_MODE.BUILD;
+    return undefined;
+  }
+
+  private completeActiveImplementation(sessionId: string): void {
+    this.updateSessionEntry(sessionId, (entry) => ({
+      ...entry,
+      workflow: entry.status === "completed" ? completeImplementation(entry.workflow) : entry.workflow,
+    }));
+  }
+
+  private buildPlanHandoff(plan: NonNullable<SessionEntry["workflow"]["plan"]>): string {
+    return `# Approved Implementation Plan\n\nOriginal request:\n${plan.request}\n\nApproved revision: ${plan.revision}\n\n${plan.markdown}\n\nImplement this approved plan now. Preserve its scope and report any required deviation before making it.`;
+  }
+
+  private handleWorkflowToolResult(sessionId: string, result: ToolExecutionResult): void {
+    if (!result.ok || (result.name !== "UpdatePlan" && result.name !== "FinalizePlan")) return;
+    const plan = result.metadata?.plan;
+    if (typeof plan !== "string") return;
+    this.updateSessionEntry(sessionId, (entry) => {
+      if (entry.workflow.mode !== WORKFLOW_MODE.PLAN) return entry;
+      return {
+        ...entry,
+        workflow:
+          result.name === "FinalizePlan" ? finalizePlan(entry.workflow, plan) : updatePlanDraft(entry.workflow, plan),
+        updateTime: new Date().toISOString(),
+      };
+    });
   }
 
   private getPausedRunStatePath(sessionId: string): string {
@@ -777,6 +893,10 @@ export class SessionManager {
 
   private renderAgentMessageContent(message: SessionMessage): string {
     if (message.role === "user" && message.content === "/init") return this.renderInitCommandPrompt();
+    if (message.role === "user" && message.content === "/build") {
+      const plan = this.getSession(message.sessionId)?.workflow.plan;
+      if (plan) return this.buildPlanHandoff(plan);
+    }
     return message.content ?? "";
   }
 

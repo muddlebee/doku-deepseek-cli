@@ -4,7 +4,7 @@ import { parseDiffPreview } from "../ui";
 import {
   buildThinkingSummary,
   renderMessageToStdout,
-  getUpdatePlanPreviewLines,
+  getPlanPreviewLines,
   parseToolPayload,
 } from "../ui/components/MessageView/utils";
 import { RawMode } from "../ui/contexts";
@@ -174,6 +174,20 @@ test("renderMessageToStdout renders UpdatePlan tool messages with Plan preview",
   assert.ok(!output.includes("└ Result"));
 });
 
+test("renderMessageToStdout renders the finalized plan before approval", () => {
+  const payload = JSON.stringify({
+    name: "FinalizePlan",
+    ok: true,
+    metadata: { plan: "Step 1: Analyze\nStep 2: Implement\nStep 3: Test" },
+  });
+  const output = renderMessageToStdout(makeSessionMessage({ role: "tool", content: payload }), RawMode.Raw);
+
+  assert.ok(output.includes("FinalizePlan"));
+  assert.ok(output.includes("└ Plan"));
+  assert.ok(output.includes("Step 1: Analyze"));
+  assert.ok(output.includes("Step 3: Test"));
+});
+
 test("renderMessageToStdout renders system model change messages", () => {
   const msg = makeSessionMessage({
     role: "system",
@@ -219,36 +233,41 @@ test("renderMessageToStdout returns empty for unknown system messages", () => {
   assert.equal(renderMessageToStdout(msg, RawMode.Raw), "");
 });
 
-// --- getUpdatePlanPreviewLines tests ---
+// --- getPlanPreviewLines tests ---
 
-test("getUpdatePlanPreviewLines returns empty for failed tool", () => {
+test("getPlanPreviewLines returns empty for failed tool", () => {
   const summary: ToolSummary = { name: "UpdatePlan", params: "", ok: false, metadata: { plan: "Step 1" } };
-  assert.deepEqual(getUpdatePlanPreviewLines(summary), []);
+  assert.deepEqual(getPlanPreviewLines(summary), []);
 });
 
-test("getUpdatePlanPreviewLines returns empty for non-UpdatePlan tool", () => {
+test("getPlanPreviewLines returns empty for a non-plan tool", () => {
   const summary: ToolSummary = { name: "edit", params: "", ok: true, metadata: { plan: "Step 1" } };
-  assert.deepEqual(getUpdatePlanPreviewLines(summary), []);
+  assert.deepEqual(getPlanPreviewLines(summary), []);
 });
 
-test("getUpdatePlanPreviewLines returns empty for missing plan metadata", () => {
+test("getPlanPreviewLines returns empty for missing plan metadata", () => {
   const summary: ToolSummary = { name: "UpdatePlan", params: "", ok: true, metadata: null };
-  assert.deepEqual(getUpdatePlanPreviewLines(summary), []);
+  assert.deepEqual(getPlanPreviewLines(summary), []);
 });
 
-test("getUpdatePlanPreviewLines returns empty for empty plan string", () => {
+test("getPlanPreviewLines returns empty for empty plan string", () => {
   const summary: ToolSummary = { name: "UpdatePlan", params: "", ok: true, metadata: { plan: "" } };
-  assert.deepEqual(getUpdatePlanPreviewLines(summary), []);
+  assert.deepEqual(getPlanPreviewLines(summary), []);
 });
 
-test("getUpdatePlanPreviewLines extracts plan lines and filters empty rows", () => {
+test("getPlanPreviewLines extracts draft and finalized plan lines", () => {
   const summary: ToolSummary = {
     name: "UpdatePlan",
     params: "",
     ok: true,
     metadata: { plan: "Step 1: Analyze\n\nStep 2: Implement\n  \nStep 3: Test" },
   };
-  assert.deepEqual(getUpdatePlanPreviewLines(summary), ["Step 1: Analyze", "Step 2: Implement", "Step 3: Test"]);
+  assert.deepEqual(getPlanPreviewLines(summary), ["Step 1: Analyze", "Step 2: Implement", "Step 3: Test"]);
+  assert.deepEqual(getPlanPreviewLines({ ...summary, name: "FinalizePlan" }), [
+    "Step 1: Analyze",
+    "Step 2: Implement",
+    "Step 3: Test",
+  ]);
 });
 
 // --- parseToolPayload tests ---

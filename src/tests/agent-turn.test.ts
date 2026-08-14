@@ -27,6 +27,7 @@ test("Agents turns preserve refusal metadata and fail the session", async () => 
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -137,6 +138,7 @@ test("Agents turns persist the final response reasoning in the session entry", a
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -241,6 +243,7 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -382,6 +385,7 @@ test("Agents turns refresh tools and compact between model requests", async () =
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -515,6 +519,7 @@ test("Agents turns replay completed tool work after a later model request fails"
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -661,6 +666,7 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {

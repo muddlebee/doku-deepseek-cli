@@ -12,6 +12,7 @@ import type {
   SessionsIndex,
   SessionStatus,
 } from "./types";
+import { normalizeWorkflow } from "./workflow";
 
 export class FileSessionStore {
   readonly projectCode: string;
@@ -170,6 +171,7 @@ export class FileSessionStore {
       createTime: typeof value.createTime === "string" ? value.createTime : new Date().toISOString(),
       updateTime: typeof value.updateTime === "string" ? value.updateTime : new Date().toISOString(),
       processes: deserializeProcesses(value.processes),
+      workflow: normalizeWorkflow(value.workflow),
     };
   }
 }

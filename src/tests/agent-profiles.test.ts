@@ -1,0 +1,48 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { filterToolsForProfile, getAgentProfile } from "../agent/profiles";
+import type { ToolDefinition } from "../prompt";
+import { WORKFLOW_MODE } from "../session/types";
+
+const TOOL_NAMES = [
+  "read",
+  "Grep",
+  "ListFiles",
+  "WebSearch",
+  "AskUserQuestion",
+  "UpdatePlan",
+  "FinalizePlan",
+  "write",
+  "edit",
+  "bash",
+  "mcp_mutation",
+];
+
+test("planner profile exposes only explicitly read-only planning tools", () => {
+  const tools = TOOL_NAMES.map(createTool);
+  const filtered = filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.PLAN));
+
+  assert.deepEqual(
+    filtered.map((tool) => tool.function.name),
+    TOOL_NAMES.slice(0, 7)
+  );
+});
+
+test("build profile preserves existing tools without exposing plan finalization", () => {
+  const tools = TOOL_NAMES.map(createTool);
+  assert.deepEqual(
+    filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.BUILD)).map((tool) => tool.function.name),
+    TOOL_NAMES.filter((name) => name !== "FinalizePlan")
+  );
+});
+
+function createTool(name: string): ToolDefinition {
+  return {
+    type: "function",
+    function: {
+      name,
+      description: name,
+      parameters: { type: "object", properties: {} },
+    },
+  };
+}

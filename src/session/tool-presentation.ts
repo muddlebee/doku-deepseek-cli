@@ -48,7 +48,9 @@ function formatToolParamsSnippet(projectRoot: string, toolName: string | null, a
     if (command && description) return `${command}  # ${description}`;
     return command || description;
   }
-  if (toolName === "UpdatePlan") return typeof args.explanation === "string" ? args.explanation.trim() : "";
+  if (toolName === "UpdatePlan" || toolName === "FinalizePlan") {
+    return typeof args.explanation === "string" ? args.explanation.trim() : "";
+  }
   if (toolName === "write") return typeof args.file_path === "string" ? args.file_path.trim() : "";
 
   const firstKey = Object.keys(args)[0];

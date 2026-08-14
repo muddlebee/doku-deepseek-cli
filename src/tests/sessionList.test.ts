@@ -113,5 +113,6 @@ function buildSessions(overrides: Array<Partial<SessionEntry>>): SessionEntry[] 
     createTime: new Date().toISOString(),
     updateTime: new Date().toISOString(),
     processes: null,
+    workflow: { mode: "build", plan: null },
   }));
 }

@@ -1,5 +1,37 @@
 export type SessionStatus = "failed" | "pending" | "processing" | "waiting_for_user" | "completed" | "interrupted";
 
+export const WORKFLOW_MODE = {
+  BUILD: "build",
+  PLAN: "plan",
+} as const;
+
+export type WorkflowMode = (typeof WORKFLOW_MODE)[keyof typeof WORKFLOW_MODE];
+
+export const PLAN_STATUS = {
+  DRAFT: "draft",
+  READY: "ready",
+  APPROVED: "approved",
+  IMPLEMENTING: "implementing",
+  COMPLETED: "completed",
+} as const;
+
+export type PlanStatus = (typeof PLAN_STATUS)[keyof typeof PLAN_STATUS];
+
+export type SessionPlan = {
+  status: PlanStatus;
+  revision: number;
+  request: string;
+  markdown: string;
+  updatedAt: string;
+  finalizedAt?: string;
+  approvedAt?: string;
+};
+
+export type SessionWorkflow = {
+  mode: WorkflowMode;
+  plan: SessionPlan | null;
+};
+
 export type ModelUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -41,6 +73,7 @@ export type SessionEntry = {
   createTime: string;
   updateTime: string;
   processes: Map<string, SessionProcessEntry> | null;
+  workflow: SessionWorkflow;
 };
 
 export type SessionsIndex = {
@@ -96,6 +129,7 @@ export type UserPromptContent = {
   text?: string;
   imageUrls?: string[];
   skills?: SkillInfo[];
+  workflowMode?: WorkflowMode;
 };
 
 export type LlmStreamProgress = {

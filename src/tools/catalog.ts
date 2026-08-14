@@ -89,6 +89,20 @@ export const BUILT_IN_TOOL_CATALOG = [
     "parallel"
   ),
   entry(
+    "FinalizePlan",
+    "Finalize the current planning-mode draft and make it available for user approval.",
+    {
+      plan: {
+        type: "string",
+        description: "The complete final implementation plan in markdown.",
+      },
+      explanation: { type: "string", description: "Optional short summary of why the plan is ready." },
+    },
+    ["plan"],
+    [],
+    "serial"
+  ),
+  entry(
     "read",
     "Read files from the filesystem (text, images, PDFs, notebooks).",
     {

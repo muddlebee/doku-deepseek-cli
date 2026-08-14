@@ -245,7 +245,7 @@ export function renderMessageToStdout(message: SessionMessage, mode: RawMode): s
       ok: payload.ok !== false,
       metadata: payload.metadata,
     };
-    const planLines = getUpdatePlanPreviewLines(summary);
+    const planLines = getPlanPreviewLines(summary);
     if (planLines.length > 0) {
       const planText = planLines.map((line) => `  ${line}`).join("\n");
       return `${statusLine}\n${chalk.dim("  └ Plan")}\n${planText}${result}`;
@@ -274,8 +274,8 @@ export function renderMessageToStdout(message: SessionMessage, mode: RawMode): s
   return "";
 }
 
-export function getUpdatePlanPreviewLines(summary: ToolSummary): string[] {
-  if (!summary.ok || summary.name !== "UpdatePlan") {
+export function getPlanPreviewLines(summary: ToolSummary): string[] {
+  if (!summary.ok || (summary.name !== "UpdatePlan" && summary.name !== "FinalizePlan")) {
     return [];
   }
   const plan = summary.metadata?.plan;

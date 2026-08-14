@@ -122,6 +122,12 @@ Add explicit checkpoints:
 - [ ] Review with human before proceeding
 ```
 
+### Step 6: Publish the Plan
+
+During planning, call `UpdatePlan` whenever the draft meaningfully changes so the latest structure remains visible.
+
+When all blocking questions are resolved and the plan satisfies the verification checklist, call `FinalizePlan` with the complete plan markdown. After `FinalizePlan` succeeds, stop and wait for the user. Do not begin implementation or hand off to an implementation agent yourself.
+
 ## Task Sizing Guidelines
 
 | Size | Files | Scope | Example |
@@ -221,3 +227,4 @@ Before starting implementation, confirm:
 - [ ] No task touches more than ~5 files
 - [ ] Checkpoints exist between major phases
 - [ ] The human has reviewed and approved the plan
+- [ ] `FinalizePlan` has been called with the complete plan

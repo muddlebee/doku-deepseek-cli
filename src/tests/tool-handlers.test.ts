@@ -9,6 +9,7 @@ import { handleBashTool } from "../tools/bash-handler";
 import { handleEditTool } from "../tools/edit-handler";
 import { handleReadTool } from "../tools/read-handler";
 import { handleUpdatePlanTool } from "../tools/update-plan-handler";
+import { handleFinalizePlanTool } from "../tools/finalize-plan-handler";
 import { handleWriteTool } from "../tools/write-handler";
 
 const tempDirs: string[] = [];
@@ -127,6 +128,20 @@ test("UpdatePlan rejects non-string plan payloads", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.name, "UpdatePlan");
   assert.match(result.error ?? "", /InputValidationError/);
+});
+
+test("FinalizePlan returns the complete plan for workflow persistence", async () => {
+  const workspace = createTempWorkspace();
+  const plan = "## Implementation Plan\n\n- [ ] Add workflow state\n- [ ] Add tests";
+  const result = await handleFinalizePlanTool(
+    { plan, explanation: "Ready" },
+    createContext("finalize-plan", workspace)
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.name, "FinalizePlan");
+  assert.equal(result.metadata?.plan, plan);
+  assert.match(result.output ?? "", /wait for the user/i);
 });
 
 test("Read returns snippet metadata and Edit can scope replacements by snippet_id", async () => {

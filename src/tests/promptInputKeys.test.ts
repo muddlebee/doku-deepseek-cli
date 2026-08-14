@@ -13,6 +13,7 @@ import {
   formatSelectedSkillsStatus,
   getPromptCursorPlacement,
   getPromptFooterHints,
+  getNextWorkflowMode,
   getPromptReturnKeyAction,
   isClearImageAttachmentsShortcut,
   parseTerminalInput,
@@ -21,6 +22,7 @@ import {
   renderBufferWithCursor,
   buildInitPromptSubmission,
   buildSkillPromptSubmission,
+  buildWorkflowPromptSubmission,
   buildPromptDraftFromSessionMessage,
   dispatchTerminalInput,
   disableTerminalExtendedKeys,
@@ -30,6 +32,7 @@ import {
   backspace,
 } from "../ui";
 import type { SessionMessage, SkillInfo } from "../session";
+import { WORKFLOW_MODE } from "../session/types";
 
 function collectDispatchedInput(data: string) {
   const events: ReturnType<typeof parseTerminalInput>[] = [];
@@ -136,6 +139,14 @@ test("parseTerminalInput recognizes shifted return sequences", () => {
   const { input, key } = parseTerminalInput("\u001B\r");
   assert.equal(input, "\r");
   assert.equal(key.return, true);
+  assert.equal(key.shift, true);
+  assert.equal(key.meta, false);
+});
+
+test("parseTerminalInput recognizes Shift+Tab as a mode shortcut", () => {
+  const { input, key } = parseTerminalInput("\u001B[Z");
+  assert.equal(input, "");
+  assert.equal(key.tab, true);
   assert.equal(key.shift, true);
   assert.equal(key.meta, false);
 });
@@ -286,6 +297,56 @@ test("buildSkillPromptSubmission submits slash command arguments with selected s
   );
 });
 
+test("buildWorkflowPromptSubmission enters plan mode and treats bare build as approval", () => {
+  const planSkill: SkillInfo = {
+    name: "planning-and-task-breakdown",
+    path: "builtin:planning-and-task-breakdown",
+    description: "Plan",
+  };
+  const buildSkill: SkillInfo = {
+    name: "incremental-implementation",
+    path: "builtin:incremental-implementation",
+    description: "Build",
+  };
+
+  assert.deepEqual(
+    buildWorkflowPromptSubmission(
+      {
+        kind: "workflow",
+        name: "plan",
+        label: "/plan",
+        description: "Plan",
+        skill: planSkill,
+        workflowMode: WORKFLOW_MODE.PLAN,
+      },
+      "/plan add exports",
+      [],
+      []
+    ),
+    {
+      text: "add exports",
+      imageUrls: [],
+      workflowMode: WORKFLOW_MODE.PLAN,
+    }
+  );
+  assert.deepEqual(
+    buildWorkflowPromptSubmission(
+      {
+        kind: "workflow",
+        name: "build",
+        label: "/build",
+        description: "Build",
+        skill: buildSkill,
+        workflowMode: WORKFLOW_MODE.BUILD,
+      },
+      "/build",
+      [],
+      []
+    ),
+    { text: "/build", imageUrls: [], command: "build" }
+  );
+});
+
 test("selected skill helpers format, dedupe, toggle, and clear slash tokens", () => {
   const skill: SkillInfo = { name: "skill-writer", path: "/skills/skill-writer/SKILL.md", description: "Write skills" };
   const other: SkillInfo = { name: "code-review", path: "/skills/code-review/SKILL.md", description: "Review code" };
@@ -349,5 +410,11 @@ test("prompt footer keeps only essential hints in narrow terminals", () => {
     { k: "ctrl+c", d: "exit" },
   ]);
   assert.equal(getPromptFooterHints(80).length, 5);
-  assert.equal(getPromptFooterHints(120).length, 5);
+  assert.deepEqual(getPromptFooterHints(80)[2], { k: "shift+tab", d: "mode" });
+  assert.equal(getPromptFooterHints(120).length, 6);
+});
+
+test("workflow mode shortcut alternates between build and plan", () => {
+  assert.equal(getNextWorkflowMode(WORKFLOW_MODE.BUILD), WORKFLOW_MODE.PLAN);
+  assert.equal(getNextWorkflowMode(WORKFLOW_MODE.PLAN), WORKFLOW_MODE.BUILD);
 });

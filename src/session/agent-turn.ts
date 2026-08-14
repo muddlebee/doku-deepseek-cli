@@ -16,6 +16,7 @@ import {
 } from "../agent/runtime";
 import type { ResolvedProvider } from "../providers/registry";
 import type { ToolDefinition } from "../prompt";
+import type { AgentProfile } from "../agent/profiles";
 import {
   agentUsageToModelUsage,
   buildAgentInputItems,
@@ -85,6 +86,7 @@ export type AgentTurnOptions = {
   tracingEnabled: boolean;
   controller: AbortController;
   continueExisting: boolean;
+  profile?: AgentProfile;
 };
 
 export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDependencies): Promise<void> {
@@ -111,6 +113,7 @@ export async function runAgentTurn(options: AgentTurnOptions, deps: AgentTurnDep
   const createRuntime = () =>
     new AgentRuntime({
       provider,
+      profile: options.profile,
       tools: deps.getTools?.() ?? options.tools,
       maxTurns: 1,
       tracingEnabled: options.tracingEnabled,
