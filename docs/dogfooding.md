@@ -1,6 +1,6 @@
 # CLI dogfooding guide
 
-Use this checklist before calling a UI iteration dogfood-ready. Run it once with OpenAI and once with DeepSeek from a terminal at 60, 80, and at least 120 columns.
+Use this checklist before calling a UI iteration dogfood-ready. Run it once with OpenAI and once with DeepSeek from a real PTY at 60, 80, and at least 120 columns. Piped stdin and non-TTY output capture do not exercise Ink's interactive terminal behavior.
 
 ## Preparation
 
@@ -10,6 +10,8 @@ Use this checklist before calling a UI iteration dogfood-ready. Run it once with
    npm run bundle
    node dist/cli.js
    ```
+
+   Run `node dist/cli.js` with a PTY-capable terminal or process runner. Interact with actual key presses rather than piping a prepared input stream.
 
 2. Configure credentials with the first-run wizard or environment variables.
 3. Confirm the welcome screen identifies the selected model, reasoning mode, credential source, and project path.

@@ -22,7 +22,7 @@ Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEP
 - `src/mcp/mcp-manager.ts` — MCP lifecycle, discovery, execution, resources, and prompts through the Agents SDK `MCPServerStdio` transport
 - `src/common/` — shared helpers: settings, file history, shell utils, model capabilities, etc.
 - `src/session.ts` — thin session lifecycle facade: create, reply, continue, restore, and orchestration
-- `src/session/` — focused session modules for Agents turns, SDK history, compaction, persistence, checkpoints, tools, skills, notifications, and usage
+- `src/session/` — focused session modules for Agents turns, SDK history, compaction, persistence, checkpoints, tools, skills, workflow state, notifications, and usage
 - `src/prompt.ts` — system prompt construction; identity string is `"You are doku, an interactive CLI tool..."`
 - `src/tests/` — Node test files (`*.test.ts`); run with `tsx --test`
 - `src/tests/live/` — reusable live LLM benchmark harness and scenarios (`live-llm-harness.ts`, `run-live-benchmark.ts`, `scenarios/`)
@@ -70,6 +70,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 
 ## Coding Style & Naming Conventions
 
+- Before changing TypeScript or TSX, read and follow [`docs/typescript-practices.md`](docs/typescript-practices.md). It is the repository's required implementation and review checklist; this file takes precedence if the two conflict.
 - Use TypeScript ES modules; keep imports explicit.
 - Prefer small, focused functions; centralize filesystem path construction when a path is reused across files.
 - Keep changes modular and well-refactored; split growing responsibilities into focused modules rather than extending monolithic files.
@@ -80,6 +81,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 ## Testing Guidelines
 
 - Add or update tests in `src/tests/` when changing command behavior, prompt rendering, session flow, tools, or settings.
+- For any terminal interaction or Ink UI change, also run a live smoke test in a real PTY and follow the relevant journey in [`docs/dogfooding.md`](docs/dogfooding.md). Piped stdin or captured non-TTY output is not a substitute.
 - Use Node's built-in `node:test` and `node:assert/strict` APIs to match existing tests.
 - Keep tests deterministic: use temporary directories (`fs.mkdtempSync`) and mock network calls where needed.
 - Temp dir prefixes follow the `doku-<purpose>-` convention.
