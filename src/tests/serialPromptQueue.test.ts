@@ -3,9 +3,17 @@ import { test } from "node:test";
 import type { SessionStatus } from "../session/types";
 import {
   SerialPromptQueue,
+  shouldBypassPromptQueue,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterContinuation,
 } from "../ui/serialPromptQueue";
+
+test("exit bypasses the prompt queue while a turn is active", () => {
+  assert.equal(shouldBypassPromptQueue({ text: "/exit", imageUrls: [], command: "exit" }, false), true);
+  assert.equal(shouldBypassPromptQueue({ text: "queued", imageUrls: [] }, false), false);
+  assert.equal(shouldBypassPromptQueue({ text: "/continue", imageUrls: [], command: "continue" }, false), false);
+  assert.equal(shouldBypassPromptQueue({ text: "/continue", imageUrls: [], command: "continue" }, true), true);
+});
 
 test("prompt queues pause only for statuses that require user-controlled resumption", () => {
   assert.equal(shouldPausePromptQueue("waiting_for_user"), true);

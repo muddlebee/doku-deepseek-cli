@@ -32,6 +32,7 @@ import {
   EMPTY_BUFFER,
   insertText,
   backspace,
+  submitPromptSubmission,
 } from "../ui";
 import type { SessionMessage, SkillInfo } from "../session";
 import { WORKFLOW_MODE } from "../session/types";
@@ -43,6 +44,35 @@ function collectDispatchedInput(data: string) {
   });
   return events;
 }
+
+test("rejected prompt submissions keep the current draft", () => {
+  let resetCount = 0;
+  const submission = { text: "keep this draft", imageUrls: [] };
+
+  assert.equal(
+    submitPromptSubmission(
+      submission,
+      () => false,
+      () => {
+        resetCount++;
+      }
+    ),
+    false
+  );
+  assert.equal(resetCount, 0);
+
+  assert.equal(
+    submitPromptSubmission(
+      submission,
+      () => true,
+      () => {
+        resetCount++;
+      }
+    ),
+    true
+  );
+  assert.equal(resetCount, 1);
+});
 
 test("parseTerminalInput treats DEL bytes as backspace", () => {
   const { input, key } = parseTerminalInput("\u007F");

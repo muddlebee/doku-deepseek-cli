@@ -25,7 +25,8 @@ import {
   resolveSettingsSources,
 } from "../settings";
 import { loadProjectEnv } from "../common/project-env";
-import { getNextWorkflowMode, PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
+import { getNextWorkflowMode, PromptInput, type PromptDraft } from "./PromptInput";
+import type { PromptSubmission } from "./promptSubmission";
 import { MessageView, RawModeExitPrompt } from "./components";
 import { SessionList } from "./SessionList";
 import { UndoSelector, type UndoRestoreMode } from "./UndoSelector";
@@ -51,6 +52,7 @@ import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
 import {
   SerialPromptQueue,
+  shouldBypassPromptQueue,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterContinuation,
   type QueuedPrompt,
@@ -250,6 +252,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const handlePrompt = useCallback(
     async (submission: PromptSubmission) => {
       if (submission.command === "exit") {
+        sessionManager.interruptActiveSession();
         setIsExiting(true);
         setTimeout(() => {
           const activeSessionId = sessionManager.getActiveSessionId();
@@ -432,10 +435,11 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   );
 
   const handleSubmit = useCallback(
-    (submission: PromptSubmission) => {
-      if (promptQueueRef.current?.isPaused() && submission.command) {
-        if (QUEUE_DISCARD_COMMANDS.has(submission.command)) {
-          promptQueueRef.current?.clear();
+    (submission: PromptSubmission): boolean => {
+      const promptQueue = promptQueueRef.current;
+      if (shouldBypassPromptQueue(submission, promptQueue?.isPaused() ?? false)) {
+        if (submission.command && QUEUE_DISCARD_COMMANDS.has(submission.command)) {
+          promptQueue?.clear();
         }
         void handlePrompt(submission).finally(() => {
           if (submission.command !== "continue") return;
@@ -444,14 +448,16 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
             ? sessionManager.getSession(continuedSessionId)?.status
             : undefined;
           if (shouldResumePromptQueueAfterContinuation(continuedStatus)) {
-            promptQueueRef.current?.resume();
+            promptQueue?.resume();
           }
         });
-        return;
+        return true;
       }
-      if (!promptQueueRef.current?.enqueue(submission)) {
+      const accepted = promptQueue?.enqueue(submission) ?? false;
+      if (!accepted) {
         setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
       }
+      return accepted;
     },
     [handlePrompt, sessionManager]
   );

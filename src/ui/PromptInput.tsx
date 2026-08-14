@@ -66,14 +66,7 @@ import {
 import SlashCommandMenu, { isSkillSelected } from "./SlashCommandMenu";
 import type { ModelConfigSelection } from "../settings";
 import { FileMentionMenu, ModelsDropdown, RawModelDropdown, SkillsDropdown } from "./components";
-
-export type PromptSubmission = {
-  text: string;
-  imageUrls: string[];
-  selectedSkills?: SkillInfo[];
-  workflowMode?: WorkflowMode;
-  command?: "new" | "resume" | "continue" | "undo" | "mcp" | "exit" | "setup-websearch" | "build";
-};
+import { submitPromptSubmission, type PromptSubmission } from "./promptSubmission";
 
 export type PromptDraft = {
   nonce: number;
@@ -93,7 +86,7 @@ type Props = {
   runningProcesses?: SessionEntry["processes"];
   promptDraft?: PromptDraft | null;
   workflowMode?: WorkflowMode;
-  onSubmit: (submission: PromptSubmission) => void;
+  onSubmit: (submission: PromptSubmission) => boolean;
   onModelConfigChange: (selection: ModelConfigSelection) => string | Promise<string>;
   onRawModeChange?: (mode: string) => void;
   onInterrupt: () => void;
@@ -767,6 +760,14 @@ export const PromptInput = React.memo(function PromptInput({
     pasteCounterRef.current = 0;
   }
 
+  function submitAndReset(submission: PromptSubmission, reset: () => void = resetPromptInput): boolean {
+    const accepted = submitPromptSubmission(submission, onSubmit, reset);
+    if (!accepted) {
+      setStatusMessage("Prompt queue is full; your draft was kept");
+    }
+    return accepted;
+  }
+
   function nextSelectableIndex(from: number, direction: 1 | -1): number {
     const len = slashMenu.length;
     let idx = (from + direction + len) % len;
@@ -793,8 +794,7 @@ export const PromptInput = React.memo(function PromptInput({
     }
     if (item.kind === "workflow" && item.skill) {
       if (item.workflowMode === WORKFLOW_MODE.BUILD) {
-        onSubmit({ text: "/build", imageUrls: [], command: "build" });
-        resetPromptInput();
+        submitAndReset({ text: "/build", imageUrls: [], command: "build" });
         return;
       }
       if (item.workflowMode) onWorkflowModeChange(item.workflowMode);
@@ -819,44 +819,38 @@ export const PromptInput = React.memo(function PromptInput({
       return;
     }
     if (item.kind === "new") {
-      onSubmit({ text: "", imageUrls: [], command: "new" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "new" });
       return;
     }
     if (item.kind === "init") {
-      onSubmit(buildInitPromptSubmission(reconcileWorkflowSkills(selectedSkills, workflowMode), workflowMode));
-      resetPromptInput();
+      submitAndReset(buildInitPromptSubmission(reconcileWorkflowSkills(selectedSkills, workflowMode), workflowMode));
       return;
     }
     if (item.kind === "resume") {
-      onSubmit({ text: "", imageUrls: [], command: "resume" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "resume" });
       return;
     }
     if (item.kind === "continue") {
-      onSubmit({ text: "/continue", imageUrls: [], command: "continue" });
-      resetPromptInput();
+      submitAndReset({ text: "/continue", imageUrls: [], command: "continue" });
       return;
     }
     if (item.kind === "undo") {
-      onSubmit({ text: "/undo", imageUrls: [], command: "undo" });
-      resetPromptInput();
+      submitAndReset({ text: "/undo", imageUrls: [], command: "undo" });
       return;
     }
     if (item.kind === "mcp") {
-      onSubmit({ text: "/mcp", imageUrls: [], command: "mcp" });
-      resetPromptInput();
+      submitAndReset({ text: "/mcp", imageUrls: [], command: "mcp" });
       return;
     }
     if (item.kind === "exit") {
-      onSubmit({ text: "/exit", imageUrls: [], command: "exit" });
-      setBuffer(EMPTY_BUFFER);
-      clearUndoRedoStacks();
+      submitAndReset({ text: "/exit", imageUrls: [], command: "exit" }, () => {
+        setBuffer(EMPTY_BUFFER);
+        clearUndoRedoStacks();
+      });
       return;
     }
     if (item.kind === "setup-websearch") {
-      onSubmit({ text: "", imageUrls: [], command: "setup-websearch" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "setup-websearch" });
       return;
     }
   }
@@ -883,8 +877,7 @@ export const PromptInput = React.memo(function PromptInput({
           submissionSkills
         );
         if (workflowPromptSubmission) {
-          onSubmit(workflowPromptSubmission);
-          resetPromptInput();
+          submitAndReset(workflowPromptSubmission);
           return;
         }
         const skillPromptSubmission = buildSkillPromptSubmission(
@@ -894,8 +887,7 @@ export const PromptInput = React.memo(function PromptInput({
           submissionSkills
         );
         if (skillPromptSubmission) {
-          onSubmit(skillPromptSubmission);
-          resetPromptInput();
+          submitAndReset(skillPromptSubmission);
           return;
         }
         handleSlashSelection(exactMatch);
@@ -903,14 +895,13 @@ export const PromptInput = React.memo(function PromptInput({
       }
     }
 
-    onSubmit({
+    const accepted = submitAndReset({
       text: expandPasteMarkers(buffer.text, pastesRef.current),
       imageUrls,
       selectedSkills: submissionSkills,
       workflowMode,
     });
-    resetPromptInput();
-    if (busy) setStatusMessage("Queued for the next turn");
+    if (accepted && busy) setStatusMessage("Queued for the next turn");
   }
 
   function addSelectedSkill(skill: SkillInfo): void {

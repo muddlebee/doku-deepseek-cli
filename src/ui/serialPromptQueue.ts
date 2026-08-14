@@ -1,4 +1,5 @@
 import type { SessionStatus } from "../session/types";
+import type { PromptSubmission } from "./promptSubmission";
 
 export type QueuedPrompt<T> = Readonly<{
   id: string;
@@ -94,4 +95,8 @@ export function shouldPausePromptQueue(status: SessionStatus | null | undefined)
 
 export function shouldResumePromptQueueAfterContinuation(status: SessionStatus | null | undefined): boolean {
   return status === "completed";
+}
+
+export function shouldBypassPromptQueue(submission: PromptSubmission, isPaused: boolean): boolean {
+  return submission.command === "exit" || (isPaused && submission.command !== undefined);
 }
