@@ -44,7 +44,7 @@ export function completeAgentTurnAtLimit(sessionId: string, deps: OutcomeDepende
     assistantThinking: null,
     assistantRefusal: null,
     toolCalls: null,
-    status: "completed",
+    status: "needs_continuation",
     failReason: null,
     updateTime: new Date().toISOString(),
   }));

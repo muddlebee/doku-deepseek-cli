@@ -48,6 +48,8 @@ import {
 import type { FileMentionItem } from "./fileMentions";
 import { readClipboardImageAsync } from "./clipboard";
 import type { SessionEntry, SkillInfo } from "../session";
+import { WORKFLOW_MODE, type WorkflowMode } from "../session/types";
+import { UI_COLOR } from "./theme";
 
 // Re-exported from prompt modules for backward compatibility
 export { useTerminalInput, parseTerminalInput, dispatchTerminalInput } from "./prompt";
@@ -64,13 +66,7 @@ import {
 import SlashCommandMenu, { isSkillSelected } from "./SlashCommandMenu";
 import type { ModelConfigSelection } from "../settings";
 import { FileMentionMenu, ModelsDropdown, RawModelDropdown, SkillsDropdown } from "./components";
-
-export type PromptSubmission = {
-  text: string;
-  imageUrls: string[];
-  selectedSkills?: SkillInfo[];
-  command?: "new" | "resume" | "continue" | "undo" | "mcp" | "exit" | "setup-websearch";
-};
+import { submitPromptSubmission, type PromptSubmission } from "./promptSubmission";
 
 export type PromptDraft = {
   nonce: number;
@@ -89,10 +85,12 @@ type Props = {
   placeholder?: string;
   runningProcesses?: SessionEntry["processes"];
   promptDraft?: PromptDraft | null;
-  onSubmit: (submission: PromptSubmission) => void;
+  workflowMode?: WorkflowMode;
+  onSubmit: (submission: PromptSubmission) => boolean;
   onModelConfigChange: (selection: ModelConfigSelection) => string | Promise<string>;
   onRawModeChange?: (mode: string) => void;
   onInterrupt: () => void;
+  onWorkflowModeChange: (mode: WorkflowMode) => void;
   onToggleProcessStdout?: () => void;
 };
 
@@ -111,7 +109,13 @@ function KeyHint({ k, d }: { k: string; d: string }): React.ReactElement {
 const SPINNER_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 const SPINNER_COLORS = ["#0ea5e9", "#6366f1", "#8b5cf6", "#a855f7", "#8b5cf6", "#6366f1"];
 
-const PromptPrefixLine = React.memo(function PromptPrefixLine({ busy }: { busy: boolean }): React.ReactElement {
+const PromptPrefixLine = React.memo(function PromptPrefixLine({
+  busy,
+  workflowMode,
+}: {
+  busy: boolean;
+  workflowMode: WorkflowMode;
+}): React.ReactElement {
   const [spinnerIndex, setSpinnerIndex] = useState(0);
 
   useEffect(() => {
@@ -128,7 +132,9 @@ const PromptPrefixLine = React.memo(function PromptPrefixLine({ busy }: { busy: 
   const prefix = busy ? `${SPINNER_FRAMES[spinnerIndex]} ` : "❯ ";
   const color = busy
     ? (SPINNER_COLORS[spinnerIndex % SPINNER_COLORS.length] as Parameters<typeof Text>[0]["color"])
-    : "#0ea5e9";
+    : workflowMode === WORKFLOW_MODE.PLAN
+      ? UI_COLOR.PLAN
+      : UI_COLOR.BUILD;
   return <Text color={color}>{prefix}</Text>;
 });
 
@@ -143,9 +149,11 @@ export const PromptInput = React.memo(function PromptInput({
   placeholder,
   runningProcesses,
   promptDraft,
+  workflowMode = WORKFLOW_MODE.BUILD,
   onSubmit,
   onModelConfigChange,
   onInterrupt,
+  onWorkflowModeChange,
   onToggleProcessStdout,
   onRawModeChange,
 }: Props): React.ReactElement {
@@ -301,6 +309,22 @@ export const PromptInput = React.memo(function PromptInput({
         return;
       }
 
+      if (key.shift && key.tab) {
+        if (busy) {
+          setStatusMessage("wait for the current response before switching modes");
+          return;
+        }
+        setShowSkillsDropdown(false);
+        setShowModelDropdown(false);
+        setOpenRawModelDropdown(false);
+        setDismissedFileMentionKey(fileMentionKey);
+        setStatusMessage(null);
+        const nextWorkflowMode = getNextWorkflowMode(workflowMode);
+        setSelectedSkills((current) => reconcileWorkflowSkills(current, nextWorkflowMode));
+        onWorkflowModeChange(nextWorkflowMode);
+        return;
+      }
+
       if (key.escape) {
         if (showFileMentionMenu) {
           return;
@@ -422,7 +446,7 @@ export const PromptInput = React.memo(function PromptInput({
         }
       }
 
-      if (busy && isPlainReturn) {
+      if (busy && isPlainReturn && buffer.text.trimStart().startsWith("/")) {
         setStatusMessage("wait for the current response or press esc to interrupt");
         return;
       }
@@ -736,6 +760,14 @@ export const PromptInput = React.memo(function PromptInput({
     pasteCounterRef.current = 0;
   }
 
+  function submitAndReset(submission: PromptSubmission, reset: () => void = resetPromptInput): boolean {
+    const accepted = submitPromptSubmission(submission, onSubmit, reset);
+    if (!accepted) {
+      setStatusMessage("Prompt queue is full; your draft was kept");
+    }
+    return accepted;
+  }
+
   function nextSelectableIndex(from: number, direction: 1 | -1): number {
     const len = slashMenu.length;
     let idx = (from + direction + len) % len;
@@ -760,6 +792,16 @@ export const PromptInput = React.memo(function PromptInput({
       setShowSkillsDropdown(false);
       return;
     }
+    if (item.kind === "workflow" && item.skill) {
+      if (item.workflowMode === WORKFLOW_MODE.BUILD) {
+        submitAndReset({ text: "/build", imageUrls: [], command: "build" });
+        return;
+      }
+      if (item.workflowMode) onWorkflowModeChange(item.workflowMode);
+      clearSlashToken();
+      setShowSkillsDropdown(false);
+      return;
+    }
     if (item.kind === "skills") {
       clearSlashToken();
       setShowSkillsDropdown(true);
@@ -777,71 +819,75 @@ export const PromptInput = React.memo(function PromptInput({
       return;
     }
     if (item.kind === "new") {
-      onSubmit({ text: "", imageUrls: [], command: "new" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "new" });
       return;
     }
     if (item.kind === "init") {
-      onSubmit(buildInitPromptSubmission(selectedSkills));
-      resetPromptInput();
+      submitAndReset(buildInitPromptSubmission(reconcileWorkflowSkills(selectedSkills, workflowMode), workflowMode));
       return;
     }
     if (item.kind === "resume") {
-      onSubmit({ text: "", imageUrls: [], command: "resume" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "resume" });
       return;
     }
     if (item.kind === "continue") {
-      onSubmit({ text: "/continue", imageUrls: [], command: "continue" });
-      resetPromptInput();
+      submitAndReset({ text: "/continue", imageUrls: [], command: "continue" });
       return;
     }
     if (item.kind === "undo") {
-      onSubmit({ text: "/undo", imageUrls: [], command: "undo" });
-      resetPromptInput();
+      submitAndReset({ text: "/undo", imageUrls: [], command: "undo" });
       return;
     }
     if (item.kind === "mcp") {
-      onSubmit({ text: "/mcp", imageUrls: [], command: "mcp" });
-      resetPromptInput();
+      submitAndReset({ text: "/mcp", imageUrls: [], command: "mcp" });
       return;
     }
     if (item.kind === "exit") {
-      onSubmit({ text: "/exit", imageUrls: [], command: "exit" });
-      setBuffer(EMPTY_BUFFER);
-      clearUndoRedoStacks();
+      submitAndReset({ text: "/exit", imageUrls: [], command: "exit" }, () => {
+        setBuffer(EMPTY_BUFFER);
+        clearUndoRedoStacks();
+      });
       return;
     }
     if (item.kind === "setup-websearch") {
-      onSubmit({ text: "", imageUrls: [], command: "setup-websearch" });
-      resetPromptInput();
+      submitAndReset({ text: "", imageUrls: [], command: "setup-websearch" });
       return;
     }
   }
 
   function submitCurrentBuffer(): void {
-    if (busy) {
-      setStatusMessage("wait for the current response or press esc to interrupt");
+    const trimmed = buffer.text.trim();
+    const submissionSkills = reconcileWorkflowSkills(selectedSkills, workflowMode);
+    if (!trimmed && imageUrls.length === 0 && submissionSkills.length === 0) {
       return;
     }
 
-    const trimmed = buffer.text.trim();
-    if (!trimmed && imageUrls.length === 0 && selectedSkills.length === 0) {
+    if (busy && trimmed.startsWith("/")) {
+      setStatusMessage("wait for the current response or press esc to interrupt");
       return;
     }
 
     if (trimmed.startsWith("/")) {
       const exactMatch = findExactSlashCommand(slashItems, trimmed.split(/\s+/, 1)[0]);
       if (exactMatch) {
+        const workflowPromptSubmission = buildWorkflowPromptSubmission(
+          exactMatch,
+          expandPasteMarkers(buffer.text, pastesRef.current),
+          imageUrls,
+          submissionSkills
+        );
+        if (workflowPromptSubmission) {
+          submitAndReset(workflowPromptSubmission);
+          return;
+        }
         const skillPromptSubmission = buildSkillPromptSubmission(
           exactMatch,
           expandPasteMarkers(buffer.text, pastesRef.current),
           imageUrls,
-          selectedSkills
+          submissionSkills
         );
         if (skillPromptSubmission) {
-          onSubmit(skillPromptSubmission);
-          resetPromptInput();
+          submitAndReset(skillPromptSubmission);
           return;
         }
         handleSlashSelection(exactMatch);
@@ -849,12 +895,13 @@ export const PromptInput = React.memo(function PromptInput({
       }
     }
 
-    onSubmit({
+    const accepted = submitAndReset({
       text: expandPasteMarkers(buffer.text, pastesRef.current),
       imageUrls,
-      selectedSkills,
+      selectedSkills: submissionSkills,
+      workflowMode,
     });
-    resetPromptInput();
+    if (accepted && busy) setStatusMessage("Queued for the next turn");
   }
 
   function addSelectedSkill(skill: SkillInfo): void {
@@ -888,8 +935,17 @@ export const PromptInput = React.memo(function PromptInput({
         </Box>
       ) : null}
       {/* Input */}
-      <Box borderStyle="round" borderColor={busy ? "#6366f1" : "#0ea5e9"} paddingX={1}>
-        <PromptPrefixLine busy={busy} />
+      <Box
+        borderStyle="round"
+        borderColor={busy ? UI_COLOR.BUSY : workflowMode === WORKFLOW_MODE.PLAN ? UI_COLOR.PLAN : UI_COLOR.BUILD}
+        paddingX={1}
+      >
+        {workflowMode === WORKFLOW_MODE.PLAN ? (
+          <Text color={UI_COLOR.PLAN} bold>
+            PLAN{" "}
+          </Text>
+        ) : null}
+        <PromptPrefixLine busy={busy} workflowMode={workflowMode} />
         {selectedSkills.map((skill) => {
           const builtin = getBuiltinWorkflowSkillByName(skill.name);
           const label = builtin ? builtin.command : skill.name;
@@ -965,7 +1021,13 @@ export function getPromptFooterHints(width: number): Array<{ k: string; d: strin
     { k: "ctrl+c", d: "exit" },
   ];
   if (width < 80) return essential;
-  return [...essential.slice(0, 2), { k: "@", d: "files" }, { k: "ctrl+v", d: "image" }, essential[2]!];
+  const modeHint = { k: "shift+tab", d: "mode" };
+  const standard = [...essential.slice(0, 2), modeHint, { k: "@", d: "files" }, essential[2]!];
+  return width >= 120 ? [...standard.slice(0, -1), { k: "ctrl+v", d: "image" }, essential[2]!] : standard;
+}
+
+export function getNextWorkflowMode(mode: WorkflowMode): WorkflowMode {
+  return mode === WORKFLOW_MODE.PLAN ? WORKFLOW_MODE.BUILD : WORKFLOW_MODE.PLAN;
 }
 
 export const IMAGE_ATTACHMENT_CLEAR_HINT = "ctrl+x clear images";
@@ -996,11 +1058,12 @@ export function toggleSkillSelection(skills: SkillInfo[], skill: SkillInfo): Ski
   return isSkillSelected(skills, skill) ? skills.filter((item) => item.name !== skill.name) : [...skills, skill];
 }
 
-export function buildInitPromptSubmission(selectedSkills: SkillInfo[]): PromptSubmission {
+export function buildInitPromptSubmission(selectedSkills: SkillInfo[], workflowMode?: WorkflowMode): PromptSubmission {
   return {
     text: "/init",
     imageUrls: [],
     selectedSkills: selectedSkills.length > 0 ? selectedSkills : undefined,
+    ...(workflowMode ? { workflowMode } : {}),
   };
 }
 
@@ -1030,6 +1093,38 @@ export function buildSkillPromptSubmission(
     imageUrls,
     selectedSkills: addUniqueSkill(selectedSkills, item.skill),
   };
+}
+
+export function buildWorkflowPromptSubmission(
+  item: SlashCommandItem,
+  text: string,
+  imageUrls: string[],
+  selectedSkills: SkillInfo[]
+): PromptSubmission | null {
+  if (item.kind !== "workflow" || !item.skill || !item.workflowMode) return null;
+  const trimmedStart = text.trimStart();
+  const commandToken = trimmedStart.split(/\s+/, 1)[0] ?? "";
+  if (commandToken !== item.label) return null;
+  const promptText = trimmedStart.slice(commandToken.length).trimStart();
+  if (item.workflowMode === WORKFLOW_MODE.BUILD && !promptText && imageUrls.length === 0) {
+    return { text: "/build", imageUrls: [], command: "build" };
+  }
+  if (!promptText && imageUrls.length === 0) return null;
+  const workflowSkills =
+    item.workflowMode === WORKFLOW_MODE.PLAN ? selectedSkills : addUniqueSkill(selectedSkills, item.skill);
+  return {
+    text: promptText,
+    imageUrls,
+    ...(workflowSkills.length > 0 ? { selectedSkills: workflowSkills } : {}),
+    workflowMode: item.workflowMode,
+  };
+}
+
+export function reconcileWorkflowSkills(skills: SkillInfo[], workflowMode: WorkflowMode): SkillInfo[] {
+  return skills.filter((skill) => {
+    const workflowSkill = getBuiltinWorkflowSkillByName(skill.name);
+    return !workflowSkill?.command || workflowSkill.command === workflowMode;
+  });
 }
 
 export function removeCurrentSlashToken(state: PromptBufferState): PromptBufferState {

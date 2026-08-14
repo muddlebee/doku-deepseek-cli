@@ -25,7 +25,8 @@ import {
   resolveSettingsSources,
 } from "../settings";
 import { loadProjectEnv } from "../common/project-env";
-import { PromptInput, type PromptDraft, type PromptSubmission } from "./PromptInput";
+import { getNextWorkflowMode, PromptInput, type PromptDraft } from "./PromptInput";
+import type { PromptSubmission } from "./promptSubmission";
 import { MessageView, RawModeExitPrompt } from "./components";
 import { SessionList } from "./SessionList";
 import { UndoSelector, type UndoRestoreMode } from "./UndoSelector";
@@ -45,8 +46,21 @@ import { buildExitSummaryText } from "./exitSummary";
 import { RawMode, useRawModeContext } from "./contexts";
 import { renderMessageToStdout } from "./components/MessageView/utils";
 import { WebSearchSetupScreen } from "./WebSearchSetupScreen";
+import { PlanHandoffPrompt } from "./PlanHandoffPrompt";
+import { PLAN_STATUS, WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
+import {
+  SerialPromptQueue,
+  shouldBypassPromptQueue,
+  shouldDiscardPromptQueueAfterSessionSelection,
+  shouldDiscardPromptQueueAfterUndoRestore,
+  shouldDiscardPromptQueueForCommand,
+  shouldDiscardPromptQueueForModeChange,
+  shouldPausePromptQueue,
+  shouldResumePromptQueueAfterRecovery,
+  type QueuedPrompt,
+} from "./serialPromptQueue";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -68,6 +82,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const writeRef = useRef(write);
   const lastRenderedColumnsRef = useRef<number | null>(null);
   const messagesRef = useRef<SessionMessage[]>([]);
+  const sessionManagerRef = useRef<SessionManager | null>(null);
+  const promptProcessorRef = useRef<((submission: PromptSubmission) => Promise<void>) | null>(null);
+  const promptQueueRef = useRef<SerialPromptQueue<PromptSubmission> | null>(null);
   const [view, setView] = useState<AppView>("chat");
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -80,6 +97,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [runningProcesses, setRunningProcesses] = useState<SessionEntry["processes"]>(null);
   const [activeEntry, setActiveEntry] = useState<SessionEntry | null>(null);
   const [dismissedQuestionIds, setDismissedQuestionIds] = useState<Set<string>>(() => new Set());
+  const [dismissedPlanRevisions, setDismissedPlanRevisions] = useState<Set<string>>(() => new Set());
   const [isExiting, setIsExiting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeNonce, setWelcomeNonce] = useState(0);
@@ -87,6 +105,8 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const [nowTick, setNowTick] = useState(0);
   const [mcpStatuses, setMcpStatuses] = useState<ReturnType<typeof sessionManager.getMcpStatus>>([]);
   const [showProcessStdout, setShowProcessStdout] = useState(false);
+  const [pendingWorkflowMode, setPendingWorkflowMode] = useState<WorkflowMode>(WORKFLOW_MODE.BUILD);
+  const [queuedPrompts, setQueuedPrompts] = useState<readonly QueuedPrompt<PromptSubmission>[]>([]);
 
   const openSecondaryView = useCallback((nextView: Exclude<AppView, "chat">): void => {
     setShowWelcome(false);
@@ -151,6 +171,26 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       },
     });
   }, [openSecondaryView, projectRoot]);
+  sessionManagerRef.current = sessionManager;
+
+  if (!promptQueueRef.current) {
+    promptQueueRef.current = new SerialPromptQueue({
+      process: async (submission) => {
+        const processor = promptProcessorRef.current;
+        if (!processor) throw new Error("The prompt processor is not ready.");
+        await processor(submission);
+      },
+      onPendingChange: setQueuedPrompts,
+      onError: (error) => setErrorLine(error instanceof Error ? error.message : String(error)),
+      canContinue: () => {
+        const manager = sessionManagerRef.current;
+        const sessionId = manager?.getActiveSessionId();
+        if (!manager || !sessionId) return true;
+        const session = manager.getSession(sessionId);
+        return !shouldPausePromptQueue(session?.status, session?.workflow.plan?.status);
+      },
+    });
+  }
 
   const closeSecondaryView = useCallback((): void => {
     setView((current) => transitionView(current, { type: "close" }));
@@ -212,6 +252,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const handlePrompt = useCallback(
     async (submission: PromptSubmission) => {
       if (submission.command === "exit") {
+        sessionManager.interruptActiveSession();
         setIsExiting(true);
         setTimeout(() => {
           const activeSessionId = sessionManager.getActiveSessionId();
@@ -237,6 +278,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           setErrorLine(null);
           setRunningProcesses(null);
           setActiveEntry(null);
+          setPendingWorkflowMode(WORKFLOW_MODE.BUILD);
           setDismissedQuestionIds(new Set());
           setShowWelcome(true);
           setWelcomeNonce((n) => n + 1);
@@ -278,6 +320,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const prompt: UserPromptContent = {
         text: submission.text,
         imageUrls: submission.imageUrls,
+        workflowMode: submission.workflowMode,
         skills:
           submission.selectedSkills && submission.selectedSkills.length > 0 ? submission.selectedSkills : undefined,
       };
@@ -299,7 +342,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       setShowProcessStdout(false);
       processStdoutRef.current.clear();
       try {
-        await sessionManager.handleUserPrompt(prompt);
+        if (submission.command === "build") {
+          const sessionId = sessionManager.getActiveSessionId();
+          if (!sessionId) throw new Error("No finalized plan is ready to implement.");
+          await sessionManager.approveAndBuild(sessionId);
+        } else {
+          await sessionManager.handleUserPrompt(prompt);
+        }
         await refreshSkills();
         refreshSessionsList();
       } catch (error) {
@@ -386,10 +435,62 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   );
 
   const handleSubmit = useCallback(
-    (submission: PromptSubmission) => {
-      void handlePrompt(submission);
+    (submission: PromptSubmission): boolean => {
+      const promptQueue = promptQueueRef.current;
+      const sessionId = sessionManager.getActiveSessionId();
+      const session = sessionId ? sessionManager.getSession(sessionId) : null;
+      if (shouldPausePromptQueue(session?.status, session?.workflow.plan?.status)) {
+        promptQueue?.pause();
+      }
+      if (shouldBypassPromptQueue(submission, promptQueue?.isPaused() ?? false)) {
+        if (shouldDiscardPromptQueueForCommand(submission.command)) {
+          promptQueue?.clear();
+        }
+        void handlePrompt(submission).finally(() => {
+          const recoveredSessionId = sessionManager.getActiveSessionId();
+          const recoveredStatus = recoveredSessionId
+            ? sessionManager.getSession(recoveredSessionId)?.status
+            : undefined;
+          if (shouldResumePromptQueueAfterRecovery(submission.command, recoveredStatus)) {
+            promptQueue?.resume();
+          }
+        });
+        return true;
+      }
+      const accepted = promptQueue?.enqueue(submission) ?? false;
+      if (!accepted) {
+        setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
+      }
+      return accepted;
     },
-    [handlePrompt]
+    [handlePrompt, sessionManager]
+  );
+
+  promptProcessorRef.current = handlePrompt;
+
+  const handleWorkflowModeChange = useCallback(
+    (nextMode: WorkflowMode): void => {
+      const sessionId = sessionManager.getActiveSessionId();
+      if (!sessionId) {
+        setPendingWorkflowMode(nextMode);
+        return;
+      }
+      try {
+        const promptQueue = promptQueueRef.current;
+        const planStatus = sessionManager.getSession(sessionId)?.workflow.plan?.status;
+        const discardPausedImplementation = shouldDiscardPromptQueueForModeChange(
+          promptQueue?.isPaused() ?? false,
+          planStatus,
+          nextMode
+        );
+        sessionManager.setWorkflowMode(sessionId, nextMode);
+        if (discardPausedImplementation) promptQueue?.clear();
+        setErrorLine(null);
+      } catch (error) {
+        setErrorLine(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [sessionManager]
   );
 
   const reloadActiveSessionView = useCallback(
@@ -428,6 +529,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       const currentSessionId = sessionManager.getActiveSessionId();
+      if (shouldDiscardPromptQueueAfterSessionSelection(currentSessionId, sessionId)) {
+        promptQueueRef.current?.clear();
+      }
       if (currentSessionId !== sessionId) {
         process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
       }
@@ -461,9 +565,11 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       }
 
       const errors: string[] = [];
+      let codeRestored = false;
       if (restoreMode === "code-and-conversation") {
         try {
           sessionManager.restoreSessionCode(sessionId, target.message.id);
+          codeRestored = true;
         } catch (error) {
           errors.push(`Code restore failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -475,6 +581,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         conversationRestored = true;
       } catch (error) {
         errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      if (shouldDiscardPromptQueueAfterUndoRestore(codeRestored, conversationRestored)) {
+        promptQueueRef.current?.clear();
       }
 
       refreshSessionsList();
@@ -598,6 +708,16 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     [activeEntry?.status, messages]
   );
   const shouldShowQuestionPrompt = Boolean(pendingQuestion && !dismissedQuestionIds.has(pendingQuestion.messageId));
+  const activePlan = activeEntry?.workflow.plan ?? null;
+  const activePlanDismissalKey =
+    activeEntry && activePlan ? `${activeEntry.id}:${activePlan.planId}:${activePlan.revision}` : null;
+  const shouldShowPlanHandoff = Boolean(
+    activeEntry?.workflow.mode === WORKFLOW_MODE.PLAN &&
+    activePlan?.status === PLAN_STATUS.READY &&
+    activePlanDismissalKey &&
+    !dismissedPlanRevisions.has(activePlanDismissalKey)
+  );
+  const currentWorkflowMode = activeEntry?.workflow.mode ?? pendingWorkflowMode;
   const loadingText = useMemo(
     () => (busy ? buildLoadingText({ progress: streamProgress, processes: runningProcesses, now: Date.now() }) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nowTick forces periodic recalculation for spinner animation
@@ -642,10 +762,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleQuestionAnswers = useCallback(
     (answers: AskUserQuestionAnswers) => {
-      void handlePrompt({
-        text: formatAskUserQuestionAnswers(answers),
-        imageUrls: [],
-      });
+      promptQueueRef.current?.pause();
+      void handlePrompt({ text: formatAskUserQuestionAnswers(answers), imageUrls: [] }).finally(() =>
+        promptQueueRef.current?.resume()
+      );
     },
     [handlePrompt]
   );
@@ -655,7 +775,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       return;
     }
     setDismissedQuestionIds((prev) => new Set(prev).add(pendingQuestion.messageId));
-    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] });
+    promptQueueRef.current?.pause();
+    void handlePrompt({ text: formatAskUserQuestionDecline(), imageUrls: [] }).finally(() =>
+      promptQueueRef.current?.resume()
+    );
   }, [handlePrompt, pendingQuestion]);
 
   if (mode === RawMode.Raw) {
@@ -695,6 +818,18 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         <Box marginLeft={1} gap={1}>
           <Text color={chatStatusColor(chatStatus.kind)}>{chatStatusSymbol(chatStatus.kind)}</Text>
           <Text dimColor>{chatStatus.text}</Text>
+        </Box>
+      ) : null}
+      {view === "chat" && queuedPrompts.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          {queuedPrompts.map((queuedPrompt) => (
+            <Box key={queuedPrompt.id} gap={1}>
+              <Text color="gray">Queued</Text>
+              <Text dimColor wrap="wrap">
+                {formatQueuedPrompt(queuedPrompt.submission)}
+              </Text>
+            </Box>
+          ))}
         </Box>
       ) : null}
       {showProcessStdout ? (
@@ -737,6 +872,15 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           onSubmit={handleQuestionAnswers}
           onCancel={handleQuestionCancel}
         />
+      ) : shouldShowPlanHandoff && activePlan && activePlanDismissalKey && !busy ? (
+        <PlanHandoffPrompt
+          revision={activePlan.revision}
+          onImplement={() => handleSubmit({ text: "/build", imageUrls: [], command: "build" })}
+          onKeepPlanning={() => {
+            setDismissedPlanRevisions((current) => new Set(current).add(activePlanDismissalKey));
+          }}
+          onSwitchMode={() => handleWorkflowModeChange(getNextWorkflowMode(currentWorkflowMode))}
+        />
       ) : isExiting ? null : (
         <PromptInput
           projectRoot={projectRoot}
@@ -747,10 +891,12 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           busy={busy}
           runningProcesses={runningProcesses}
           promptDraft={promptDraft}
+          workflowMode={currentWorkflowMode}
           onSubmit={handleSubmit}
           onModelConfigChange={handleModelConfigChange}
           onRawModeChange={handleRawModeChange}
           onInterrupt={handleInterrupt}
+          onWorkflowModeChange={handleWorkflowModeChange}
           onToggleProcessStdout={handleToggleProcessStdout}
           placeholder="Type your message..."
         />
@@ -789,6 +935,15 @@ function buildSyntheticUserMessage(content: string, imageCount: number): Session
     createTime: now,
     updateTime: now,
   };
+}
+
+export function formatQueuedPrompt(submission: PromptSubmission): string {
+  const text = submission.text.trim();
+  if (text) return text.replace(/\s+/g, " ");
+  const skillNames = submission.selectedSkills?.map((skill) => skill.name).filter(Boolean) ?? [];
+  if (skillNames.length > 0) return `Use skills: ${skillNames.join(", ")}`;
+  const imageCount = submission.imageUrls.length;
+  return imageCount === 1 ? "[1 image]" : `[${imageCount} images]`;
 }
 
 export function buildPromptDraftFromSessionMessage(message: SessionMessage, nonce: number): PromptDraft {

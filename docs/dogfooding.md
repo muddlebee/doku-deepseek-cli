@@ -1,6 +1,6 @@
 # CLI dogfooding guide
 
-Use this checklist before calling a UI iteration dogfood-ready. Run it once with OpenAI and once with DeepSeek from a terminal at 60, 80, and at least 120 columns.
+Use the full checklist for major terminal workflows, release readiness, or provider integration changes. It is not required for every focused UI edit: automated tests are the default, and high-risk interaction changes need only the affected journey at one representative width. Add 60, 80, and at least 120-column coverage when the change affects responsive layout or wrapping. Run both OpenAI and DeepSeek when validating provider integration or preparing a release; otherwise prefer a deterministic local provider when the behavior is provider-neutral. Piped stdin and non-TTY output capture do not exercise Ink's interactive terminal behavior.
 
 ## Preparation
 
@@ -10,6 +10,8 @@ Use this checklist before calling a UI iteration dogfood-ready. Run it once with
    npm run bundle
    node dist/cli.js
    ```
+
+   Run `node dist/cli.js` with a PTY-capable terminal or process runner. Interact with actual key presses rather than piping a prepared input stream.
 
 2. Configure credentials with the first-run wizard or environment variables.
 3. Confirm the welcome screen identifies the selected model, reasoning mode, credential source, and project path.

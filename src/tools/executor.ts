@@ -3,6 +3,7 @@ import type { ApiMode, ProviderProfile, ReasoningEffort } from "../settings";
 import { handleAskUserQuestionTool } from "./ask-user-question-handler";
 import { handleBashTool } from "./bash-handler";
 import { handleEditTool } from "./edit-handler";
+import { handleFinalizePlanTool } from "./finalize-plan-handler";
 import { handleGrepTool } from "./grep-handler";
 import { handleListFilesTool } from "./list-files-handler";
 import { handleReadTool } from "./read-handler";
@@ -67,6 +68,8 @@ export type ToolExecutionHooks = {
   onAfterFileMutation?: (filePath: string) => void;
   onNeedsWebSearchSetup?: () => void;
   shouldStop?: () => boolean;
+  getToolRejection?: (toolCallId: string, toolName: string) => ToolExecutionResult | undefined;
+  onToolResult?: (toolCallId: string, result: ToolExecutionResult) => void;
   bashTimeoutMs?: number;
   bashMinTimeoutMs?: number;
 };
@@ -162,7 +165,7 @@ export class ToolExecutor {
         return;
       }
       const toolCall = parsedCalls[index];
-      const result = await this.executeToolCall(sessionId, toolCall, hooks);
+      const result = await this.executeToolCallWithHooks(sessionId, toolCall, hooks);
       executionsByIndex[index] = { toolCallId: toolCall.id, content: this.formatToolResult(result), result };
       if (hooks?.shouldStop?.()) {
         shouldStop = true;
@@ -213,7 +216,7 @@ export class ToolExecutor {
     const executions: ToolCallExecution[] = [];
     for (const toolCall of parsedCalls) {
       if (hooks?.shouldStop?.()) break;
-      const result = await this.executeToolCall(sessionId, toolCall, hooks);
+      const result = await this.executeToolCallWithHooks(sessionId, toolCall, hooks);
       executions.push({ toolCallId: toolCall.id, content: this.formatToolResult(result), result });
       if (hooks?.shouldStop?.()) break;
     }
@@ -224,6 +227,17 @@ export class ToolExecutor {
     return getBuiltInToolExecutionClass(toolName) === "parallel";
   }
 
+  private async executeToolCallWithHooks(
+    sessionId: string,
+    toolCall: ToolCall,
+    hooks?: ToolExecutionHooks
+  ): Promise<ToolExecutionResult> {
+    const rejected = hooks?.getToolRejection?.(toolCall.id, toolCall.function.name);
+    const result = rejected ?? (await this.executeToolCall(sessionId, toolCall, hooks));
+    hooks?.onToolResult?.(toolCall.id, result);
+    return result;
+  }
+
   private registerToolHandlers(): void {
     this.toolHandlers.set("bash", handleBashTool);
     this.toolHandlers.set("read", handleReadTool);
@@ -231,6 +245,7 @@ export class ToolExecutor {
     this.toolHandlers.set("edit", handleEditTool);
     this.toolHandlers.set("AskUserQuestion", handleAskUserQuestionTool);
     this.toolHandlers.set("UpdatePlan", handleUpdatePlanTool);
+    this.toolHandlers.set("FinalizePlan", handleFinalizePlanTool);
     this.toolHandlers.set("WebSearch", handleWebSearchTool);
     this.toolHandlers.set("Grep", handleGrepTool);
     this.toolHandlers.set("ListFiles", handleListFilesTool);

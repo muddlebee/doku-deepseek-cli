@@ -123,8 +123,9 @@ function buildMatcherPrompt(candidates: Array<{ name: string; description: strin
   const capabilities = webProvider
     ? `\nBuilt-in tools already available: WebSearch (provider: ${webProvider}). Do not match skills that duplicate this capability.\n`
     : "";
-  return `When users ask you to perform tasks, check if any available skills match.${capabilities}
-Respond with JSON in this format: {"skillNames": ["name"]}. If none match, return {"skillNames": []}.
+  return `Choose at most one skill that is directly necessary for the user's request.${capabilities}
+Return no skill when a candidate is merely helpful, stylistic, or optional. Prefer the most specialized execution skill over broad meta, polish, or testing skills.
+Respond with JSON in this format: {"skillNames": ["name"]}. The array must contain zero or one name.
 
 Candidate skills:
 \`\`\`json

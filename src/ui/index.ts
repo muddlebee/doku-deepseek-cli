@@ -29,16 +29,20 @@ export {
   isClearImageAttachmentsShortcut,
   getPromptReturnKeyAction,
   getPromptFooterHints,
+  getNextWorkflowMode,
+  reconcileWorkflowSkills,
   renderBufferWithCursor,
   buildInitPromptSubmission,
   buildSkillPromptSubmission,
+  buildWorkflowPromptSubmission,
   useTerminalInput,
   parseTerminalInput,
   dispatchTerminalInput,
-  type PromptSubmission,
   type PromptDraft,
   type InputKey,
 } from "./PromptInput";
+export { submitPromptSubmission, type PromptSubmission } from "./promptSubmission";
+export { formatQueuedPrompt } from "./App";
 export { getThinkingOptionIndex, MODEL_COMMAND_MODELS, MODEL_COMMAND_THINKING_OPTIONS };
 export { disableTerminalExtendedKeys, enableTerminalExtendedKeys, getPromptCursorPlacement } from "./prompt/cursor";
 export { SessionList, formatSessionTitle, filterSessions, formatSessionStatus } from "./SessionList";

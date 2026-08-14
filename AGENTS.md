@@ -22,7 +22,7 @@ Do not introduce any references to the old names: `deepcode`, `Deep Code`, `DEEP
 - `src/mcp/mcp-manager.ts` — MCP lifecycle, discovery, execution, resources, and prompts through the Agents SDK `MCPServerStdio` transport
 - `src/common/` — shared helpers: settings, file history, shell utils, model capabilities, etc.
 - `src/session.ts` — thin session lifecycle facade: create, reply, continue, restore, and orchestration
-- `src/session/` — focused session modules for Agents turns, SDK history, compaction, persistence, checkpoints, tools, skills, notifications, and usage
+- `src/session/` — focused session modules for Agents turns, SDK history, compaction, persistence, checkpoints, tools, skills, workflow state, notifications, and usage
 - `src/prompt.ts` — system prompt construction; identity string is `"You are doku, an interactive CLI tool..."`
 - `src/tests/` — Node test files (`*.test.ts`); run with `tsx --test`
 - `src/tests/live/` — reusable live LLM benchmark harness and scenarios (`live-llm-harness.ts`, `run-live-benchmark.ts`, `scenarios/`)
@@ -70,6 +70,7 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 
 ## Coding Style & Naming Conventions
 
+- Before changing TypeScript or TSX, read and follow [`docs/typescript-practices.md`](docs/typescript-practices.md). It is the repository's required implementation and review checklist; this file takes precedence if the two conflict.
 - Use TypeScript ES modules; keep imports explicit.
 - Prefer small, focused functions; centralize filesystem path construction when a path is reused across files.
 - Keep changes modular and well-refactored; split growing responsibilities into focused modules rather than extending monolithic files.
@@ -80,6 +81,11 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 ## Testing Guidelines
 
 - Add or update tests in `src/tests/` when changing command behavior, prompt rendering, session flow, tools, or settings.
+- Use automated tests as the default validation for focused UI changes.
+- Run a real-PTY journey only when a change materially affects behavior that render or unit tests cannot reliably exercise: keyboard handling, focus or navigation, cancellation/resume, queued input, asynchronous status transitions, raw-mode lifecycle, or terminal reflow.
+- Scope a focused PTY check to the affected journey at one representative width. Add 60/80/120-column coverage only for responsive-layout or wrapping changes.
+- Run the full cross-provider checklist in [`docs/dogfooding.md`](docs/dogfooding.md) for major terminal workflows, release readiness, provider integration changes, or when explicitly requested.
+- Documentation, copy-only, styling-only, and non-UI logic changes do not require a PTY run unless they alter one of the interaction behaviors above. When a PTY check is required, piped stdin or captured non-TTY output is not a substitute.
 - Use Node's built-in `node:test` and `node:assert/strict` APIs to match existing tests.
 - Keep tests deterministic: use temporary directories (`fs.mkdtempSync`) and mock network calls where needed.
 - Temp dir prefixes follow the `doku-<purpose>-` convention.

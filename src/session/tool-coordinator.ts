@@ -1,9 +1,9 @@
 import type { AgentToolInvocation, AgentToolOutput } from "../agent/runtime";
-import type { ToolExecutor } from "../tools/executor";
+import type { ToolExecutionResult, ToolExecutor } from "../tools/executor";
 import type { SessionCheckpointManager } from "./checkpoint-manager";
 import type { SessionProcessTracker } from "./process-tracker";
-import { findToolFunction } from "./tool-calls";
-import type { SessionMessage } from "./types";
+import { findToolFunction, getToolCallIdentity } from "./tool-calls";
+import type { MessageMeta, SessionMessage } from "./types";
 
 export type ToolCoordinatorDependencies = {
   executor: ToolExecutor;
@@ -18,6 +18,8 @@ export type ToolCoordinatorDependencies = {
   isInterrupted: (sessionId: string) => boolean;
   onStdout?: (pid: number, chunk: string) => void;
   onNeedsWebSearchSetup?: () => void;
+  getToolRejection?: (sessionId: string, toolName: string) => ToolExecutionResult | undefined;
+  onToolResult?: (sessionId: string, result: ToolExecutionResult) => MessageMeta | undefined;
 };
 
 export class SessionToolCoordinator {
@@ -36,7 +38,10 @@ export class SessionToolCoordinator {
     const assistant = this.deps.buildAssistant(sessionId, "", [toolCall]);
     this.deps.appendMessage(sessionId, assistant);
     this.deps.emitMessage(assistant, true);
-    const execution = await this.append(sessionId, [toolCall], invocation.signal, false, supportsImages);
+    const rejection = invocation.rejectionReason
+      ? { toolCallId: invocation.callId, reason: invocation.rejectionReason }
+      : undefined;
+    const execution = await this.append(sessionId, [toolCall], invocation.signal, false, supportsImages, rejection);
     const result = [...this.deps.listMessages(sessionId)].reverse().find((message) => {
       const params = message.messageParams as { tool_call_id?: unknown } | null;
       return message.role === "tool" && params?.tool_call_id === invocation.callId;
@@ -49,8 +54,10 @@ export class SessionToolCoordinator {
     toolCalls: unknown[],
     signal?: AbortSignal,
     pendingApproval = false,
-    includeAgentImages = false
+    includeAgentImages = false,
+    rejection?: Readonly<{ toolCallId: string; reason: string }>
   ): Promise<{ waitingForUser: boolean; agentOutput?: AgentToolOutput }> {
+    const resultMetaByToolCallId = new Map<string, MessageMeta>();
     const executions = await this.deps.executor.executeToolCalls(sessionId, toolCalls, {
       signal,
       onProcessStart: (pid, command) => this.deps.processes.add(sessionId, pid, command),
@@ -61,16 +68,24 @@ export class SessionToolCoordinator {
       onAfterFileMutation: (filePath) => this.deps.checkpoints.recordMutation(sessionId, filePath),
       onNeedsWebSearchSetup: this.deps.onNeedsWebSearchSetup,
       shouldStop: () => this.deps.isInterrupted(sessionId),
+      getToolRejection: (toolCallId, toolName) =>
+        rejection?.toolCallId === toolCallId
+          ? { ok: false, name: toolName, error: rejection.reason }
+          : this.deps.getToolRejection?.(sessionId, toolName),
+      onToolResult: (toolCallId, result) => {
+        const resultMeta = this.deps.onToolResult?.(sessionId, result);
+        if (resultMeta) resultMetaByToolCallId.set(toolCallId, resultMeta);
+      },
     });
-    if (this.deps.isInterrupted(sessionId)) return { waitingForUser: false };
-
     let waitingForUser = false;
     let agentOutput: AgentToolOutput | undefined;
     const followUps: SessionMessage[] = [];
     for (const execution of executions) {
       waitingForUser ||= execution.result.awaitUserResponse === true;
       const toolFunction = findToolFunction(toolCalls, execution.toolCallId);
+      const resultMeta = resultMetaByToolCallId.get(execution.toolCallId);
       const message = this.deps.buildTool(sessionId, execution.toolCallId, execution.content, toolFunction);
+      if (resultMeta) message.meta = { ...message.meta, ...resultMeta };
       if (pendingApproval) message.meta = { ...message.meta, pendingApproval: true };
       this.deps.appendMessage(sessionId, message);
       this.deps.emitMessage(message, true);
@@ -85,6 +100,18 @@ export class SessionToolCoordinator {
     }
     followUps.forEach((message) => this.deps.appendMessage(sessionId, message));
     return { waitingForUser, ...(agentOutput ? { agentOutput } : {}) };
+  }
+
+  reject(sessionId: string, toolCalls: unknown[], reason: string): void {
+    for (const toolCall of toolCalls) {
+      const identity = getToolCallIdentity(toolCall);
+      if (!identity) continue;
+      const content = JSON.stringify({ ok: false, name: identity.name, error: reason });
+      const toolFunction = findToolFunction(toolCalls, identity.id);
+      const message = this.deps.buildTool(sessionId, identity.id, content, toolFunction);
+      this.deps.appendMessage(sessionId, message);
+      this.deps.emitMessage(message, true);
+    }
   }
 }
 

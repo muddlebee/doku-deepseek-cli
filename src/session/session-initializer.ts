@@ -2,6 +2,7 @@ import { getDefaultSkillPrompt, getRuntimeContext, getSystemPrompt } from "../pr
 import type { FileSessionStore } from "./file-session-store";
 import type { SessionMessageFactory } from "./message-factory";
 import type { SessionEntry, UserPromptContent } from "./types";
+import { createBuildWorkflow } from "./workflow";
 
 const MAX_SESSION_ENTRIES = 50;
 
@@ -55,6 +56,7 @@ function buildEntry(sessionId: string, prompt: UserPromptContent, now: string): 
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: createBuildWorkflow(),
   };
 }
 

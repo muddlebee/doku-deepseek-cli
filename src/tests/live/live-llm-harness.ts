@@ -3,7 +3,7 @@ import * as path from "path";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { createOpenAIClient } from "../../common/openai-client";
 import { buildThinkingRequestOptions } from "../../common/openai-thinking";
-import { getRuntimeContext, getSystemPrompt, getTools } from "../../prompt";
+import { getRuntimeContext, getSystemPrompt, getToolInstructions, getTools } from "../../prompt";
 import type { ModelUsage } from "../../session";
 import { ToolExecutor } from "../../tools/executor";
 
@@ -90,7 +90,13 @@ export async function runLiveScenario(
     };
   }
 
-  const systemPrompt = getSystemPrompt(projectRoot, { model, webSearchEnabled: true });
+  const tools = getTools({ model, webSearchEnabled: true });
+  const systemPrompt = [
+    getSystemPrompt(projectRoot, { model, webSearchEnabled: true }),
+    getToolInstructions(tools, { model, webSearchEnabled: true }),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const messages: ChatCompletionMessageParam[] = [{ role: "system", content: systemPrompt }];
   if (options.includeRuntimeContext !== false) {
     messages.push({
@@ -140,7 +146,7 @@ export async function runLiveScenario(
           {
             model,
             messages,
-            tools: getTools({ model, webSearchEnabled: true }),
+            tools,
             ...buildThinkingRequestOptions(thinkingEnabled, baseURL, reasoningEffort),
           },
           { signal: timeoutController.signal }

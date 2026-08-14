@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Model, ModelRequest } from "@openai/agents";
-import { runAgentTurn } from "../session/agent-turn";
+import { AGENT_TURN_OUTCOME, runAgentTurn } from "../session/agent-turn";
 import { SessionMessageFactory } from "../session/message-factory";
 import type { SessionEntry, SessionMessage } from "../session/types";
 
@@ -27,6 +27,7 @@ test("Agents turns preserve refusal metadata and fail the session", async () => 
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -137,6 +138,7 @@ test("Agents turns persist the final response reasoning in the session entry", a
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -241,6 +243,7 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -342,19 +345,24 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
   };
 
   try {
-    await runAgentTurn({ ...options, continueExisting: false }, dependencies);
+    const firstOutcome = await runAgentTurn({ ...options, continueExisting: false }, dependencies);
 
     assert.equal(modelCalls, 1);
-    assert.equal(entry.status, "completed");
+    assert.equal(firstOutcome, AGENT_TURN_OUTCOME.NEEDS_CONTINUATION);
+    assert.equal(entry.status, "needs_continuation");
     assert.equal(entry.failReason, null);
     assert.equal(entry.activeTokens, 6);
     assert.equal(entry.usage?.total_tokens, 6);
     assert.match(displayed.at(-1)?.content ?? "", /`\/continue`/);
 
     entry = { ...entry, status: "processing" };
-    await runAgentTurn({ ...options, controller: new AbortController(), continueExisting: true }, dependencies);
+    const secondOutcome = await runAgentTurn(
+      { ...options, controller: new AbortController(), continueExisting: true },
+      dependencies
+    );
 
     assert.equal(modelCalls, 2);
+    assert.equal(secondOutcome, AGENT_TURN_OUTCOME.COMPLETED);
     assert.equal(entry.status, "completed");
     assert.equal(entry.assistantReply, "Finished after continuing.");
     assert.match(JSON.stringify(modelInputs[1]), /function_call_result/);
@@ -382,6 +390,7 @@ test("Agents turns refresh tools and compact between model requests", async () =
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -515,6 +524,7 @@ test("Agents turns replay completed tool work after a later model request fails"
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {
@@ -661,6 +671,7 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
     createTime: now,
     updateTime: now,
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
   const messages: SessionMessage[] = [
     {

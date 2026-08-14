@@ -15,6 +15,13 @@ export function findToolFunction(toolCalls: unknown[], toolCallId: string): unkn
   return null;
 }
 
+export function getToolCallIdentity(toolCall: unknown): { id: string; name: string } | null {
+  if (!toolCall || typeof toolCall !== "object") return null;
+  const record = toolCall as { id?: unknown; function?: { name?: unknown } };
+  if (typeof record.id !== "string" || !record.id || typeof record.function?.name !== "string") return null;
+  return { id: record.id, name: record.function.name };
+}
+
 function getAssistantToolCalls(message: SessionMessage): unknown[] {
   const params = message.messageParams as { tool_calls?: unknown[] } | null;
   return Array.isArray(params?.tool_calls) ? params.tool_calls : [];

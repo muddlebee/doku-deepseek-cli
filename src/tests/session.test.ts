@@ -4,10 +4,13 @@ import { execFileSync } from "node:child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { PENDING_QUESTION_FINALIZE_ERROR } from "../agent/pending-question-barrier";
 import { GitFileHistory } from "../common/file-history";
-import { SessionManager, type SessionMessage } from "../session";
+import { SessionManager, type SessionEntry, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
 import { hasProcessStopFailure } from "../session/process-tracker";
+import { PLAN_STATUS, WORKFLOW_MODE } from "../session/types";
+import { buildPlanHandoff, getBuildMessagePlan } from "../session/workflow-session";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleWarn = console.warn;
@@ -75,6 +78,426 @@ test("SessionManager normalizes legacy sessions without activeTokens to zero", (
 
   assert.equal(manager.getSession("legacy-session")?.activeTokens, 0);
   assert.equal(manager.getSession("legacy-session")?.usagePerModel, null);
+  assert.deepEqual(manager.getSession("legacy-session")?.workflow, { mode: WORKFLOW_MODE.BUILD, plan: null });
+});
+
+test("planning workflow persists revisions and hands the finalized plan to build mode", async () => {
+  const workspace = createTempDir("doku-plan-workflow-workspace-");
+  const home = createTempDir("doku-plan-workflow-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallResponse("UpdatePlan", { plan: "- [ ] Add export model" }, "update-plan-1"),
+    createToolCallResponse("FinalizePlan", { plan: "- [ ] Add export model\n- [ ] Add tests" }, "finalize-plan-1"),
+    createChatResponse("The first plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createToolCallResponse(
+      "FinalizePlan",
+      { plan: "- [ ] Add export model\n- [ ] Add migration tests" },
+      "finalize-plan-2"
+    ),
+    createChatResponse("The revised plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createChatResponse("The approved plan is implemented.", {
+      prompt_tokens: 4,
+      completion_tokens: 2,
+      total_tokens: 6,
+    }),
+    createToolCallResponse(
+      "FinalizePlan",
+      { plan: "- [ ] Replace the export feature with imports" },
+      "finalize-plan-3"
+    ),
+    createChatResponse("The replacement plan is ready.", {
+      prompt_tokens: 4,
+      completion_tokens: 2,
+      total_tokens: 6,
+    }),
+  ]);
+
+  const sessionId = await manager.createSession({
+    text: "Add session export support",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+
+  const ready = manager.getSession(sessionId)?.workflow;
+  assert.equal(ready?.mode, WORKFLOW_MODE.PLAN);
+  assert.equal(ready?.plan?.status, PLAN_STATUS.READY);
+  assert.equal(ready?.plan?.revision, 1);
+
+  await manager.replySession(sessionId, { text: "Add a migration test" });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.revision, 2);
+
+  manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+
+  await manager.approveAndBuild(sessionId);
+
+  const completed = manager.getSession(sessionId)?.workflow;
+  assert.equal(completed?.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(completed?.plan?.status, PLAN_STATUS.COMPLETED);
+  const buildMessage = [...manager.listSessionMessages(sessionId)]
+    .reverse()
+    .find((message) => message.role === "user" && message.content === "/build");
+  assert.ok(buildMessage);
+  assert.ok(completed);
+  const buildPlan = getBuildMessagePlan(buildMessage, completed);
+  assert.ok(buildPlan);
+  const handoff = buildPlanHandoff(buildPlan);
+  assert.equal(
+    buildMessage?.meta?.workflowSnapshot?.plan?.markdown,
+    "- [ ] Add export model\n- [ ] Add migration tests"
+  );
+  assert.match(handoff, /Original request:\nAdd session export support/);
+  assert.match(handoff, /Approved revision: 2/);
+  assert.match(handoff, /Add migration tests/);
+
+  const restored = createSessionManager(workspace, "machine-id-plan-workflow-restored");
+  assert.deepEqual(restored.getSession(sessionId)?.workflow, completed);
+
+  const nextPlanningCycle = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+  assert.notEqual(nextPlanningCycle.workflow.plan?.planId, completed?.plan?.planId);
+  await manager.replySession(sessionId, {
+    text: "Replace the export feature with imports",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+  const latestWorkflow = manager.getSession(sessionId)?.workflow;
+  assert.ok(latestWorkflow);
+  const historicalPlan = getBuildMessagePlan(buildMessage, latestWorkflow);
+  assert.ok(historicalPlan);
+  const historicalHandoff = buildPlanHandoff(historicalPlan);
+  assert.match(historicalHandoff, /Add migration tests/);
+  assert.doesNotMatch(historicalHandoff, /Replace the export feature/);
+});
+
+test("build approval does not enter implementation before its handoff is durable", async () => {
+  const workspace = createTempDir("doku-build-handoff-order-workspace-");
+  const home = createTempDir("doku-build-handoff-order-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallResponse("FinalizePlan", { plan: "- [ ] Implement safely" }, "finalize-plan"),
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({ text: "Plan the change", workflowMode: WORKFLOW_MODE.PLAN });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+
+  const internals = manager as unknown as {
+    appendSessionMessage: (id: string, message: SessionMessage) => void;
+  };
+  const appendSessionMessage = internals.appendSessionMessage.bind(manager);
+  internals.appendSessionMessage = (id, message) => {
+    if (message.role === "user" && message.content === "/build") {
+      throw new Error("simulated handoff persistence failure");
+    }
+    appendSessionMessage(id, message);
+  };
+
+  await assert.rejects(manager.approveAndBuild(sessionId), /simulated handoff persistence failure/);
+
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(
+    manager.listSessionMessages(sessionId).some((message) => message.role === "user" && message.content === "/build"),
+    false
+  );
+});
+
+test("build approval reuses a handoff persisted before a lifecycle write failure", async () => {
+  const workspace = createTempDir("doku-build-handoff-retry-workspace-");
+  const home = createTempDir("doku-build-handoff-retry-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallResponse("FinalizePlan", { plan: "- [ ] Implement safely" }, "finalize-plan"),
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createChatResponse("The plan is implemented.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({ text: "Plan the change", workflowMode: WORKFLOW_MODE.PLAN });
+
+  const internals = manager as unknown as {
+    updateSessionEntry: (id: string, updater: (entry: SessionEntry) => SessionEntry) => SessionEntry | null;
+  };
+  const updateSessionEntry = internals.updateSessionEntry.bind(manager);
+  let failLifecycleWrite = true;
+  internals.updateSessionEntry = (id, updater) => {
+    const current = manager.getSession(id);
+    assert.ok(current);
+    const next = updater(current);
+    if (failLifecycleWrite && next.workflow.plan?.status === PLAN_STATUS.IMPLEMENTING) {
+      failLifecycleWrite = false;
+      throw new Error("simulated lifecycle persistence failure");
+    }
+    return updateSessionEntry(id, () => next);
+  };
+
+  await assert.rejects(manager.approveAndBuild(sessionId), /simulated lifecycle persistence failure/);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(
+    manager.listSessionMessages(sessionId).filter((message) => message.role === "user" && message.content === "/build")
+      .length,
+    1
+  );
+
+  internals.updateSessionEntry = updateSessionEntry;
+  await manager.approveAndBuild(sessionId);
+
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.COMPLETED);
+  assert.equal(
+    manager.listSessionMessages(sessionId).filter((message) => message.role === "user" && message.content === "/build")
+      .length,
+    1
+  );
+});
+
+test("workflow mode can switch before a planning prompt without auto-loading planning skills", async () => {
+  const workspace = createTempDir("doku-mode-switch-workspace-");
+  const home = createTempDir("doku-mode-switch-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("Initial response", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createChatResponse("First planning response", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createChatResponse("Second planning response", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+
+  const sessionId = await manager.createSession({ text: "Initial build request" });
+  const planning = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+
+  assert.equal(planning.workflow.mode, WORKFLOW_MODE.PLAN);
+  assert.equal(planning.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  assert.equal(planning.workflow.plan?.request, "");
+
+  let automaticSkillMatchingRan = false;
+  manager.identifyMatchingSkillNames = async () => {
+    automaticSkillMatchingRan = true;
+    return ["planning-and-task-breakdown"];
+  };
+  await manager.replySession(sessionId, { text: "Plan export support", workflowMode: WORKFLOW_MODE.PLAN });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.request, "Plan export support");
+  assert.equal(automaticSkillMatchingRan, false);
+  assert.equal(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.skill?.name === "planning-and-task-breakdown"),
+    false
+  );
+
+  await manager.replySession(sessionId, { text: "Keep the plan concise" });
+  assert.equal(automaticSkillMatchingRan, false);
+
+  const build = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
+  assert.equal(build.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(build.workflow.plan?.status, PLAN_STATUS.DRAFT);
+});
+
+test("Plan mode omits WebSearch when resolved settings configure an executable search tool", async () => {
+  const workspace = createTempDir("doku-plan-web-search-workspace-");
+  const home = createTempDir("doku-plan-web-search-home-");
+  setHomeDir(home);
+  const requestedToolNames: string[][] = [];
+  const requestedMessages: unknown[][] = [];
+  const manager = createMockedClientSessionManager(
+    workspace,
+    [createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 })],
+    {
+      resolvedWebSearchTool: "/tmp/doku-search",
+      onRequest: (request) => {
+        requestedToolNames.push(
+          request.tools?.flatMap((tool) => (tool.function?.name ? [tool.function.name] : [])) ?? []
+        );
+        requestedMessages.push(request.messages ?? []);
+      },
+    }
+  );
+
+  await manager.createSession({ text: "Plan a search-backed feature", workflowMode: WORKFLOW_MODE.PLAN });
+
+  assert.equal(requestedToolNames.length, 1);
+  assert.equal(requestedToolNames[0]?.includes("WebSearch"), false);
+  assert.equal(requestedToolNames[0]?.includes("FinalizePlan"), true);
+  const advertisedTools = JSON.stringify(requestedMessages[0]);
+  assert.match(advertisedTools, /## FinalizePlan/);
+  assert.doesNotMatch(advertisedTools, /## WebSearch/);
+  assert.doesNotMatch(advertisedTools, /## Bash/);
+  assert.doesNotMatch(advertisedTools, /## Write/);
+  assert.doesNotMatch(advertisedTools, /## Edit/);
+});
+
+test("FinalizePlan rejects later plan updates until the next user planning turn", async () => {
+  const workspace = createTempDir("doku-terminal-finalize-plan-workspace-");
+  const home = createTempDir("doku-terminal-finalize-plan-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallsResponse([
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Keep the finalized scope" },
+        id: "finalize-terminal-plan",
+      },
+      {
+        name: "UpdatePlan",
+        args: { plan: "- [ ] Replace finalized scope unexpectedly" },
+        id: "update-after-finalize",
+      },
+    ]),
+    createChatResponse("The first plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createToolCallsResponse([
+      {
+        name: "UpdatePlan",
+        args: { plan: "- [ ] Keep the finalized scope\n- [ ] Add migration tests" },
+        id: "update-after-user-revision",
+      },
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Keep the finalized scope\n- [ ] Add migration tests" },
+        id: "finalize-user-revision",
+      },
+    ]),
+    createChatResponse("The revised plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+
+  const sessionId = await manager.createSession({
+    text: "Plan the migration",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+
+  const firstPlan = manager.getSession(sessionId)?.workflow.plan;
+  assert.equal(firstPlan?.status, PLAN_STATUS.READY);
+  assert.equal(firstPlan?.revision, 1);
+  assert.equal(firstPlan?.markdown, "- [ ] Keep the finalized scope");
+  const rejectedUpdate = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "update-after-finalize";
+  });
+  assert.ok(rejectedUpdate);
+  const rejectedContent = rejectedUpdate.content;
+  assert.ok(rejectedContent);
+  assert.deepEqual(JSON.parse(rejectedContent), {
+    ok: false,
+    name: "UpdatePlan",
+    error: "The plan is already finalized for this turn. Wait for a new user planning message before revising it.",
+  });
+
+  await manager.replySession(sessionId, { text: "Add migration tests", workflowMode: WORKFLOW_MODE.PLAN });
+
+  const revisedPlan = manager.getSession(sessionId)?.workflow.plan;
+  assert.equal(revisedPlan?.status, PLAN_STATUS.READY);
+  assert.equal(revisedPlan?.revision, 2);
+  assert.equal(revisedPlan?.markdown, "- [ ] Keep the finalized scope\n- [ ] Add migration tests");
+});
+
+test("FinalizePlan waits for a sibling AskUserQuestion before making the plan ready", async () => {
+  const workspace = createTempDir("doku-question-finalize-workspace-");
+  const home = createTempDir("doku-question-finalize-home-");
+  setHomeDir(home);
+  const finalPlan = "- [ ] Apply the user's selected migration strategy";
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallsResponse([
+      {
+        name: "FinalizePlan",
+        args: { plan: "- [ ] Use an assumed migration strategy" },
+        id: "finalize-before-answer",
+      },
+      {
+        name: "AskUserQuestion",
+        args: {
+          questions: [
+            {
+              question: "Which migration strategy should the plan use?",
+              options: [{ label: "Incremental" }, { label: "One-shot" }],
+            },
+          ],
+        },
+        id: "ask-sibling-of-finalize",
+      },
+    ]),
+    createToolCallResponse("FinalizePlan", { plan: finalPlan }, "finalize-after-answer"),
+    createChatResponse("The answered plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+
+  const sessionId = await manager.createSession({
+    text: "Plan the migration",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+
+  assert.equal(manager.getSession(sessionId)?.status, "waiting_for_user");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.revision, 0);
+  const rejectedFinalize = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "finalize-before-answer";
+  });
+  assert.deepEqual(JSON.parse(rejectedFinalize?.content ?? ""), {
+    ok: false,
+    name: "FinalizePlan",
+    error: PENDING_QUESTION_FINALIZE_ERROR,
+  });
+
+  await manager.replySession(sessionId, { text: "Incremental", workflowMode: WORKFLOW_MODE.PLAN });
+
+  assert.equal(manager.getSession(sessionId)?.status, "completed");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.revision, 1);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.markdown, finalPlan);
+});
+
+test("an approved implementation remains active when the turn limit is reached", async () => {
+  const workspace = createTempDir("doku-plan-turn-limit-workspace-");
+  const home = createTempDir("doku-plan-turn-limit-home-");
+  setHomeDir(home);
+  const notePath = path.join(workspace, "note.txt");
+  fs.writeFileSync(notePath, "context\n", "utf8");
+  const manager = createMockedClientSessionManager(
+    workspace,
+    [
+      createToolCallResponse(
+        "FinalizePlan",
+        { plan: "- [ ] Read the context\n- [ ] Implement the change" },
+        "finalize-before-turn-limit"
+      ),
+      {
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "read-before-turn-limit",
+                  type: "function",
+                  function: { name: "read", arguments: JSON.stringify({ file_path: notePath }) },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      },
+    ],
+    { maxTurns: 1 }
+  );
+  const sessionId = await manager.createSession({ text: "Plan the implementation", workflowMode: WORKFLOW_MODE.PLAN });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+
+  await manager.approveAndBuild(sessionId);
+
+  assert.equal(manager.getSession(sessionId)?.status, "needs_continuation");
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.IMPLEMENTING);
+});
+
+test("automatic skill matching cannot silently switch the default build workflow into plan mode", async () => {
+  const workspace = createTempDir("doku-plan-auto-match-workspace-");
+  const home = createTempDir("doku-plan-auto-match-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("Implementation response", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  manager.identifyMatchingSkillNames = async () => ["planning-and-task-breakdown"];
+
+  const sessionId = await manager.createSession({ text: "Implement a large feature" });
+
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.BUILD);
+  assert.equal(
+    manager
+      .listSessionMessages(sessionId)
+      .some((message) => message.meta?.skill?.name === "planning-and-task-breakdown"),
+    false
+  );
 });
 
 test("SessionManager keeps usagePerModel null until response usage is available", async () => {
@@ -571,7 +994,7 @@ test("createSession stores /init and sends the active .doku project AGENTS path 
   assert.ok(!systemContents.includes("root project instructions"));
 });
 
-test("createSession appends default system prompts in prefix-cache-friendly order", async () => {
+test("createSession appends stable system prompts in prefix-cache-friendly order", async () => {
   const workspace = createTempDir("doku-system-order-workspace-");
   const home = createTempDir("doku-system-order-home-");
   setHomeDir(home);
@@ -589,11 +1012,12 @@ test("createSession appends default system prompts in prefix-cache-friendly orde
     .map((message) => message.content ?? "");
 
   assert.equal(systemContents.length >= 4, true);
-  assert.match(systemContents[0] ?? "", /# Available Tools/);
+  assert.doesNotMatch(systemContents[0] ?? "", /# Available Tools/);
+  assert.match(systemContents[0] ?? "", /# Operating Principles/);
   assert.doesNotMatch(systemContents[0] ?? "", /# Local Workspace Environment/);
   assert.doesNotMatch(systemContents[0] ?? "", /The current LLM model is test-model/);
   assert.match(systemContents[1] ?? "", /<agent-drift-guard-skill>/);
-  assert.match(systemContents[1] ?? "", /<plan-and-execute-skill>/);
+  assert.doesNotMatch(systemContents[1] ?? "", /<plan-and-execute-skill>/);
   assert.doesNotMatch(systemContents[1] ?? "", /path="templates\/skills\//);
   assert.doesNotMatch(systemContents[1] ?? "", /The current LLM model is test-model/);
   assert.match(systemContents[2] ?? "", /# Local Workspace Environment/);
@@ -717,6 +1141,34 @@ test("replySession does not auto-match extra skills when a skill is explicitly s
 
   assert.equal(autoMatched, false);
   assert.deepEqual(loadedSkillNames, ["idea-refine"]);
+});
+
+test("automatic skill matching loads only the strongest match", async () => {
+  const workspace = createTempDir("doku-auto-skill-limit-workspace-");
+  const home = createTempDir("doku-auto-skill-limit-home-");
+  setHomeDir(home);
+
+  for (const skillName of ["frontend-design", "delight", "playwright-cli"]) {
+    const skillDir = path.join(workspace, ".agents", "skills", skillName);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      `---\nname: ${skillName}\ndescription: ${skillName}\n---\n\n# ${skillName}\n`,
+      "utf8"
+    );
+  }
+
+  const manager = createSessionManager(workspace, "machine-id-auto-skill-limit");
+  manager.identifyMatchingSkillNames = async () => ["frontend-design", "delight", "playwright-cli"];
+  manager.activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "Build an animated web page" });
+  const loadedSkillNames = manager
+    .listSessionMessages(sessionId)
+    .filter((message) => message.role === "system" && message.meta?.skill)
+    .map((message) => message.meta?.skill?.name);
+
+  assert.deepEqual(loadedSkillNames, ["frontend-design"]);
 });
 
 test("replySession stores /init and sends the active root project AGENTS path to the LLM", async () => {
@@ -1187,6 +1639,59 @@ test("restoreSessionConversation truncates messages before the selected user pro
   assert.equal(manager.getSession(sessionId)?.assistantReply, "first answer");
 });
 
+test("restoreSessionConversation rolls workflow state back with the retained conversation", async () => {
+  const workspace = createTempDir("doku-undo-workflow-workspace-");
+  const home = createTempDir("doku-undo-workflow-home-");
+  setHomeDir(home);
+
+  const finalizedPlan = "- [ ] Add session export support";
+  const manager = createMockedClientSessionManager(workspace, [
+    {
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "finalize-before-undo",
+                type: "function",
+                function: { name: "FinalizePlan", arguments: JSON.stringify({ plan: finalizedPlan }) },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({
+    text: "Plan session export support",
+    workflowMode: WORKFLOW_MODE.PLAN,
+  });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  const finalizedTool = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "finalize-before-undo";
+  });
+  assert.equal(finalizedTool?.meta?.workflowSnapshot?.plan?.status, PLAN_STATUS.READY);
+
+  manager.activateSession = async () => {};
+  await manager.replySession(sessionId, { text: "Refine the plan" });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.DRAFT);
+  const userPrompts = manager.listSessionMessages(sessionId).filter((message) => message.role === "user");
+  const initialPrompt = userPrompts[0];
+  const refinementPrompt = userPrompts[1];
+  assert.ok(initialPrompt);
+  assert.ok(refinementPrompt);
+
+  manager.restoreSessionConversation(sessionId, refinementPrompt.id);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.markdown, finalizedPlan);
+
+  manager.restoreSessionConversation(sessionId, initialPrompt.id);
+  assert.deepEqual(manager.getSession(sessionId)?.workflow, { mode: WORKFLOW_MODE.BUILD, plan: null });
+});
+
 test("restoreSessionCode restores project files from the recorded Git checkpoint", async (t) => {
   if (!hasGit()) {
     t.skip("git is not available");
@@ -1265,6 +1770,58 @@ test("replySession /continue runs trailing pending tool calls before requesting 
     userMessages.some((message) => message.content === "/continue"),
     false
   );
+});
+
+test("Plan mode rejects a pending mutating tool call before continuing", async () => {
+  const workspace = createTempDir("doku-plan-pending-tool-workspace-");
+  const home = createTempDir("doku-plan-pending-tool-home-");
+  setHomeDir(home);
+
+  const manager = createMockedClientSessionManager(workspace, [
+    createChatResponse("The pending write was not executed.", {
+      prompt_tokens: 9,
+      completion_tokens: 2,
+      total_tokens: 11,
+    }),
+  ]);
+  const activateSession = manager.activateSession.bind(manager);
+  manager.activateSession = async () => {};
+
+  const sessionId = await manager.createSession({ text: "first prompt" });
+  const targetPath = path.join(workspace, "should-not-exist.txt");
+  const pendingAssistant: SessionMessage = {
+    ...buildTestMessage("pending-write", sessionId, "assistant", "I will write the file."),
+    messageParams: {
+      tool_calls: [
+        {
+          id: "call-pending-write",
+          type: "function",
+          function: {
+            name: "write",
+            arguments: JSON.stringify({ file_path: targetPath, content: "unsafe\n" }),
+          },
+        },
+      ],
+    },
+  };
+  const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
+  fs.appendFileSync(
+    path.join(home, ".doku", "projects", projectCode, `${sessionId}.jsonl`),
+    `${JSON.stringify(pendingAssistant)}\n`,
+    "utf8"
+  );
+  manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
+  manager.activateSession = activateSession;
+
+  await manager.replySession(sessionId, { text: "/continue" });
+
+  assert.equal(fs.existsSync(targetPath), false);
+  const rejection = manager.listSessionMessages(sessionId).find((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "call-pending-write";
+  });
+  assert.match(rejection?.content ?? "", /not allowed in doku-planner profile/i);
+  assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.PLAN);
 });
 
 test("replySession preserves raw session messages when a previous tool call is pending", async () => {
@@ -2146,12 +2703,19 @@ function createNotifyingSessionManager(
 function createMockedClientSessionManager(
   projectRoot: string,
   responses: unknown[],
-  settings: { maxTurns?: number; supportsImages?: boolean } = {}
+  settings: {
+    maxTurns?: number;
+    supportsImages?: boolean;
+    webSearchTool?: string;
+    resolvedWebSearchTool?: string;
+    onRequest?: (request: MockChatRequest) => void;
+  } = {}
 ): SessionManager {
   const client = {
     chat: {
       completions: {
-        create: async (request: { stream?: boolean }) => {
+        create: async (request: MockChatRequest) => {
+          settings.onRequest?.(request);
           const response = responses.shift();
           assert.ok(response, "expected a queued chat response");
           return request.stream ? createChatStreamFromResponse(response) : response;
@@ -2167,6 +2731,7 @@ function createMockedClientSessionManager(
       model: "test-model",
       baseURL: "https://api.deepseek.com",
       thinkingEnabled: false,
+      webSearchTool: settings.webSearchTool,
       ...(settings.supportsImages == null
         ? {}
         : {
@@ -2178,11 +2743,21 @@ function createMockedClientSessionManager(
             },
           }),
     }),
-    getResolvedSettings: () => ({ model: "test-model", ...(settings.maxTurns ? { maxTurns: settings.maxTurns } : {}) }),
+    getResolvedSettings: () => ({
+      model: "test-model",
+      ...(settings.maxTurns ? { maxTurns: settings.maxTurns } : {}),
+      webSearchTool: settings.resolvedWebSearchTool,
+    }),
     renderMarkdown: (text) => text,
     onAssistantMessage: () => {},
   });
 }
+
+type MockChatRequest = {
+  stream?: boolean;
+  messages?: unknown[];
+  tools?: Array<{ function?: { name?: string } }>;
+};
 
 function createMockedClientSessionManagerWithClient(
   projectRoot: string,
@@ -2214,6 +2789,28 @@ function createMockedClientSessionManagerWithClient(
 }
 
 class APIUserAbortError extends Error {}
+
+function createToolCallResponse(name: string, args: Record<string, unknown>, id: string): unknown {
+  return createToolCallsResponse([{ name, args, id }]);
+}
+
+function createToolCallsResponse(calls: Array<{ name: string; args: Record<string, unknown>; id: string }>): unknown {
+  return {
+    choices: [
+      {
+        message: {
+          content: "",
+          tool_calls: calls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: JSON.stringify(call.args) },
+          })),
+        },
+      },
+    ],
+    usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+  };
+}
 
 function createChatResponse(content: string, usage: Record<string, unknown>): unknown {
   return {

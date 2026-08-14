@@ -12,6 +12,7 @@ import type {
   SessionsIndex,
   SessionStatus,
 } from "./types";
+import { normalizeWorkflow } from "./workflow";
 
 export class FileSessionStore {
   readonly projectCode: string;
@@ -170,12 +171,21 @@ export class FileSessionStore {
       createTime: typeof value.createTime === "string" ? value.createTime : new Date().toISOString(),
       updateTime: typeof value.updateTime === "string" ? value.updateTime : new Date().toISOString(),
       processes: deserializeProcesses(value.processes),
+      workflow: normalizeWorkflow(value.workflow),
     };
   }
 }
 
 function normalizeStatus(status: unknown): SessionStatus {
-  return ["failed", "pending", "processing", "waiting_for_user", "completed", "interrupted"].includes(String(status))
+  return [
+    "failed",
+    "pending",
+    "processing",
+    "waiting_for_user",
+    "needs_continuation",
+    "completed",
+    "interrupted",
+  ].includes(String(status))
     ? (status as SessionStatus)
     : "pending";
 }

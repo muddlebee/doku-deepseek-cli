@@ -102,7 +102,15 @@ test("formatAskUserQuestionAnswers creates model-readable answer text", () => {
       "Which package manager?": "yarn",
       "Any notes?": "Use the existing lockfile",
     }),
-    'Answers to your questions: "Which package manager?"="yarn", "Any notes?"="Use the existing lockfile". Continue with these answers.'
+    [
+      "Answers to your questions:",
+      "- Which package manager?",
+      "  Answer: yarn",
+      "- Any notes?",
+      "  Answer: Use the existing lockfile",
+      "",
+      "Continue with these answers.",
+    ].join("\n")
   );
 });
 

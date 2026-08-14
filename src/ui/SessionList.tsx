@@ -287,6 +287,8 @@ export function formatSessionStatus(status: SessionStatus): string {
       return "pending";
     case "waiting_for_user":
       return "waiting";
+    case "needs_continuation":
+      return "continue";
     case "failed":
       return "failed";
     case "interrupted":

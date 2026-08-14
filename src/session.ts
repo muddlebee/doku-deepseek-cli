@@ -2,13 +2,15 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { fileURLToPath } from "url";
 import { DEEPSEEK_V4_MODELS } from "./common/model-capabilities";
+import { BUILTIN_SKILL_NAME } from "./common/builtin-skills";
 import { getWebSearchApiKeyEnv } from "./common/web-search-provider";
 import { getTools, type ToolDefinition } from "./prompt";
-import { ToolExecutor, type CreateOpenAIClient } from "./tools/executor";
+import { ToolExecutor, type CreateOpenAIClient, type ToolExecutionResult } from "./tools/executor";
 import { McpManager } from "./mcp/mcp-manager";
 import type { McpServerConfig } from "./settings";
 import type { ApiMode, ProviderProfile } from "./settings";
 import type { AgentToolInvocation, AgentToolOutput } from "./agent/runtime";
+import { filterToolsForProfile, getAgentProfile } from "./agent/profiles";
 import { ProviderRegistry } from "./providers/registry";
 import { FileSessionStore } from "./session/file-session-store";
 import { SkillCatalog } from "./session/skill-catalog";
@@ -21,16 +23,43 @@ import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
 import { isUndoTargetMessage, SessionCheckpointManager } from "./session/checkpoint-manager";
-import { getAgentHistoryPath, hasPausedAgentTurn, removeAgentTurnState, runAgentTurn } from "./session/agent-turn";
-import type {
-  BashTimeoutAdjustment,
-  LlmStreamProgress,
-  MessageMeta,
-  SessionEntry,
-  SessionMessage,
-  SkillInfo,
-  UndoTarget,
-  UserPromptContent,
+import {
+  AGENT_TURN_OUTCOME,
+  getAgentHistoryPath,
+  hasPausedAgentTurn,
+  removeAgentTurnState,
+  runAgentTurn,
+} from "./session/agent-turn";
+import {
+  approvePlan,
+  changeWorkflowMode,
+  completeImplementation,
+  createWorkflowSnapshot,
+  startImplementation,
+} from "./session/workflow";
+import {
+  applyPlanToolUpdate,
+  buildPlanHandoff,
+  getBuildMessagePlan,
+  hasBuildHandoff,
+  getPlanToolRejection,
+  parsePlanToolUpdate,
+  prepareWorkflowEntry,
+  restoreWorkflowFromMessages,
+  stampLatestWorkflowSnapshot,
+} from "./session/workflow-session";
+import {
+  WORKFLOW_MODE,
+  type BashTimeoutAdjustment,
+  type LlmStreamProgress,
+  type MessageMeta,
+  type SessionEntry,
+  type SessionMessage,
+  type SessionWorkflow,
+  type SkillInfo,
+  type UndoTarget,
+  type UserPromptContent,
+  type WorkflowMode,
 } from "./session/types";
 export type {
   BashTimeoutAdjustment,
@@ -163,6 +192,11 @@ export class SessionManager {
       isInterrupted: (sessionId) => this.isInterrupted(sessionId),
       onStdout: options.onProcessStdout,
       onNeedsWebSearchSetup: options.onNeedsWebSearchSetup,
+      getToolRejection: (sessionId, toolName) => getPlanToolRejection(this.getSession(sessionId)?.workflow, toolName),
+      onToolResult: (sessionId, result) => {
+        const workflowSnapshot = this.handleWorkflowToolResult(sessionId, result);
+        return workflowSnapshot ? { workflowSnapshot } : undefined;
+      },
     });
     this.mcpManager.prepare(this.getResolvedSettings().mcpServers);
   }
@@ -253,6 +287,17 @@ export class SessionManager {
     this.activeSessionId = sessionId;
   }
 
+  setWorkflowMode(sessionId: string, mode: WorkflowMode): SessionEntry {
+    const now = new Date().toISOString();
+    const updated = this.updateSessionEntry(sessionId, (entry) => ({
+      ...entry,
+      workflow: changeWorkflowMode(entry.workflow, mode, now),
+      updateTime: now,
+    }));
+    if (!updated) throw new Error("No active session was found.");
+    return updated;
+  }
+
   addSessionSystemMessage(sessionId: string, content: string, visible?: boolean, meta?: MessageMeta): void {
     const message = this.buildSystemMessage(sessionId, content, null, visible, meta);
     if (sessionId) this.appendSessionMessage(sessionId, message);
@@ -298,8 +343,11 @@ export class SessionManager {
       messages: this.messageFactory,
       removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
     });
+    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+    if (workflow) this.stampLatestMessageWorkflow(sessionId, workflow);
+    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
 
-    await this.appendSkills(sessionId, userPrompt, signal, false);
+    await this.appendSkills(sessionId, preparedPrompt, signal, false);
 
     this.activeSessionId = sessionId;
     await this.activateSession(sessionId, controller);
@@ -331,10 +379,12 @@ export class SessionManager {
     this.reportNewPrompt();
 
     this.checkpoints.ensureSession(sessionId);
-    const userMessage = this.buildUserMessage(sessionId, userPrompt);
+    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
+    const userMessage = this.buildUserMessage(sessionId, preparedPrompt, workflow ?? undefined);
     this.appendSessionMessage(sessionId, userMessage);
 
-    await this.appendSkills(sessionId, userPrompt, signal, true);
+    await this.appendSkills(sessionId, preparedPrompt, signal, true);
 
     this.activeSessionId = sessionId;
     await this.activateSession(sessionId, controller);
@@ -366,6 +416,7 @@ export class SessionManager {
       maxTurns: configuredMaxTurns,
       tracingEnabled: configuredTracing,
       debugLogEnabled,
+      webSearchTool,
     } = clientConfig;
     const resolvedSettings = this.getResolvedSettings();
     const providerId = configuredProvider ?? resolvedSettings.provider ?? "custom";
@@ -419,6 +470,12 @@ export class SessionManager {
       });
       const activeProvider = provider;
       const tracingEnabled = configuredTracing ?? resolvedSettings.tracingEnabled ?? false;
+      const hasExecutableWebSearchTool = Boolean(webSearchTool?.trim() || resolvedSettings.webSearchTool?.trim());
+      const profile = getAgentProfile(this.getSession(sessionId)?.workflow.mode ?? WORKFLOW_MODE.BUILD, {
+        allowWebSearch: !hasExecutableWebSearchTool,
+      });
+      const getActiveTools = () =>
+        filterToolsForProfile(getTools(this.getPromptToolOptions(), this.mcpToolDefinitions), profile);
       const compactAtTokens = activeProvider.compactAtTokens ?? getCompactPromptTokenThreshold(model);
       if (
         (this.getSession(sessionId)?.activeTokens ?? 0) >= compactAtTokens &&
@@ -432,16 +489,17 @@ export class SessionManager {
           sessionController.signal
         );
       }
-      await runAgentTurn(
+      const turnOutcome = await runAgentTurn(
         {
           sessionId,
           provider: activeProvider,
           model,
-          tools: getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
+          tools: getActiveTools(),
           maxTurns: configuredMaxTurns ?? resolvedSettings.maxTurns ?? 100,
           tracingEnabled,
           controller: sessionController,
           continueExisting,
+          profile,
         },
         {
           store: this.sessionStore,
@@ -454,11 +512,12 @@ export class SessionManager {
           onAssistantMessage: this.onAssistantMessage,
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
+          rejectTools: (id, calls, reason) => this.toolCoordinator.reject(id, calls, reason),
           executeTool: (id, invocation, supportsImages) => this.executeAgentTool(id, invocation, supportsImages),
           renderContent: (message) => this.renderAgentMessageContent(message),
           onProgress: this.onLlmStreamProgress,
           isInterrupted: (id) => this.isInterrupted(id),
-          getTools: () => getTools(this.getPromptToolOptions(), this.mcpToolDefinitions),
+          getTools: getActiveTools,
           compactIfNeeded: async (activeTokens, signal) => {
             if (activeTokens < compactAtTokens || hasPausedAgentTurn(sessionId, this.sessionStore.projectDir)) {
               return;
@@ -467,6 +526,7 @@ export class SessionManager {
           },
         }
       );
+      if (turnOutcome === AGENT_TURN_OUTCOME.COMPLETED) this.completeActiveImplementation(sessionId);
     } catch (error) {
       const errMessage = error instanceof Error ? error.message : String(error);
       const aborted = this.isAbortLikeError(error) || sessionController.signal.aborted;
@@ -494,6 +554,71 @@ export class SessionManager {
     supportsImages: boolean
   ): Promise<AgentToolOutput> {
     return this.toolCoordinator.executeAgentTool(sessionId, invocation, supportsImages);
+  }
+
+  async approveAndBuild(sessionId: string): Promise<void> {
+    const controller = new AbortController();
+    this.activePromptController = controller;
+    try {
+      const entry = this.getSession(sessionId);
+      if (!entry) throw new Error("No active session was found.");
+      const now = new Date().toISOString();
+      const workflow = startImplementation(approvePlan(entry.workflow, now), now);
+      const buildSkill = (await this.skillCatalog.list(sessionId)).find(
+        (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
+      );
+      const prompt: UserPromptContent = {
+        text: "/build",
+        skills: buildSkill ? [buildSkill] : undefined,
+        workflowMode: WORKFLOW_MODE.BUILD,
+      };
+
+      this.reportNewPrompt();
+      this.checkpoints.ensureSession(sessionId);
+      if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
+        this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
+      }
+
+      this.updateSessionEntry(sessionId, (current) => ({
+        ...current,
+        workflow,
+        status: "pending",
+        failReason: null,
+        updateTime: now,
+      }));
+      this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
+      await this.appendSkills(sessionId, prompt, controller.signal, true);
+      this.activeSessionId = sessionId;
+      await this.activateSession(sessionId, controller);
+    } catch (error) {
+      if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
+    } finally {
+      if (this.activePromptController === controller) this.activePromptController = null;
+    }
+  }
+
+  private prepareWorkflowForPrompt(sessionId: string, prompt: UserPromptContent): SessionWorkflow | null {
+    const updated = this.updateSessionEntry(sessionId, (entry) => prepareWorkflowEntry(entry, prompt));
+    return updated?.workflow ?? null;
+  }
+
+  private completeActiveImplementation(sessionId: string): void {
+    const current = this.getSession(sessionId);
+    if (!current) return;
+    const workflow = completeImplementation(current.workflow);
+    if (workflow === current.workflow) return;
+    const updated = this.updateSessionEntry(sessionId, (entry) => ({
+      ...entry,
+      workflow,
+    }));
+    if (updated) this.stampLatestMessageWorkflow(sessionId, updated.workflow);
+  }
+
+  private handleWorkflowToolResult(sessionId: string, result: ToolExecutionResult): SessionWorkflow | undefined {
+    const update = parsePlanToolUpdate(result);
+    if (!update) return undefined;
+    const updated = this.updateSessionEntry(sessionId, (entry) => applyPlanToolUpdate(entry, update));
+    return updated ? createWorkflowSnapshot(updated.workflow) : undefined;
   }
 
   private getPausedRunStatePath(sessionId: string): string {
@@ -677,9 +802,11 @@ export class SessionManager {
       | { tool_calls?: unknown[]; reasoning_content?: string }
       | null
       | undefined;
+    const workflow = restoreWorkflowFromMessages(keptMessages);
 
     this.updateSessionEntry(sessionId, (entry) => ({
       ...entry,
+      workflow,
       assistantReply: latestAssistant?.content ?? null,
       assistantThinking:
         typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
@@ -721,8 +848,12 @@ export class SessionManager {
     return this.sessionStore.updateEntry(sessionId, updater);
   }
 
-  private buildUserMessage(sessionId: string, prompt: UserPromptContent): SessionMessage {
-    return this.messageFactory.user(sessionId, prompt);
+  private buildUserMessage(
+    sessionId: string,
+    prompt: UserPromptContent,
+    workflowSnapshot?: SessionWorkflow
+  ): SessionMessage {
+    return this.messageFactory.user(sessionId, prompt, workflowSnapshot);
   }
 
   private renderInitCommandPrompt(): string {
@@ -777,7 +908,20 @@ export class SessionManager {
 
   private renderAgentMessageContent(message: SessionMessage): string {
     if (message.role === "user" && message.content === "/init") return this.renderInitCommandPrompt();
+    if (message.role === "user" && message.content === "/build") {
+      const workflow = this.getSession(message.sessionId)?.workflow;
+      if (workflow) {
+        const plan = getBuildMessagePlan(message, workflow);
+        if (plan) return buildPlanHandoff(plan);
+      }
+    }
     return message.content ?? "";
+  }
+
+  private stampLatestMessageWorkflow(sessionId: string, workflow: SessionWorkflow): void {
+    const messages = this.listSessionMessages(sessionId);
+    if (messages.length === 0) return;
+    this.saveSessionMessages(sessionId, stampLatestWorkflowSnapshot(messages, workflow));
   }
 
   private maybeNotifyTaskCompletion(

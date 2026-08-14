@@ -121,14 +121,19 @@ When a workflow skill is loaded in the conversation, follow that skill document 
 
 IMPORTANT: Never fabricate URLs unrelated to programming. For programming links, only use: 1) context provided by the user; 2) official documentation domains you are certain about. Before outputting a link, verify it exists in your context memory; if it does not, explicitly state that you cannot provide it.`;
 
-type PromptToolOptions = {
+export type PromptToolOptions = {
   model?: string;
   webSearchEnabled?: boolean;
 };
 
-const DEFAULT_SKILL_TEMPLATES = ["agent-drift-guard.md", "plan-and-execute.md"];
+const DEFAULT_SKILL_TEMPLATES = ["agent-drift-guard.md"];
+const toolInstructionsCache = new Map<string, string>();
 
-function readToolDocs(extensionRoot: string, options: PromptToolOptions = {}): string {
+function readToolDocs(
+  extensionRoot: string,
+  allowedToolDocNames: ReadonlySet<string>,
+  options: PromptToolOptions = {}
+): string {
   const toolsDir = path.join(extensionRoot, "templates", "tools");
   if (!fs.existsSync(toolsDir)) {
     return "";
@@ -137,6 +142,7 @@ function readToolDocs(extensionRoot: string, options: PromptToolOptions = {}): s
   const entries = fs.readdirSync(toolsDir);
   const docs = entries
     .filter((entry) => entry.endsWith(".md") || entry.endsWith(".md.ejs"))
+    .filter((entry) => allowedToolDocNames.has(getToolDocName(entry)))
     .sort()
     .map((entry) => {
       const fullPath = path.join(toolsDir, entry);
@@ -153,6 +159,14 @@ function readToolDocs(extensionRoot: string, options: PromptToolOptions = {}): s
     .filter((content) => content.length > 0);
 
   return docs.join("\n\n");
+}
+
+function getToolDocName(fileName: string): string {
+  return fileName.replace(/\.md(?:\.ejs)?$/, "");
+}
+
+function getToolDocNameForTool(toolName: string): string {
+  return toolName.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 }
 
 function readDefaultSkillDocs(extensionRoot: string): Array<{ name: string; content: string }> {
@@ -193,10 +207,19 @@ function getCurrentDateAndModelPrompt(model?: string): string {
   return prompt;
 }
 
-export function getSystemPrompt(_projectRoot: string, options: PromptToolOptions = {}): string {
-  const toolDocs = readToolDocs(getExtensionRoot(), options);
-  const basePrompt = toolDocs ? `${SYSTEM_PROMPT_BASE}\n\n# Available Tools\n\n${toolDocs}` : SYSTEM_PROMPT_BASE;
-  return basePrompt;
+export function getSystemPrompt(_projectRoot: string, _options: PromptToolOptions = {}): string {
+  return SYSTEM_PROMPT_BASE;
+}
+
+export function getToolInstructions(tools: readonly ToolDefinition[], options: PromptToolOptions = {}): string {
+  const allowedToolDocNames = new Set(tools.map((tool) => getToolDocNameForTool(tool.function.name)));
+  const cacheKey = `${supportsMultimodal(options.model ?? "")}:${[...allowedToolDocNames].sort().join(",")}`;
+  const cached = toolInstructionsCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const toolDocs = readToolDocs(getExtensionRoot(), allowedToolDocNames, options);
+  const instructions = toolDocs ? `# Available Tools\n\n${toolDocs}` : "";
+  toolInstructionsCache.set(cacheKey, instructions);
+  return instructions;
 }
 
 export function getCompactPrompt(sessionMessages: SessionMessage[]): string {

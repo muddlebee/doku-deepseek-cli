@@ -106,5 +106,6 @@ function buildSession(usage: ModelUsage | null, usagePerModel: Record<string, Mo
     createTime: "2026-01-01T00:00:00.000Z",
     updateTime: "2026-01-01T00:00:01.000Z",
     processes: null,
+    workflow: { mode: "build", plan: null },
   };
 }

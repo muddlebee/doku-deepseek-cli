@@ -10,7 +10,9 @@ export function isPlainRecord(value: unknown): value is Record<string, unknown> 
 
 /** Capitalizes the first character of a tool status name, falling back to "Tool". */
 export function formatStatusName(value: string): string {
-  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : "Tool";
+  if (!value) return "Tool";
+  const spaced = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return `${spaced.charAt(0).toUpperCase()}${spaced.slice(1)}`;
 }
 
 /** Truncates a string to the given maximum length, appending an ellipsis when truncated. */
@@ -245,7 +247,7 @@ export function renderMessageToStdout(message: SessionMessage, mode: RawMode): s
       ok: payload.ok !== false,
       metadata: payload.metadata,
     };
-    const planLines = getUpdatePlanPreviewLines(summary);
+    const planLines = getPlanPreviewLines(summary);
     if (planLines.length > 0) {
       const planText = planLines.map((line) => `  ${line}`).join("\n");
       return `${statusLine}\n${chalk.dim("  └ Plan")}\n${planText}${result}`;
@@ -274,8 +276,8 @@ export function renderMessageToStdout(message: SessionMessage, mode: RawMode): s
   return "";
 }
 
-export function getUpdatePlanPreviewLines(summary: ToolSummary): string[] {
-  if (!summary.ok || summary.name !== "UpdatePlan") {
+export function getPlanPreviewLines(summary: ToolSummary): string[] {
+  if (!summary.ok || (summary.name !== "UpdatePlan" && summary.name !== "FinalizePlan")) {
     return [];
   }
   const plan = summary.metadata?.plan;

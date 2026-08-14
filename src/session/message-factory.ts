@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import ejs from "ejs";
 import { buildToolParamsSnippet, buildToolResultSnippet, isInvisibleToolExecution } from "./tool-presentation";
-import type { MessageMeta, SessionMessage, SkillInfo, UserPromptContent } from "./types";
+import type { MessageMeta, SessionMessage, SessionWorkflow, SkillInfo, UserPromptContent } from "./types";
+import { createWorkflowSnapshot } from "./workflow";
 
 export class SessionMessageFactory {
   constructor(
@@ -13,13 +14,14 @@ export class SessionMessageFactory {
     private readonly getCheckpointHash: (sessionId: string) => string | undefined
   ) {}
 
-  user(sessionId: string, prompt: UserPromptContent): SessionMessage {
+  user(sessionId: string, prompt: UserPromptContent, workflowSnapshot?: SessionWorkflow): SessionMessage {
     const imageParams =
       prompt.imageUrls?.filter(Boolean).map((url) => ({ type: "image_url", image_url: { url } })) ?? [];
     return this.base(sessionId, "user", prompt.text ?? "", {
       contentParams: imageParams.length ? imageParams : null,
       visible: true,
       checkpointHash: this.getCheckpointHash(sessionId),
+      meta: workflowSnapshot ? { workflowSnapshot: createWorkflowSnapshot(workflowSnapshot) } : undefined,
     });
   }
 

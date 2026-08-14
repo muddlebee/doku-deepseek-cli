@@ -19,6 +19,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     createTime: "2026-01-01T00:00:00.000Z",
     updateTime: "2026-01-01T00:00:00.000Z",
     processes: null,
+    workflow: { mode: "build", plan: null },
     ...overrides,
   };
 }
@@ -46,6 +47,19 @@ test("chat status follows error, waiting, tool, and reasoning priority", () => {
   assert.equal(
     buildChatStatus({ error: null, waitingForUser: false, busy: true, loadingText: "Thinking...", entry: null }).kind,
     "reasoning"
+  );
+});
+
+test("chat status distinguishes a turn limit from a completed turn", () => {
+  assert.deepEqual(
+    buildChatStatus({
+      error: null,
+      waitingForUser: false,
+      busy: false,
+      loadingText: null,
+      entry: entry({ status: "needs_continuation" }),
+    }),
+    { kind: "stopped", text: "Turn limit reached · Run /continue to keep going" }
   );
 });
 

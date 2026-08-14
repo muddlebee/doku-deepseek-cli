@@ -36,7 +36,9 @@ ResolvedProvider.model
    └── OpenAI-compatible
 ```
 
-OpenAI Agents JS controls model turns, streaming, tool calls, cancellation, approvals, and turn limits. Provider adapters supply an Agents-compatible model. doku owns persistence, UI integration, and tool implementations.
+OpenAI Agents JS controls each model-run segment, streaming, tool calls, cancellation, and approvals. Provider adapters
+supply an Agents-compatible model. doku owns the durable outer turn loop, user-level turn limits, persistence, workflow
+state, UI integration, and tool implementations.
 
 ## Provider boundary
 
@@ -146,7 +148,8 @@ Agents JS aisdk() adapter
 OpenAI Agents Runner
 ```
 
-AI SDK supplies the DeepSeek model transport; it does not control the agent loop. OpenAI Agents JS still owns turns, tools, streaming, approvals, cancellation, and history.
+AI SDK supplies the DeepSeek model transport; it does not control the agent loop. OpenAI Agents JS still owns each
+model-run segment, tool invocation, streaming, approvals, cancellation, and native run history.
 
 DeepSeek-specific thinking options stay inside the adapter:
 
@@ -182,7 +185,8 @@ this.runner = new Runner({
 });
 ```
 
-It also creates the doku agent and converts existing tool definitions into Agents function tools. A turn is executed with:
+It also creates the doku agent and converts existing tool definitions into Agents function tools. One SDK run segment is
+executed with:
 
 ```ts
 const result = await this.runner.run(this.agent, input, {
@@ -194,7 +198,114 @@ const result = await this.runner.run(this.agent, input, {
 });
 ```
 
-There is no separate manual loop repeatedly calling Chat Completions.
+`runAgentTurn()` supplies `maxTurns: 1` here and wraps these SDK segments in a bounded, durable outer loop. doku never
+calls Chat Completions or Responses directly for the coding loop; each segment still runs through the Agents SDK.
+
+## Agent profiles
+
+Provider profiles and agent profiles are separate concepts:
+
+| Profile | Responsibility |
+| --- | --- |
+| `ProviderProfile` | Selects the API adapter, endpoint, API mode, credentials, and model capabilities |
+| `AgentProfile` | Selects the per-turn agent identity, instructions, and allowed capabilities |
+
+`src/agent/profiles.ts` defines the doku-level agent profile:
+
+```ts
+export type AgentProfile = {
+  name: "doku" | "doku-planner";
+  instructions: string;
+  allowedTools?: ReadonlySet<string>;
+  excludedTools?: ReadonlySet<string>;
+};
+```
+
+OpenAI Agents JS has no `profile` or built-in plan-mode API. `AgentRuntime` compiles this policy into the standard
+`Agent` fields:
+
+```ts
+this.agent = new Agent({
+  name: profile.name,
+  instructions: [profile.instructions, getToolInstructions(filteredTools)].filter(Boolean).join("\n\n"),
+  model: options.provider.model,
+  modelSettings: options.provider.modelSettings,
+  tools: filteredTools,
+});
+```
+
+Build uses the normal `doku` agent and excludes `FinalizePlan`. Plan uses `doku-planner`, read-only instructions, and
+an allowlist containing `read`, `Grep`, `ListFiles`, `AskUserQuestion`, `UpdatePlan`, `FinalizePlan`, and safe
+provider-backed `WebSearch`. Plan omits arbitrary configured search executables because the harness cannot guarantee
+that a local command is read-only. An allowlist also keeps future or dynamically discovered tools denied by default.
+
+The stable session system prompt does not advertise tool documentation. `getToolInstructions()` selects documentation
+from the same filtered definitions supplied to the SDK and adds it to the active agent instructions. Schemas and
+instructions therefore change together when the workflow profile changes; Build does not advertise `FinalizePlan`,
+and Plan does not advertise mutating tools it cannot call.
+
+The profile is resolved from the persisted workflow mode once per user turn. Every internal runtime recreation and
+tool refresh reapplies that same profile. A restored pending tool call is checked against the active profile before
+execution and receives a recorded tool error when it is no longer allowed.
+
+## Workflow modes
+
+doku owns build and plan modes above the Agents SDK. OpenAI Agents JS provides the shared turn runtime; it does not
+provide a built-in plan mode.
+
+- Build is the default and exposes the normal coding tools.
+- Plan uses the `doku-planner` profile and an explicit read-only tool allowlist.
+- `Shift+Tab` changes the persisted mode for the next prompt without approving or executing a plan.
+- `UpdatePlan` persists a draft. `FinalizePlan` marks a revision ready for user approval.
+- Enter on the plan handoff prompt or `/build` approves the finalized revision and starts a new build turn with the
+  plan embedded in the user handoff message.
+- Escape dismisses the handoff prompt while leaving the session in plan mode for more revisions.
+
+Mode, plan status, markdown, and revision are stored in the session entry. The application controls transitions; the
+model cannot switch modes or hand work to another agent by itself.
+
+The persisted plan lifecycle is:
+
+```text
+DRAFT → READY → APPROVED → IMPLEMENTING → COMPLETED
+```
+
+`UpdatePlan` and `FinalizePlan` are serial lifecycle barriers. Tool results update workflow state at actual execution
+time, before a later lifecycle call can run. Once `FinalizePlan` makes a plan `READY`, later plan lifecycle calls in
+the same model response are rejected. A new user planning message explicitly reopens the plan as `DRAFT`, so later
+revisions remain supported.
+
+Agents JS handles approval-required calls before doku's tool scheduler. A per-response approval barrier registers
+sibling calls before execution; if `AskUserQuestion` is present, `FinalizePlan` receives a recorded rejection and must
+be called again after the answer has been incorporated. This prevents SDK history from claiming that a still-ambiguous
+plan was finalized.
+
+Plan approval is not an Agents SDK handoff or a subagent transfer. doku ends the planning turn, waits for the user,
+then starts another turn in the same `FileAgentSession` with the Build profile and the exact approved plan embedded in
+the handoff input. The `/build` handoff is persisted before the workflow enters `IMPLEMENTING`; a retry reuses a
+matching durable handoff if the lifecycle write was interrupted.
+
+## Prompt queue boundary
+
+`src/ui/serialPromptQueue.ts` serializes user-level operations before they reach `SessionManager`. Ordinary prompts,
+`/build`, and Enter on the plan handoff all enter this same queue. Bypass commands are limited to operations such as
+`/exit` and recovery through `/continue` or an approved `/build` when the queue is paused. Before each submission, the
+UI synchronizes the in-memory pause flag from the persisted session so recovery works immediately after `/resume`.
+
+The queue pauses instead of draining when the active session:
+
+- waits for a user answer;
+- reaches the user-level turn limit and needs continuation; or
+- has an `IMPLEMENTING` plan whose turn failed or was interrupted.
+
+After a successful `/continue` or approved `/build`, the queue resumes only when the recovered session is genuinely
+`completed`. This prevents an unrelated queued prompt from completing an interrupted implementation accidentally.
+The plan handoff accepts Enter only once per revision, preventing repeated keypresses from creating duplicate builds.
+
+Switching from a stopped implementation back to Plan explicitly abandons that build. The queue discards its stale
+Build follow-ups and unpauses, allowing the next planning prompt to run without resuming the abandoned implementation.
+Opening `/resume` or `/undo` is non-destructive: queued prompts are discarded only after another session is selected
+or an undo restore changes durable state.
 
 ## Auxiliary model calls
 
@@ -235,7 +346,16 @@ Model tool request
 - Follow-up image and system messages
 - Web-search setup
 
-State-mutating tools such as Bash, Write, and Edit are serialized. Read-only tools can execute concurrently through `ToolExecutor`.
+Agents JS may invoke multiple function-tool callbacks concurrently. `AgentToolScheduler` applies the catalog's
+read/write ordering before callbacks enter the session layer, and `ToolExecutor` applies the same policy when
+recovering a persisted batch of pending calls. Read-only tools can execute concurrently; state-mutating, planning
+lifecycle, and unknown tools are serial barriers. `AskUserQuestion` makes its entire batch sequential because it can
+pause for user input.
+
+Immediately after each ordered execution, `SessionToolCoordinator` applies any workflow transition and captures a
+snapshot for the corresponding transcript result. Execution-time rejection hooks can stop a lifecycle call whose
+preconditions changed after an earlier call in the same batch. A completed result is still appended if interruption
+arrives after execution, keeping tool history and workflow snapshots consistent.
 
 ## MCP integration
 
@@ -253,17 +373,57 @@ The definitions are supplied to `AgentRuntime` alongside built-in tools. `ToolEx
 
 A turn performs these steps:
 
-1. Execute any trailing pending tool calls needed for `/continue` or recovery.
-2. Construct `AgentRuntime` with the resolved provider and available tools.
+1. Revalidate and execute any trailing pending tool calls needed for `/continue` or recovery.
+2. Construct `AgentRuntime` with the resolved provider, fixed agent profile, and filtered tools.
 3. Restore a persisted approval state when resuming a human-in-the-loop interaction.
 4. Open the session's `FileAgentSession`.
 5. Build the current turn input or seed SDK history from an existing transcript.
-6. Run the agent with streaming and cancellation.
-7. Persist an interruption or update the completed response, reasoning, usage, and active token count.
+6. Run one Agents SDK model segment with streaming and cancellation.
+7. Persist history and usage, compact if necessary, refresh the runtime, and continue with empty input when another
+   model segment is required.
+8. Persist an interruption or update the completed response, reasoning, usage, and active token count.
 
-If the configured turn limit is reached, the run-state history is written atomically to `FileAgentSession`, the
-session remains completed rather than failed, and the UI offers `/continue`. Continuing starts another bounded run
-with the prior function calls and results intact.
+The loop returns one explicit outcome:
+
+```ts
+AGENT_TURN_OUTCOME.COMPLETED;
+AGENT_TURN_OUTCOME.FAILED;
+AGENT_TURN_OUTCOME.INTERRUPTED;
+AGENT_TURN_OUTCOME.NEEDS_CONTINUATION;
+AGENT_TURN_OUTCOME.WAITING_FOR_USER;
+```
+
+Only `COMPLETED` finishes an active implementation. Refusal, failure, interruption, user input, and turn-limit
+exhaustion retain their distinct lifecycle meanings.
+
+### Durable nested loop
+
+Each `AgentRuntime` is intentionally constructed with an SDK `maxTurns` value of one. When a model calls a tool and
+needs another model request, Agents JS raises `MaxTurnsExceededError` with a resumable `RunState`. doku treats that as
+an internal checkpoint rather than a failure:
+
+```ts
+for (let turn = 1; turn <= configuredMaxTurns; turn += 1) {
+  try {
+    return classify(await runtime.run(input, context, signal, agentSession));
+  } catch (error) {
+    if (!(error instanceof MaxTurnsExceededError) || !error.state) throw error;
+    await agentSession.replaceItems(error.state.history);
+    recordUsage(error.state.usage);
+    await compactIfNeeded();
+    runtime = createRuntime();
+    input = [];
+  }
+}
+```
+
+The empty input tells the SDK to continue from `FileAgentSession`. This boundary lets doku persist canonical history,
+compact context, refresh tools, reapply the fixed profile, and enforce a durable user-level turn limit between model
+generations without implementing either provider protocol itself.
+
+If the configured outer limit is reached, the complete run history remains in `FileAgentSession`, the session becomes
+`needs_continuation`, and the UI offers `/continue`. Continuing starts another bounded loop with the prior function
+calls and results intact.
 
 ## Session history
 
@@ -334,16 +494,19 @@ This is a continuation of the original run, not an unrelated new model turn.
 
 ```text
 User submits prompt
+  → SerialPromptQueue acquires the user-level turn
   → SessionManager.activateSession()
   → ProviderRegistry.resolve()
   → selected provider adapter
+  → resolve AgentProfile and filter tools
   → runAgentTurn()
   → FileAgentSession loads history
   → AgentRuntime creates Runner and Agent
-  → Runner.run(stream: true)
+  → Runner.run(stream: true, maxTurns: 1)
   → optional function-tool calls
-  → SessionToolCoordinator and ToolExecutor
-  → final model output
+  → AgentToolScheduler, SessionToolCoordinator, and ToolExecutor
+  → persist/compact/recreate runtime when another model segment is required
+  → final model output or explicit non-terminal outcome
   → SDK history and application transcript persisted
   → UI updated
 ```
