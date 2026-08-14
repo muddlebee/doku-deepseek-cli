@@ -81,7 +81,11 @@ When adding a provider, implement a focused adapter under `src/providers/`, regi
 ## Testing Guidelines
 
 - Add or update tests in `src/tests/` when changing command behavior, prompt rendering, session flow, tools, or settings.
-- For any terminal interaction or Ink UI change, also run a live smoke test in a real PTY and follow the relevant journey in [`docs/dogfooding.md`](docs/dogfooding.md). Piped stdin or captured non-TTY output is not a substitute.
+- Use automated tests as the default validation for focused UI changes.
+- Run a real-PTY journey only when a change materially affects behavior that render or unit tests cannot reliably exercise: keyboard handling, focus or navigation, cancellation/resume, queued input, asynchronous status transitions, raw-mode lifecycle, or terminal reflow.
+- Scope a focused PTY check to the affected journey at one representative width. Add 60/80/120-column coverage only for responsive-layout or wrapping changes.
+- Run the full cross-provider checklist in [`docs/dogfooding.md`](docs/dogfooding.md) for major terminal workflows, release readiness, provider integration changes, or when explicitly requested.
+- Documentation, copy-only, styling-only, and non-UI logic changes do not require a PTY run unless they alter one of the interaction behaviors above. When a PTY check is required, piped stdin or captured non-TTY output is not a substitute.
 - Use Node's built-in `node:test` and `node:assert/strict` APIs to match existing tests.
 - Keep tests deterministic: use temporary directories (`fs.mkdtempSync`) and mock network calls where needed.
 - Temp dir prefixes follow the `doku-<purpose>-` convention.

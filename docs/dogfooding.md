@@ -1,6 +1,6 @@
 # CLI dogfooding guide
 
-Use this checklist before calling a UI iteration dogfood-ready. Run it once with OpenAI and once with DeepSeek from a real PTY at 60, 80, and at least 120 columns. Piped stdin and non-TTY output capture do not exercise Ink's interactive terminal behavior.
+Use the full checklist for major terminal workflows, release readiness, or provider integration changes. It is not required for every focused UI edit: automated tests are the default, and high-risk interaction changes need only the affected journey at one representative width. Add 60, 80, and at least 120-column coverage when the change affects responsive layout or wrapping. Run both OpenAI and DeepSeek when validating provider integration or preparing a release; otherwise prefer a deterministic local provider when the behavior is provider-neutral. Piped stdin and non-TTY output capture do not exercise Ink's interactive terminal behavior.
 
 ## Preparation
 
