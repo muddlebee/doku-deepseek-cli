@@ -1,6 +1,11 @@
 import type { AgentInputItem } from "@openai/agents";
 import { FileAgentSession } from "./agents-session";
-import { agentHistoryPath, readPausedAgentState, removePausedAgentState } from "./agent-turn-state";
+import {
+  agentHistoryPath,
+  isResumablePausedAgentState,
+  readPausedAgentState,
+  removePausedAgentState,
+} from "./agent-turn-state";
 import type { FileSessionStore } from "./file-session-store";
 import type { SessionMessageFactory } from "./message-factory";
 import { SESSION_STATUS, type SessionEntry, type SessionMessage } from "./types";
@@ -26,7 +31,9 @@ export function reconcileOrphanedSession(
 
   const messages = store.listMessages(sessionId);
   const pausedState = readPausedAgentState(sessionId, projectDir);
-  if (pausedState && isSerializedState(pausedState) && messages.some(isPendingApprovalMessage)) {
+  const pendingApproval = messages.find(isPendingApprovalMessage);
+  const pendingCallId = pendingApproval ? getToolMessageCallId(pendingApproval) : null;
+  if (pausedState && pendingCallId && isResumablePausedAgentState(pausedState, pendingCallId)) {
     const updated = store.updateEntry(sessionId, (current) => ({
       ...current,
       status: SESSION_STATUS.WAITING_FOR_USER,
@@ -113,6 +120,7 @@ function repairToolHistory(
   }
 
   for (const message of messages) {
+    if (message.compacted) continue;
     if (message.role === "assistant") {
       for (const call of readTranscriptCalls(message)) {
         calls.set(call.callId, call);
@@ -232,14 +240,6 @@ function getToolMessageCallId(message: SessionMessage): string | null {
 
 function isPendingApprovalMessage(message: SessionMessage): boolean {
   return message.role === "tool" && message.meta?.pendingApproval === true;
-}
-
-function isSerializedState(value: string): boolean {
-  try {
-    return Boolean(JSON.parse(value));
-  } catch {
-    return false;
-  }
 }
 
 function toTranscriptToolCall(call: ToolCall): unknown {

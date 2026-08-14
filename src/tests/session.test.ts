@@ -7,6 +7,7 @@ import * as path from "path";
 import { PENDING_QUESTION_FINALIZE_ERROR } from "../agent/pending-question-barrier";
 import { GitFileHistory } from "../common/file-history";
 import { SessionManager, type SessionEntry, type SessionMessage } from "../session";
+import { pausedAgentStatePath } from "../session/agent-turn-state";
 import { FileAgentSession } from "../session/agents-session";
 import { hasProcessStopFailure } from "../session/process-tracker";
 import { PLAN_STATUS, WORKFLOW_MODE } from "../session/types";
@@ -2491,6 +2492,49 @@ test("SessionManager resumes AskUserQuestion after restart and persists the answ
   assert.equal(fs.existsSync((resumedManager as any).getPausedRunStatePath(sessionId)), false);
 });
 
+test("SessionManager falls back to natural recovery when SDK run-state deserialization fails", async () => {
+  const workspace = createTempDir("doku-agent-invalid-hitl-workspace-");
+  const home = createTempDir("doku-agent-invalid-hitl-home-");
+  setHomeDir(home);
+  const approvalResponse = createToolCallResponse(
+    "AskUserQuestion",
+    { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] },
+    "ask-invalid"
+  );
+  const firstManager = createMockedClientSessionManager(workspace, [approvalResponse]);
+  const sessionId = await firstManager.createSession({ text: "choose" });
+  const statePath = pausedAgentStatePath(
+    sessionId,
+    (
+      firstManager as unknown as {
+        sessionStore: { projectDir: string };
+      }
+    ).sessionStore.projectDir
+  );
+  const serializedState = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+    currentAgent: { identity?: string };
+  };
+  serializedState.currentAgent.identity = "missing-agent-identity";
+  fs.writeFileSync(statePath, JSON.stringify(serializedState), "utf8");
+  (
+    firstManager as unknown as {
+      updateSessionEntry: (id: string, updater: (entry: SessionEntry) => SessionEntry) => SessionEntry | null;
+    }
+  ).updateSessionEntry(sessionId, (entry) => ({ ...entry, status: "processing" }));
+
+  const resumedManager = createMockedClientSessionManager(workspace, [
+    createChatResponse("recovered naturally", { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }),
+  ]);
+  await resumedManager.replySession(sessionId, { text: "inspect and recover" });
+
+  assert.equal(resumedManager.getSession(sessionId)?.status, "completed");
+  assert.equal(fs.existsSync(statePath), false);
+  assert.equal(
+    resumedManager.listSessionMessages(sessionId).filter((message) => message.content === "inspect and recover").length,
+    1
+  );
+});
+
 test("SessionManager persists session and user message before skill matching is cancelled", async () => {
   const workspace = createTempDir("doku-skill-abort-workspace-");
   const home = createTempDir("doku-skill-abort-home-");
@@ -2531,6 +2575,29 @@ test("SessionManager persists session and user message before skill matching is 
   const messages = manager.listSessionMessages(session!.id);
   const userMessage = messages.find((m) => m.role === "user");
   assert.equal(userMessage?.content, "please use demo");
+});
+
+test("SessionManager persists a pre-activation failure instead of treating it as a crash", async () => {
+  const workspace = createTempDir("doku-pre-activation-failure-workspace-");
+  const home = createTempDir("doku-pre-activation-failure-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, []);
+  const mutableManager = manager as unknown as {
+    appendSkills: () => Promise<void>;
+  };
+  mutableManager.appendSkills = async () => {
+    throw new Error("skill preparation failed");
+  };
+
+  await assert.rejects(manager.createSession({ text: "persist failure" }), /skill preparation failed/);
+
+  const session = manager.listSessions()[0];
+  assert.equal(session?.status, "failed");
+  assert.equal(session?.failReason, "skill preparation failed");
+  assert.equal(
+    manager.listSessionMessages(session?.id ?? "").some((message) => message.meta?.recoveryId),
+    false
+  );
 });
 
 test("SessionManager treats OpenAI APIUserAbortError as interrupted", async () => {

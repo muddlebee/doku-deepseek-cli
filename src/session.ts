@@ -341,6 +341,7 @@ export class SessionManager {
           webSearchProvider: this.resolveActiveWebSearchProvider(),
           store: this.sessionStore,
           messages: this.messageFactory,
+          reserveSessionRemoval: (candidateId) => this.reserveSessionRemoval(candidateId),
           removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
         });
         const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
@@ -353,7 +354,7 @@ export class SessionManager {
         await this.activateSession(sessionId, controller);
         return sessionId;
       } catch (error) {
-        this.markPreActivationAbort(sessionId, error, signal);
+        this.markPreActivationFailure(sessionId, error, signal);
         throw error;
       }
     });
@@ -389,20 +390,21 @@ export class SessionManager {
         this.activeSessionId = sessionId;
         await this.activateSession(sessionId, controller);
       } catch (error) {
-        this.markPreActivationAbort(sessionId, error, signal);
+        this.markPreActivationFailure(sessionId, error, signal);
         throw error;
       }
     });
   }
 
-  private markPreActivationAbort(sessionId: string, error: unknown, signal?: AbortSignal): void {
-    if (!signal?.aborted && !this.isAbortLikeError(error)) return;
+  private markPreActivationFailure(sessionId: string, error: unknown, signal?: AbortSignal): void {
+    const aborted = Boolean(signal?.aborted || this.isAbortLikeError(error));
+    const failReason = aborted ? "interrupted" : error instanceof Error ? error.message : String(error);
     this.updateSessionEntry(sessionId, (entry) =>
       entry.status === "pending"
         ? {
             ...entry,
-            status: "interrupted",
-            failReason: "interrupted",
+            status: aborted ? "interrupted" : "failed",
+            failReason,
             updateTime: new Date().toISOString(),
           }
         : entry
@@ -601,7 +603,7 @@ export class SessionManager {
         await this.activateSession(sessionId, controller);
       });
     } catch (error) {
-      this.markPreActivationAbort(sessionId, error, controller.signal);
+      this.markPreActivationFailure(sessionId, error, controller.signal);
       if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
     } finally {
       if (this.activePromptController === controller) this.activePromptController = null;
@@ -785,8 +787,18 @@ export class SessionManager {
   }
 
   private reconcileOwnedSession(sessionId: string): SessionEntry | null {
-    return reconcileOrphanedSession(sessionId, this.sessionStore.projectDir, this.sessionStore, this.messageFactory)
-      .entry;
+    const recovery = reconcileOrphanedSession(
+      sessionId,
+      this.sessionStore.projectDir,
+      this.sessionStore,
+      this.messageFactory
+    );
+    if (this.activeSessionId === sessionId) {
+      recovery.appendedMessages
+        .filter((message) => message.visible)
+        .forEach((message) => this.onAssistantMessage(message, false));
+    }
+    return recovery.entry;
   }
 
   private reconcileSessionIfAvailable(sessionId: string): SessionEntry | null {
@@ -808,6 +820,16 @@ export class SessionManager {
       }
     } catch (error) {
       if (error instanceof SessionBusyError) return this.sessionStore.getSession(sessionId);
+      throw error;
+    }
+  }
+
+  private reserveSessionRemoval(sessionId: string): (() => void) | null {
+    try {
+      const handle = this.executionLeases.acquire(sessionId);
+      return () => this.executionLeases.release(handle);
+    } catch (error) {
+      if (error instanceof SessionBusyError) return null;
       throw error;
     }
   }

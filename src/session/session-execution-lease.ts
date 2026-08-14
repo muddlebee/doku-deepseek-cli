@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -7,11 +8,12 @@ const MALFORMED_LEASE_GRACE_MS = 2_000;
 const MAX_ACQUIRE_ATTEMPTS = 4;
 
 export type SessionExecutionLeaseRecord = Readonly<{
-  version: 1;
+  version: 2;
   sessionId: string;
   leaseId: string;
   ownerId: string;
   pid: number;
+  processIdentity: string | null;
   acquiredAt: string;
 }>;
 
@@ -35,6 +37,8 @@ type SessionExecutionLeaseOptions = Readonly<{
   pid?: number;
   now?: () => Date;
   getProcessState?: (pid: number) => ProcessState;
+  processIdentity?: string;
+  getProcessIdentity?: (pid: number) => string | null;
 }>;
 
 export class SessionBusyError extends Error {
@@ -58,6 +62,8 @@ export class SessionExecutionLeaseStore {
   private readonly pid: number;
   private readonly now: () => Date;
   private readonly getProcessState: (pid: number) => ProcessState;
+  private readonly processIdentity: string | null;
+  private readonly getProcessIdentity: (pid: number) => string | null;
   private readonly heldLeases = new Map<string, SessionExecutionLeaseHandle>();
 
   constructor(
@@ -68,6 +74,8 @@ export class SessionExecutionLeaseStore {
     this.pid = options.pid ?? process.pid;
     this.now = options.now ?? (() => new Date());
     this.getProcessState = options.getProcessState ?? getProcessState;
+    this.getProcessIdentity = options.getProcessIdentity ?? readProcessIdentity;
+    this.processIdentity = options.processIdentity ?? this.getProcessIdentity(this.pid);
   }
 
   acquire(sessionId: string): SessionExecutionLeaseHandle {
@@ -76,11 +84,12 @@ export class SessionExecutionLeaseStore {
 
     for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
       const record: SessionExecutionLeaseRecord = {
-        version: 1,
+        version: 2,
         sessionId,
         leaseId: crypto.randomUUID(),
         ownerId: this.ownerId,
         pid: this.pid,
+        processIdentity: this.processIdentity,
         acquiredAt: this.now().toISOString(),
       };
       if (this.tryCreate(record)) {
@@ -128,7 +137,11 @@ export class SessionExecutionLeaseStore {
     if (record.ownerId === this.ownerId && held?.leaseId === record.leaseId) {
       return { state: "owned", record };
     }
-    return this.getProcessState(record.pid) === "dead"
+    if (this.getProcessState(record.pid) === "dead") {
+      return { state: "orphaned", fingerprint: fingerprintLease(raw), record };
+    }
+    const currentIdentity = this.getProcessIdentity(record.pid);
+    return currentIdentity && record.processIdentity && currentIdentity !== record.processIdentity
       ? { state: "orphaned", fingerprint: fingerprintLease(raw), record }
       : { state: "live", record };
   }
@@ -136,15 +149,29 @@ export class SessionExecutionLeaseStore {
   release(handle: SessionExecutionLeaseHandle): void {
     const held = this.heldLeases.get(handle.sessionId);
     if (held?.leaseId !== handle.leaseId || held.ownerId !== handle.ownerId) return;
-    this.heldLeases.delete(handle.sessionId);
 
-    const record = readLeaseRecord(this.leasePath(handle.sessionId), handle.sessionId);
-    if (record?.leaseId !== handle.leaseId || record.ownerId !== handle.ownerId) return;
+    const filePath = this.leasePath(handle.sessionId);
+    let raw: string;
     try {
-      fs.unlinkSync(this.leasePath(handle.sessionId));
+      raw = fs.readFileSync(filePath, "utf8");
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) {
+        this.heldLeases.delete(handle.sessionId);
+        return;
+      }
+      throw error;
+    }
+    const record = parseLeaseRecord(raw, handle.sessionId);
+    if (record?.leaseId !== handle.leaseId || record.ownerId !== handle.ownerId) {
+      this.heldLeases.delete(handle.sessionId);
+      return;
+    }
+    try {
+      fs.unlinkSync(filePath);
     } catch (error) {
       if (!isNodeError(error, "ENOENT")) throw error;
     }
+    this.heldLeases.delete(handle.sessionId);
   }
 
   listSessionIds(): string[] {
@@ -250,19 +277,11 @@ function fingerprintLease(raw: string): string {
   return crypto.createHash("sha256").update(raw).digest("hex");
 }
 
-function readLeaseRecord(filePath: string, sessionId: string): SessionExecutionLeaseRecord | null {
-  try {
-    return parseLeaseRecord(fs.readFileSync(filePath, "utf8"), sessionId);
-  } catch {
-    return null;
-  }
-}
-
 function parseLeaseRecord(raw: string, sessionId: string): SessionExecutionLeaseRecord | null {
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (
-      value.version !== 1 ||
+      value.version !== 2 ||
       value.sessionId !== sessionId ||
       typeof value.leaseId !== "string" ||
       !value.leaseId ||
@@ -271,6 +290,7 @@ function parseLeaseRecord(raw: string, sessionId: string): SessionExecutionLease
       typeof value.pid !== "number" ||
       !Number.isInteger(value.pid) ||
       value.pid <= 0 ||
+      (value.processIdentity !== null && (typeof value.processIdentity !== "string" || !value.processIdentity)) ||
       typeof value.acquiredAt !== "string" ||
       Number.isNaN(Date.parse(value.acquiredAt))
     ) {
@@ -293,6 +313,50 @@ function getProcessState(pid: number): ProcessState {
 
 export function isProcessDefinitelyDead(pid: number): boolean {
   return getProcessState(pid) === "dead";
+}
+
+function readProcessIdentity(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const closingParenthesis = stat.lastIndexOf(")");
+      const fields =
+        closingParenthesis >= 0
+          ? stat
+              .slice(closingParenthesis + 2)
+              .trim()
+              .split(/\s+/)
+          : [];
+      const startTicks = fields[19];
+      if (!startTicks) return null;
+      const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return bootId ? `linux:${bootId}:${startTicks}` : null;
+    }
+    if (process.platform === "darwin") {
+      const startedAt = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return startedAt ? `darwin:${startedAt}` : null;
+    }
+    if (process.platform === "win32") {
+      const startedAt = execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "(Get-Process -Id $args[0] -ErrorAction Stop).StartTime.ToUniversalTime().Ticks",
+          String(pid),
+        ],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+      return startedAt ? `win32:${startedAt}` : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function validateSessionId(sessionId: string): void {

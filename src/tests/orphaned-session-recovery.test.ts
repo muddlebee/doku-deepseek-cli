@@ -129,7 +129,7 @@ test("orphan reconciliation restores a persisted HITL question instead of natura
     });
     pending.meta = { ...pending.meta, pendingApproval: true };
     store.appendMessage(sessionId, pending);
-    fs.writeFileSync(pausedAgentStatePath(sessionId, store.projectDir), '{"version":1}', "utf8");
+    fs.writeFileSync(pausedAgentStatePath(sessionId, store.projectDir), buildPausedState("ask-1"), "utf8");
 
     const result = reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
 
@@ -156,6 +156,44 @@ test("orphan reconciliation discards malformed HITL state and falls back to safe
 
     assert.equal(result.entry?.status, "needs_recovery");
     assert.equal(fs.existsSync(pausedAgentStatePath(sessionId, store.projectDir)), false);
+  });
+});
+
+test("orphan reconciliation rejects a JSON object that is not an SDK run state", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    const pending = factory.tool(sessionId, "ask-1", '{"awaitUserResponse":true}', {
+      name: "AskUserQuestion",
+      arguments: "{}",
+    });
+    pending.meta = { ...pending.meta, pendingApproval: true };
+    store.appendMessage(sessionId, pending);
+    fs.writeFileSync(pausedAgentStatePath(sessionId, store.projectDir), "{}", "utf8");
+
+    const result = reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.equal(result.entry?.status, "needs_recovery");
+    assert.equal(fs.existsSync(pausedAgentStatePath(sessionId, store.projectDir)), false);
+  });
+});
+
+test("orphan reconciliation does not restore compacted tool history", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    const assistant = factory.assistant(sessionId, "", [toolCall("old-call", "Read")]);
+    assistant.compacted = true;
+    const tool = factory.tool(sessionId, "old-call", '{"ok":true,"output":"large old result"}', {
+      name: "Read",
+      arguments: '{"path":"old.txt"}',
+    });
+    tool.compacted = true;
+    store.appendMessage(sessionId, assistant);
+    store.appendMessage(sessionId, tool);
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([{ role: "system", content: "Compacted summary" }]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(agentSession.getItemsSync(), [{ role: "system", content: "Compacted summary" }]);
+    assert.equal(store.listMessages(sessionId).filter((message) => message.role === "tool").length, 1);
   });
 });
 
@@ -204,4 +242,24 @@ function toolCall(id: string, name: string): unknown {
     type: "function",
     function: { name, arguments: '{"path":"note.txt"}' },
   };
+}
+
+function buildPausedState(callId: string): string {
+  return JSON.stringify({
+    $schemaVersion: "1.17",
+    currentTurn: 1,
+    currentAgent: { name: "doku" },
+    originalInput: [],
+    modelResponses: [],
+    context: { usage: {}, approvals: {}, context: {} },
+    toolUseTracker: {},
+    noActiveAgentRun: false,
+    inputGuardrailResults: [],
+    outputGuardrailResults: [],
+    generatedItems: [],
+    currentStep: {
+      type: "next_step_interruption",
+      data: { interruptions: [{ rawItem: { type: "function_call", callId } }] },
+    },
+  });
 }

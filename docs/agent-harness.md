@@ -435,14 +435,16 @@ Each user-level session operation holds an exclusive file lease for the full ope
 browse session metadata, but it cannot submit to, change the mode of, approve, or restore a session while another live
 process owns that session. The lease is released after a normal result or handled interruption. A lease whose owner is
 confirmed dead is reclaimed on the next session listing or activation; an owner whose liveness cannot be determined is
-treated as live.
+treated as live. The record includes the operating-system process start identity, so a reused PID is not mistaken for
+the original owner. Session retention also skips live-leased sessions instead of deleting their active history.
 
 When a lease is reclaimed from a `pending` or `processing` turn, doku reconciles the application transcript and the
 canonical `FileAgentSession` before accepting another prompt:
 
 - Persisted tool results are copied to whichever history is missing them.
 - A tool call with no durable result is recorded as incomplete in both histories and is never replayed automatically.
-- A valid serialized `AskUserQuestion` run state returns to `waiting_for_user` so the structured answer flow survives.
+- A validated serialized `AskUserQuestion` run state returns to `waiting_for_user` so the structured answer flow
+  survives. Invalid or SDK-incompatible state falls back to natural recovery rather than failing the answer turn.
 - Missing or invalid approval state falls back to `needs_recovery`.
 - A single system notice records the recovery and warns that processes recorded by the previous doku instance were not
   terminated by the recovering process.

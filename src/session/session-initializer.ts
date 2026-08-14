@@ -14,18 +14,32 @@ export type SessionInitializerOptions = {
   webSearchProvider?: string;
   store: FileSessionStore;
   messages: SessionMessageFactory;
+  reserveSessionRemoval: (sessionId: string) => (() => void) | null;
   removeSessions: (sessionIds: string[]) => void;
 };
 
 export function initializeSession(options: SessionInitializerOptions): void {
   const { sessionId, userPrompt, store, messages } = options;
   const now = new Date().toISOString();
-  const dropped = store.updateIndex((index) => {
-    index.entries.push(buildEntry(sessionId, userPrompt, now));
-    index.entries.sort((a, b) => compareUpdateTime(a, b));
-    return index.entries.splice(MAX_SESSION_ENTRIES);
-  });
-  options.removeSessions(dropped.map((entry) => entry.id));
+  const removalReservations: Array<() => void> = [];
+  try {
+    const dropped = store.updateIndex((index) => {
+      index.entries.push(buildEntry(sessionId, userPrompt, now));
+      index.entries.sort((a, b) => compareUpdateTime(a, b));
+      const removable: SessionEntry[] = [];
+      while (index.entries.length > MAX_SESSION_ENTRIES) {
+        const reservation = reserveOldestRemovableSession(index.entries, options.reserveSessionRemoval);
+        if (!reservation) break;
+        removalReservations.push(reservation.release);
+        const [candidate] = index.entries.splice(reservation.index, 1);
+        if (candidate) removable.push(candidate);
+      }
+      return removable;
+    });
+    options.removeSessions(dropped.map((entry) => entry.id));
+  } finally {
+    removalReservations.forEach((release) => release());
+  }
 
   const promptOptions = { model: options.model, webSearchEnabled: true };
   store.appendMessage(sessionId, messages.system(sessionId, getSystemPrompt(options.projectRoot, promptOptions)));
@@ -38,6 +52,20 @@ export function initializeSession(options: SessionInitializerOptions): void {
   const instructions = messages.loadAgentInstructions();
   if (instructions) store.appendMessage(sessionId, messages.system(sessionId, instructions));
   store.appendMessage(sessionId, messages.user(sessionId, userPrompt));
+}
+
+function reserveOldestRemovableSession(
+  entries: SessionEntry[],
+  reserveRemoval: (sessionId: string) => (() => void) | null
+): { index: number; release: () => void } | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const release = reserveRemoval(entry.id);
+    if (!release) continue;
+    return { index, release };
+  }
+  return null;
 }
 
 function buildEntry(sessionId: string, prompt: UserPromptContent, now: string): SessionEntry {

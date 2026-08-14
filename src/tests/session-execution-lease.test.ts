@@ -74,6 +74,51 @@ test("session execution leases reclaim only confirmed-dead owners", () => {
   fs.rmSync(projectDir, { recursive: true, force: true });
 });
 
+test("session execution leases reclaim a reused live PID with a different process identity", () => {
+  const projectDir = createLeaseDir();
+  const first = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "first",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+    getProcessState: () => "alive",
+    getProcessIdentity: () => "boot-a:start-1",
+  });
+  first.acquire("session-1");
+
+  const replacement = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "replacement",
+    pid: 202,
+    processIdentity: "boot-a:start-2",
+    getProcessState: () => "alive",
+    getProcessIdentity: (pid) => (pid === 101 ? "boot-a:start-reused" : "boot-a:start-2"),
+  });
+
+  assert.equal(replacement.inspect("session-1").state, "orphaned");
+  const replacementHandle = replacement.acquire("session-1");
+  replacement.release(replacementHandle);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
+test(
+  "session execution leases retain in-memory ownership when file removal fails",
+  { skip: process.platform === "win32" },
+  () => {
+    const projectDir = createLeaseDir();
+    const store = new SessionExecutionLeaseStore(projectDir);
+    const handle = store.acquire("session-1");
+    fs.chmodSync(projectDir, 0o500);
+
+    try {
+      assert.throws(() => store.release(handle), /EACCES|EPERM/);
+      assert.equal(store.inspect("session-1").state, "owned");
+    } finally {
+      fs.chmodSync(projectDir, 0o700);
+      store.release(handle);
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  }
+);
+
 test("session execution leases wait for recent malformed records and reclaim old ones", () => {
   const projectDir = createLeaseDir();
   const leasePath = path.join(projectDir, "session-1.lease.json");
@@ -100,15 +145,19 @@ test("session execution leases wait for recent malformed records and reclaim old
 test("session execution leases validate records and session identifiers", () => {
   const projectDir = createLeaseDir();
   const record: SessionExecutionLeaseRecord = {
-    version: 1,
+    version: 2,
     sessionId: "session-1",
     leaseId: "lease",
     ownerId: "owner",
     pid: 101,
+    processIdentity: "boot-a:start-1",
     acquiredAt: "2026-08-15T12:00:00.000Z",
   };
   fs.writeFileSync(path.join(projectDir, "session-1.lease.json"), JSON.stringify(record), "utf8");
-  const store = new SessionExecutionLeaseStore(projectDir, { getProcessState: () => "alive" });
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    getProcessState: () => "alive",
+    getProcessIdentity: () => "boot-a:start-1",
+  });
 
   assert.equal(store.inspect("session-1").state, "live");
   assert.throws(() => store.acquire("../outside"), /Invalid session identifier/);

@@ -4,11 +4,45 @@ import type { AgentInputItem } from "@openai/agents";
 import type { AgentRuntimeContext } from "../agent/runtime";
 import type { FileAgentSession } from "./agents-session";
 
+const SUPPORTED_RUN_STATE_SCHEMA_VERSIONS = new Set(Array.from({ length: 18 }, (_, index) => `1.${index}`));
+
 export function readPausedAgentState(sessionId: string, projectDir: string): string | null {
   try {
     return fs.readFileSync(pausedAgentStatePath(sessionId, projectDir), "utf8");
   } catch {
     return null;
+  }
+}
+
+export function isResumablePausedAgentState(serializedState: string, expectedCallId: string): boolean {
+  try {
+    const value = JSON.parse(serializedState) as unknown;
+    if (!isRecord(value) || !SUPPORTED_RUN_STATE_SCHEMA_VERSIONS.has(String(value.$schemaVersion))) return false;
+    if (!Number.isInteger(value.currentTurn) || !isRecord(value.currentAgent)) return false;
+    if (typeof value.currentAgent.name !== "string" || !value.currentAgent.name) return false;
+    if (typeof value.originalInput !== "string" && !Array.isArray(value.originalInput)) return false;
+    if (!Array.isArray(value.modelResponses) || !isRecord(value.context) || !isRecord(value.toolUseTracker)) {
+      return false;
+    }
+    if (!isRecord(value.context.usage) || !isRecord(value.context.approvals) || !isRecord(value.context.context)) {
+      return false;
+    }
+    if (
+      typeof value.noActiveAgentRun !== "boolean" ||
+      !Array.isArray(value.inputGuardrailResults) ||
+      !Array.isArray(value.outputGuardrailResults) ||
+      !Array.isArray(value.generatedItems)
+    ) {
+      return false;
+    }
+    if (!isRecord(value.currentStep) || value.currentStep.type !== "next_step_interruption") return false;
+    if (!isRecord(value.currentStep.data) || !Array.isArray(value.currentStep.data.interruptions)) return false;
+    return value.currentStep.data.interruptions.some((interruption) => {
+      if (!isRecord(interruption) || !isRecord(interruption.rawItem)) return false;
+      return interruption.rawItem.callId === expectedCallId;
+    });
+  } catch {
+    return false;
   }
 }
 
@@ -73,4 +107,8 @@ export function pausedAgentStatePath(sessionId: string, projectDir: string): str
 
 export function agentHistoryPath(sessionId: string, projectDir: string): string {
   return path.join(projectDir, `${sessionId}.agent.jsonl`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
