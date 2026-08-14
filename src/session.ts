@@ -413,6 +413,7 @@ export class SessionManager {
       maxTurns: configuredMaxTurns,
       tracingEnabled: configuredTracing,
       debugLogEnabled,
+      webSearchTool,
     } = clientConfig;
     const resolvedSettings = this.getResolvedSettings();
     const providerId = configuredProvider ?? resolvedSettings.provider ?? "custom";
@@ -466,7 +467,10 @@ export class SessionManager {
       });
       const activeProvider = provider;
       const tracingEnabled = configuredTracing ?? resolvedSettings.tracingEnabled ?? false;
-      const profile = getAgentProfile(this.getSession(sessionId)?.workflow.mode ?? WORKFLOW_MODE.BUILD);
+      const hasExecutableWebSearchTool = Boolean(webSearchTool?.trim() || resolvedSettings.webSearchTool?.trim());
+      const profile = getAgentProfile(this.getSession(sessionId)?.workflow.mode ?? WORKFLOW_MODE.BUILD, {
+        allowWebSearch: !hasExecutableWebSearchTool,
+      });
       const getActiveTools = () =>
         filterToolsForProfile(getTools(this.getPromptToolOptions(), this.mcpToolDefinitions), profile);
       const compactAtTokens = activeProvider.compactAtTokens ?? getCompactPromptTokenThreshold(model);

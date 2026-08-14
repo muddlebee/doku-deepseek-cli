@@ -28,6 +28,16 @@ test("planner profile exposes only explicitly read-only planning tools", () => {
   );
 });
 
+test("planner profile excludes WebSearch when it would execute a configured script", () => {
+  const tools = TOOL_NAMES.map(createTool);
+  const filtered = filterToolsForProfile(tools, getAgentProfile(WORKFLOW_MODE.PLAN, { allowWebSearch: false }));
+
+  assert.deepEqual(
+    filtered.map((tool) => tool.function.name),
+    ["read", "Grep", "ListFiles", "AskUserQuestion", "UpdatePlan", "FinalizePlan"]
+  );
+});
+
 test("build profile preserves existing tools without exposing plan finalization", () => {
   const tools = TOOL_NAMES.map(createTool);
   assert.deepEqual(

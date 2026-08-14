@@ -8,15 +8,13 @@ export type AgentProfile = {
   excludedTools?: ReadonlySet<string>;
 };
 
-const PLANNER_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "read",
-  "Grep",
-  "ListFiles",
-  "WebSearch",
-  "AskUserQuestion",
-  "UpdatePlan",
-  "FinalizePlan",
-]);
+export type AgentProfileOptions = Readonly<{
+  allowWebSearch?: boolean;
+}>;
+
+const PLANNER_BASE_TOOL_NAMES = ["read", "Grep", "ListFiles", "AskUserQuestion", "UpdatePlan", "FinalizePlan"] as const;
+const PLANNER_TOOL_NAMES: ReadonlySet<string> = new Set([...PLANNER_BASE_TOOL_NAMES, "WebSearch"]);
+const PLANNER_TOOLS_WITHOUT_WEB_SEARCH: ReadonlySet<string> = new Set(PLANNER_BASE_TOOL_NAMES);
 
 const BUILD_PROFILE: AgentProfile = {
   name: "doku",
@@ -31,8 +29,14 @@ const PLAN_PROFILE: AgentProfile = {
   allowedTools: PLANNER_TOOL_NAMES,
 };
 
-export function getAgentProfile(mode: WorkflowMode): AgentProfile {
-  return mode === WORKFLOW_MODE.PLAN ? PLAN_PROFILE : BUILD_PROFILE;
+const PLAN_PROFILE_WITHOUT_WEB_SEARCH: AgentProfile = {
+  ...PLAN_PROFILE,
+  allowedTools: PLANNER_TOOLS_WITHOUT_WEB_SEARCH,
+};
+
+export function getAgentProfile(mode: WorkflowMode, options: AgentProfileOptions = {}): AgentProfile {
+  if (mode !== WORKFLOW_MODE.PLAN) return BUILD_PROFILE;
+  return options.allowWebSearch === false ? PLAN_PROFILE_WITHOUT_WEB_SEARCH : PLAN_PROFILE;
 }
 
 export function filterToolsForProfile(tools: ToolDefinition[], profile: AgentProfile): ToolDefinition[] {
