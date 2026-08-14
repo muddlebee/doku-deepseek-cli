@@ -1335,6 +1335,7 @@ test("replySession reports a new prompt with the machineId token", async () => {
   (manager as any).activateSession = async () => {};
 
   const sessionId = await manager.createSession({ text: "first prompt" });
+  (manager as any).updateSessionEntry(sessionId, (entry: SessionEntry) => ({ ...entry, status: "completed" }));
   await flushPromises();
   fetchCalls.length = 0;
 
@@ -1454,6 +1455,7 @@ test("replySession persists a manually typed /continue as ordinary user text", a
   };
 
   const sessionId = await manager.createSession({ text: "first prompt" });
+  (manager as any).updateSessionEntry(sessionId, (entry: SessionEntry) => ({ ...entry, status: "completed" }));
   await flushPromises();
   const messagesBefore = manager.listSessionMessages(sessionId);
   fetchCalls.length = 0;
@@ -1832,7 +1834,9 @@ test("natural recovery supersedes a trailing pending tool call instead of replay
   const assistantMessages = messages.filter((message) => message.role === "assistant");
   const userMessages = messages.filter((message) => message.role === "user");
 
-  assert.equal(toolMessage, undefined);
+  assert.equal(toolMessage?.visible, true);
+  assert.match(toolMessage?.content ?? "", /"incomplete":true/);
+  assert.match(toolMessage?.content ?? "", /Do not retry/);
   assert.equal(assistantMessages[assistantMessages.length - 1]?.content, "continued after tool");
   assert.equal(
     userMessages.filter((message) => message.content === "Skip that read and finish another way.").length,
@@ -1895,7 +1899,8 @@ test("Plan mode supersedes a pending mutating tool call during natural recovery"
     const params = message.messageParams as { tool_call_id?: string } | null;
     return message.role === "tool" && params?.tool_call_id === "call-pending-write";
   });
-  assert.equal(rejection, undefined);
+  assert.match(rejection?.content ?? "", /"incomplete":true/);
+  assert.match(rejection?.content ?? "", /Do not retry/);
   assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.PLAN);
 });
 
@@ -1932,9 +1937,15 @@ test("replySession preserves raw session messages when a previous tool call is p
 
   const messages = manager.listSessionMessages(sessionId);
   const assistantIndex = messages.findIndex((message) => message.id === assistantMessage.id);
+  const toolIndex = messages.findIndex((message) => {
+    const params = message.messageParams as { tool_call_id?: string } | null;
+    return message.role === "tool" && params?.tool_call_id === "call-1";
+  });
+  const userIndex = messages.findIndex((message) => message.role === "user" && message.content === "second prompt");
   assert.notEqual(assistantIndex, -1);
-  assert.equal(messages[assistantIndex + 1]?.role, "user");
-  assert.equal(messages[assistantIndex + 1]?.content, "second prompt");
+  assert.ok(toolIndex > assistantIndex);
+  assert.ok(userIndex > toolIndex);
+  assert.match(messages[toolIndex]?.content ?? "", /"incomplete":true/);
   assert.equal(
     messages.some((message) => String(message.content).includes("Previous tool call did not complete.")),
     false
@@ -2516,7 +2527,7 @@ test("SessionManager persists session and user message before skill matching is 
   // Session and user message are persisted before skill matching triggers an abort.
   assert.equal(manager.listSessions().length, 1);
   const [session] = manager.listSessions();
-  assert.equal(session?.status, "pending");
+  assert.equal(session?.status, "interrupted");
   const messages = manager.listSessionMessages(session!.id);
   const userMessage = messages.find((m) => m.role === "user");
   assert.equal(userMessage?.content, "please use demo");

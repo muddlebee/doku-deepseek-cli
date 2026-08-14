@@ -144,7 +144,10 @@ export function shouldPausePromptQueue(
     planStatus === PLAN_STATUS.IMPLEMENTING &&
     (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED);
   return (
-    status === SESSION_STATUS.WAITING_FOR_USER || status === SESSION_STATUS.NEEDS_CONTINUATION || implementationStopped
+    status === SESSION_STATUS.WAITING_FOR_USER ||
+    status === SESSION_STATUS.NEEDS_CONTINUATION ||
+    status === SESSION_STATUS.NEEDS_RECOVERY ||
+    implementationStopped
   );
 }
 
@@ -174,7 +177,11 @@ export function shouldDiscardPromptQueueForModeChange({
   nextMode,
 }: PromptQueueModeChange): boolean {
   if (!isPaused || currentMode === nextMode) return false;
-  return sessionStatus === SESSION_STATUS.NEEDS_CONTINUATION || planStatus === PLAN_STATUS.IMPLEMENTING;
+  return (
+    sessionStatus === SESSION_STATUS.NEEDS_CONTINUATION ||
+    sessionStatus === SESSION_STATUS.NEEDS_RECOVERY ||
+    planStatus === PLAN_STATUS.IMPLEMENTING
+  );
 }
 
 export function shouldDiscardPromptQueueForCommand(command: PromptSubmission["command"]): boolean {
@@ -206,6 +213,7 @@ export function resolvePromptRoute(
 
   const needsRecovery =
     status === SESSION_STATUS.NEEDS_CONTINUATION ||
+    status === SESSION_STATUS.NEEDS_RECOVERY ||
     (planStatus === PLAN_STATUS.IMPLEMENTING &&
       (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED)) ||
     (isPaused && (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED));

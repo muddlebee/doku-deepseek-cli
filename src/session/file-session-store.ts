@@ -299,6 +299,7 @@ function normalizeStatus(status: unknown): SessionStatus {
     "processing",
     "waiting_for_user",
     "needs_continuation",
+    "needs_recovery",
     "completed",
     "interrupted",
   ].includes(String(status))

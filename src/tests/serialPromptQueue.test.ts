@@ -24,6 +24,10 @@ test("prompt routes distinguish queued work, commands, and state-based recovery"
     PROMPT_ROUTE.DIRECT_RECOVERY
   );
   assert.equal(
+    resolvePromptRoute({ text: "inspect and finish safely", imageUrls: [] }, "needs_recovery", null, false),
+    PROMPT_ROUTE.DIRECT_RECOVERY
+  );
+  assert.equal(
     resolvePromptRoute({ text: "retry safely", imageUrls: [] }, "interrupted", PLAN_STATUS.IMPLEMENTING, false),
     PROMPT_ROUTE.DIRECT_RECOVERY
   );
@@ -56,6 +60,7 @@ test("prompt routes distinguish queued work, commands, and state-based recovery"
 test("prompt queues pause only for states that require user-controlled resumption", () => {
   assert.equal(shouldPausePromptQueue("waiting_for_user", null), true);
   assert.equal(shouldPausePromptQueue("needs_continuation", null), true);
+  assert.equal(shouldPausePromptQueue("needs_recovery", null), true);
   assert.equal(shouldPausePromptQueue("interrupted", PLAN_STATUS.IMPLEMENTING), true);
   assert.equal(shouldPausePromptQueue("failed", PLAN_STATUS.IMPLEMENTING), true);
   assert.equal(shouldPausePromptQueue("interrupted", null), false);
@@ -84,6 +89,10 @@ test("prompt queues resume only after a successful continuation or handoff build
 test("persisted recovery state bypasses the queue before its in-memory pause flag is initialized", () => {
   assert.equal(
     resolvePromptRoute({ text: "continue from here", imageUrls: [] }, "needs_continuation", PLAN_STATUS.READY, false),
+    PROMPT_ROUTE.DIRECT_RECOVERY
+  );
+  assert.equal(
+    resolvePromptRoute({ text: "recover after restart", imageUrls: [] }, "needs_recovery", null, false),
     PROMPT_ROUTE.DIRECT_RECOVERY
   );
 });

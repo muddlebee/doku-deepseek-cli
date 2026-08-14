@@ -11,6 +11,7 @@ import {
   type LlmStreamProgress,
   type MessageMeta,
   type SessionEntry,
+  SessionBusyError,
   SessionManager,
   type SessionMessage,
   type SkillInfo,
@@ -139,6 +140,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         }
       },
       onSessionEntryUpdated: (entry) => {
+        if (sessionManagerRef.current?.getActiveSessionId() !== entry.id) return;
         setRunningProcesses(entry.processes);
         setActiveEntry(entry);
         setErrorLine((current) => reconcileChatError(current, entry));
@@ -349,6 +351,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         refreshSessionsList();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof SessionBusyError) {
+          const sessionId = sessionManager.getActiveSessionId();
+          if (sessionId) {
+            setMessages(loadVisibleMessages(sessionManager, sessionId));
+            setActiveEntry(sessionManager.getSession(sessionId));
+          }
+        }
         setErrorLine(message);
       } finally {
         setBusy(false);

@@ -21,7 +21,7 @@ export class FileAgentSession implements Session {
   }
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
-    const items = this.readItems();
+    const items = this.getItemsSync();
     return limit == null ? items : items.slice(Math.max(0, items.length - limit));
   }
 
@@ -46,6 +46,14 @@ export class FileAgentSession implements Session {
   }
 
   async replaceItems(items: AgentInputItem[]): Promise<void> {
+    this.replaceItemsSync(items);
+  }
+
+  getItemsSync(): AgentInputItem[] {
+    return this.readItems();
+  }
+
+  replaceItemsSync(items: AgentInputItem[]): void {
     this.writeItemsAtomically(items);
   }
 

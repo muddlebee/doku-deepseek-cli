@@ -289,6 +289,8 @@ export function formatSessionStatus(status: SessionStatus): string {
       return "waiting";
     case "needs_continuation":
       return "continue";
+    case "needs_recovery":
+      return "recover";
     case "failed":
       return "failed";
     case "interrupted":
