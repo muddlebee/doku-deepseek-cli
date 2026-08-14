@@ -77,8 +77,6 @@ export class SessionToolCoordinator {
         if (resultMeta) resultMetaByToolCallId.set(toolCallId, resultMeta);
       },
     });
-    if (this.deps.isInterrupted(sessionId)) return { waitingForUser: false };
-
     let waitingForUser = false;
     let agentOutput: AgentToolOutput | undefined;
     const followUps: SessionMessage[] = [];

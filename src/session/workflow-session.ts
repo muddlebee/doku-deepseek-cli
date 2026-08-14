@@ -105,6 +105,20 @@ export function getBuildMessagePlan(message: SessionMessage, fallback: SessionWo
   return message.meta?.workflowSnapshot?.plan ?? fallback.plan;
 }
 
+export function hasBuildHandoff(messages: readonly SessionMessage[], workflow: SessionWorkflow): boolean {
+  const plan = workflow.plan;
+  if (!plan) return false;
+  return messages.some((message) => {
+    const handoffPlan = message.meta?.workflowSnapshot?.plan;
+    return (
+      message.role === "user" &&
+      message.content === "/build" &&
+      handoffPlan?.planId === plan.planId &&
+      handoffPlan.revision === plan.revision
+    );
+  });
+}
+
 export function buildPlanHandoff(plan: SessionPlan): string {
   return `# Approved Implementation Plan\n\nOriginal request:\n${plan.request}\n\nApproved revision: ${plan.revision}\n\n${plan.markdown}\n\nImplement this approved plan now. Preserve its scope and report any required deviation before making it.`;
 }

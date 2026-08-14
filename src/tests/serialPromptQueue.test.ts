@@ -4,6 +4,9 @@ import { PLAN_STATUS, WORKFLOW_MODE, type SessionStatus } from "../session/types
 import {
   SerialPromptQueue,
   shouldBypassPromptQueue,
+  shouldDiscardPromptQueueAfterSessionSelection,
+  shouldDiscardPromptQueueAfterUndoRestore,
+  shouldDiscardPromptQueueForCommand,
   shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterRecovery,
@@ -49,6 +52,19 @@ test("only abandoning a paused implementation discards its queued build prompts"
   assert.equal(shouldDiscardPromptQueueForModeChange(false, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.PLAN), false);
   assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.DRAFT, WORKFLOW_MODE.PLAN), false);
   assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.BUILD), false);
+});
+
+test("navigation discards queued prompts only after it changes durable state", () => {
+  assert.equal(shouldDiscardPromptQueueForCommand("new"), true);
+  assert.equal(shouldDiscardPromptQueueForCommand("exit"), true);
+  assert.equal(shouldDiscardPromptQueueForCommand("resume"), false);
+  assert.equal(shouldDiscardPromptQueueForCommand("undo"), false);
+
+  assert.equal(shouldDiscardPromptQueueAfterSessionSelection("current", "different"), true);
+  assert.equal(shouldDiscardPromptQueueAfterSessionSelection("current", "current"), false);
+  assert.equal(shouldDiscardPromptQueueAfterUndoRestore(false, false), false);
+  assert.equal(shouldDiscardPromptQueueAfterUndoRestore(true, false), true);
+  assert.equal(shouldDiscardPromptQueueAfterUndoRestore(false, true), true);
 });
 
 test("SerialPromptQueue processes submissions in order and exposes only waiting prompts", async () => {

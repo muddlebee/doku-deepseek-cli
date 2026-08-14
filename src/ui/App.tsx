@@ -53,6 +53,9 @@ import { transitionView, type AppView } from "./view-state";
 import {
   SerialPromptQueue,
   shouldBypassPromptQueue,
+  shouldDiscardPromptQueueAfterSessionSelection,
+  shouldDiscardPromptQueueAfterUndoRestore,
+  shouldDiscardPromptQueueForCommand,
   shouldDiscardPromptQueueForModeChange,
   shouldPausePromptQueue,
   shouldResumePromptQueueAfterRecovery,
@@ -61,12 +64,6 @@ import {
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
-const QUEUE_DISCARD_COMMANDS: ReadonlySet<NonNullable<PromptSubmission["command"]>> = new Set([
-  "new",
-  "resume",
-  "undo",
-  "exit",
-]);
 
 type AppProps = {
   projectRoot: string;
@@ -446,7 +443,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         promptQueue?.pause();
       }
       if (shouldBypassPromptQueue(submission, promptQueue?.isPaused() ?? false)) {
-        if (submission.command && QUEUE_DISCARD_COMMANDS.has(submission.command)) {
+        if (shouldDiscardPromptQueueForCommand(submission.command)) {
           promptQueue?.clear();
         }
         void handlePrompt(submission).finally(() => {
@@ -532,6 +529,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       const currentSessionId = sessionManager.getActiveSessionId();
+      if (shouldDiscardPromptQueueAfterSessionSelection(currentSessionId, sessionId)) {
+        promptQueueRef.current?.clear();
+      }
       if (currentSessionId !== sessionId) {
         process.stdout.write("\u001B[2J\u001B[3J\u001B[H");
       }
@@ -565,9 +565,11 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       }
 
       const errors: string[] = [];
+      let codeRestored = false;
       if (restoreMode === "code-and-conversation") {
         try {
           sessionManager.restoreSessionCode(sessionId, target.message.id);
+          codeRestored = true;
         } catch (error) {
           errors.push(`Code restore failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -579,6 +581,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         conversationRestored = true;
       } catch (error) {
         errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      if (shouldDiscardPromptQueueAfterUndoRestore(codeRestored, conversationRestored)) {
+        promptQueueRef.current?.clear();
       }
 
       refreshSessionsList();

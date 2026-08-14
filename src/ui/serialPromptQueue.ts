@@ -16,6 +16,10 @@ type SerialPromptQueueOptions<T> = {
 };
 
 const DEFAULT_MAX_PENDING = 20;
+const IMMEDIATE_QUEUE_DISCARD_COMMANDS: ReadonlySet<NonNullable<PromptSubmission["command"]>> = new Set([
+  "new",
+  "exit",
+]);
 
 export class SerialPromptQueue<T> {
   private readonly pending: QueuedPrompt<T>[] = [];
@@ -115,6 +119,24 @@ export function shouldDiscardPromptQueueForModeChange(
   nextMode: WorkflowMode
 ): boolean {
   return isPaused && planStatus === PLAN_STATUS.IMPLEMENTING && nextMode === WORKFLOW_MODE.PLAN;
+}
+
+export function shouldDiscardPromptQueueForCommand(command: PromptSubmission["command"]): boolean {
+  return command !== undefined && IMMEDIATE_QUEUE_DISCARD_COMMANDS.has(command);
+}
+
+export function shouldDiscardPromptQueueAfterSessionSelection(
+  currentSessionId: string | null,
+  selectedSessionId: string
+): boolean {
+  return currentSessionId !== selectedSessionId;
+}
+
+export function shouldDiscardPromptQueueAfterUndoRestore(
+  codeRestored: boolean,
+  conversationRestored: boolean
+): boolean {
+  return codeRestored || conversationRestored;
 }
 
 export function shouldBypassPromptQueue(submission: PromptSubmission, isPaused: boolean): boolean {

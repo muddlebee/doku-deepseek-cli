@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { PENDING_QUESTION_FINALIZE_ERROR } from "../agent/pending-question-barrier";
 import { GitFileHistory } from "../common/file-history";
-import { SessionManager, type SessionMessage } from "../session";
+import { SessionManager, type SessionEntry, type SessionMessage } from "../session";
 import { FileAgentSession } from "../session/agents-session";
 import { hasProcessStopFailure } from "../session/process-tracker";
 import { PLAN_STATUS, WORKFLOW_MODE } from "../session/types";
@@ -167,6 +167,83 @@ test("planning workflow persists revisions and hands the finalized plan to build
   const historicalHandoff = buildPlanHandoff(historicalPlan);
   assert.match(historicalHandoff, /Add migration tests/);
   assert.doesNotMatch(historicalHandoff, /Replace the export feature/);
+});
+
+test("build approval does not enter implementation before its handoff is durable", async () => {
+  const workspace = createTempDir("doku-build-handoff-order-workspace-");
+  const home = createTempDir("doku-build-handoff-order-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallResponse("FinalizePlan", { plan: "- [ ] Implement safely" }, "finalize-plan"),
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({ text: "Plan the change", workflowMode: WORKFLOW_MODE.PLAN });
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+
+  const internals = manager as unknown as {
+    appendSessionMessage: (id: string, message: SessionMessage) => void;
+  };
+  const appendSessionMessage = internals.appendSessionMessage.bind(manager);
+  internals.appendSessionMessage = (id, message) => {
+    if (message.role === "user" && message.content === "/build") {
+      throw new Error("simulated handoff persistence failure");
+    }
+    appendSessionMessage(id, message);
+  };
+
+  await assert.rejects(manager.approveAndBuild(sessionId), /simulated handoff persistence failure/);
+
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(
+    manager.listSessionMessages(sessionId).some((message) => message.role === "user" && message.content === "/build"),
+    false
+  );
+});
+
+test("build approval reuses a handoff persisted before a lifecycle write failure", async () => {
+  const workspace = createTempDir("doku-build-handoff-retry-workspace-");
+  const home = createTempDir("doku-build-handoff-retry-home-");
+  setHomeDir(home);
+  const manager = createMockedClientSessionManager(workspace, [
+    createToolCallResponse("FinalizePlan", { plan: "- [ ] Implement safely" }, "finalize-plan"),
+    createChatResponse("The plan is ready.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+    createChatResponse("The plan is implemented.", { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }),
+  ]);
+  const sessionId = await manager.createSession({ text: "Plan the change", workflowMode: WORKFLOW_MODE.PLAN });
+
+  const internals = manager as unknown as {
+    updateSessionEntry: (id: string, updater: (entry: SessionEntry) => SessionEntry) => SessionEntry | null;
+  };
+  const updateSessionEntry = internals.updateSessionEntry.bind(manager);
+  let failLifecycleWrite = true;
+  internals.updateSessionEntry = (id, updater) => {
+    const current = manager.getSession(id);
+    assert.ok(current);
+    const next = updater(current);
+    if (failLifecycleWrite && next.workflow.plan?.status === PLAN_STATUS.IMPLEMENTING) {
+      failLifecycleWrite = false;
+      throw new Error("simulated lifecycle persistence failure");
+    }
+    return updateSessionEntry(id, () => next);
+  };
+
+  await assert.rejects(manager.approveAndBuild(sessionId), /simulated lifecycle persistence failure/);
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.READY);
+  assert.equal(
+    manager.listSessionMessages(sessionId).filter((message) => message.role === "user" && message.content === "/build")
+      .length,
+    1
+  );
+
+  internals.updateSessionEntry = updateSessionEntry;
+  await manager.approveAndBuild(sessionId);
+
+  assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.COMPLETED);
+  assert.equal(
+    manager.listSessionMessages(sessionId).filter((message) => message.role === "user" && message.content === "/build")
+      .length,
+    1
+  );
 });
 
 test("workflow mode can switch before a planning prompt without auto-loading planning skills", async () => {

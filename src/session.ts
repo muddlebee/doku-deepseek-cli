@@ -41,6 +41,7 @@ import {
   applyPlanToolUpdate,
   buildPlanHandoff,
   getBuildMessagePlan,
+  hasBuildHandoff,
   getPlanToolRejection,
   parsePlanToolUpdate,
   prepareWorkflowEntry,
@@ -561,27 +562,34 @@ export class SessionManager {
     try {
       const entry = this.getSession(sessionId);
       if (!entry) throw new Error("No active session was found.");
-      const workflow = startImplementation(approvePlan(entry.workflow));
+      const now = new Date().toISOString();
+      const workflow = startImplementation(approvePlan(entry.workflow, now), now);
+      const buildSkill = (await this.skillCatalog.list(sessionId)).find(
+        (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
+      );
+      const prompt: UserPromptContent = {
+        text: "/build",
+        skills: buildSkill ? [buildSkill] : undefined,
+        workflowMode: WORKFLOW_MODE.BUILD,
+      };
+
+      this.reportNewPrompt();
+      this.checkpoints.ensureSession(sessionId);
+      if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
+        this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
+      }
+
       this.updateSessionEntry(sessionId, (current) => ({
         ...current,
         workflow,
         status: "pending",
         failReason: null,
-        updateTime: new Date().toISOString(),
+        updateTime: now,
       }));
       this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
-      const buildSkill = (await this.skillCatalog.list(sessionId)).find(
-        (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
-      );
-      await this.replySession(
-        sessionId,
-        {
-          text: "/build",
-          skills: buildSkill ? [buildSkill] : undefined,
-          workflowMode: WORKFLOW_MODE.BUILD,
-        },
-        controller
-      );
+      await this.appendSkills(sessionId, prompt, controller.signal, true);
+      this.activeSessionId = sessionId;
+      await this.activateSession(sessionId, controller);
     } catch (error) {
       if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
     } finally {

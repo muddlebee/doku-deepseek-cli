@@ -282,7 +282,8 @@ plan was finalized.
 
 Plan approval is not an Agents SDK handoff or a subagent transfer. doku ends the planning turn, waits for the user,
 then starts another turn in the same `FileAgentSession` with the Build profile and the exact approved plan embedded in
-the handoff input.
+the handoff input. The `/build` handoff is persisted before the workflow enters `IMPLEMENTING`; a retry reuses a
+matching durable handoff if the lifecycle write was interrupted.
 
 ## Prompt queue boundary
 
@@ -303,6 +304,8 @@ The plan handoff accepts Enter only once per revision, preventing repeated keypr
 
 Switching from a stopped implementation back to Plan explicitly abandons that build. The queue discards its stale
 Build follow-ups and unpauses, allowing the next planning prompt to run without resuming the abandoned implementation.
+Opening `/resume` or `/undo` is non-destructive: queued prompts are discarded only after another session is selected
+or an undo restore changes durable state.
 
 ## Auxiliary model calls
 
@@ -351,7 +354,8 @@ pause for user input.
 
 Immediately after each ordered execution, `SessionToolCoordinator` applies any workflow transition and captures a
 snapshot for the corresponding transcript result. Execution-time rejection hooks can stop a lifecycle call whose
-preconditions changed after an earlier call in the same batch.
+preconditions changed after an earlier call in the same batch. A completed result is still appended if interruption
+arrives after execution, keeping tool history and workflow snapshots consistent.
 
 ## MCP integration
 
