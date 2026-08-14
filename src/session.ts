@@ -370,12 +370,6 @@ export class SessionManager {
       return;
     }
 
-    if (this.isContinuePrompt(userPrompt)) {
-      this.activeSessionId = sessionId;
-      await this.activateSession(sessionId, controller, true);
-      return;
-    }
-
     this.reportNewPrompt();
 
     this.checkpoints.ensureSession(sessionId);
@@ -390,16 +384,7 @@ export class SessionManager {
     await this.activateSession(sessionId, controller);
   }
 
-  private isContinuePrompt(userPrompt: UserPromptContent): boolean {
-    return (
-      typeof userPrompt.text === "string" &&
-      userPrompt.text.trim() === "/continue" &&
-      (!userPrompt.imageUrls || userPrompt.imageUrls.length === 0) &&
-      (!userPrompt.skills || userPrompt.skills.length === 0)
-    );
-  }
-
-  async activateSession(sessionId: string, controller?: AbortController, continueExisting = false): Promise<void> {
+  async activateSession(sessionId: string, controller?: AbortController): Promise<void> {
     const startedAt = Date.now();
     const clientConfig = this.createOpenAIClient();
     const {
@@ -498,7 +483,6 @@ export class SessionManager {
           maxTurns: configuredMaxTurns ?? resolvedSettings.maxTurns ?? 100,
           tracingEnabled,
           controller: sessionController,
-          continueExisting,
           profile,
         },
         {
@@ -512,7 +496,6 @@ export class SessionManager {
           onAssistantMessage: this.onAssistantMessage,
           appendTools: (id, calls, signal, pendingApproval) =>
             this.appendToolMessages(id, calls, signal, pendingApproval),
-          rejectTools: (id, calls, reason) => this.toolCoordinator.reject(id, calls, reason),
           executeTool: (id, invocation, supportsImages) => this.executeAgentTool(id, invocation, supportsImages),
           renderContent: (message) => this.renderAgentMessageContent(message),
           onProgress: this.onLlmStreamProgress,

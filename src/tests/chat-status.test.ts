@@ -59,11 +59,11 @@ test("chat status distinguishes a turn limit from a completed turn", () => {
       loadingText: null,
       entry: entry({ status: "needs_continuation" }),
     }),
-    { kind: "stopped", text: "Turn limit reached · Run /continue to keep going" }
+    { kind: "stopped", text: "Turn limit reached · Send a message to continue" }
   );
 });
 
-test("chat status confirms interruption and advertises continue", () => {
+test("chat status confirms interruption and requests recovery instructions", () => {
   const result = buildChatStatus({
     error: null,
     waitingForUser: false,
@@ -71,7 +71,7 @@ test("chat status confirms interruption and advertises continue", () => {
     loadingText: null,
     entry: entry({ status: "interrupted", failReason: "interrupted" }),
   });
-  assert.deepEqual(result, { kind: "stopped", text: "Turn stopped · Run /continue to resume" });
+  assert.deepEqual(result, { kind: "stopped", text: "Turn stopped · Send instructions to continue" });
 });
 
 test("chat status reports completion context without transcript messages", () => {

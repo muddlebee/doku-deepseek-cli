@@ -478,6 +478,37 @@ test("an approved implementation remains active when the turn limit is reached",
 
   assert.equal(manager.getSession(sessionId)?.status, "needs_continuation");
   assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.IMPLEMENTING);
+
+  const restoredManager = createMockedClientSessionManager(
+    workspace,
+    [
+      createChatResponse("The implementation is complete.", {
+        prompt_tokens: 8,
+        completion_tokens: 2,
+        total_tokens: 10,
+      }),
+    ],
+    { maxTurns: 1 }
+  );
+  restoredManager.setActiveSessionId(sessionId);
+  await restoredManager.replySession(sessionId, { text: "Finish the implementation and verify it." });
+
+  assert.equal(restoredManager.getSession(sessionId)?.status, "completed");
+  assert.equal(restoredManager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.COMPLETED);
+  assert.equal(
+    restoredManager
+      .listSessionMessages(sessionId)
+      .filter((message) => message.role === "user" && message.content === "Finish the implementation and verify it.")
+      .length,
+    1
+  );
+  const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
+  const agentHistory = fs.readFileSync(
+    path.join(home, ".doku", "projects", projectCode, `${sessionId}.agent.jsonl`),
+    "utf8"
+  );
+  assert.match(agentHistory, /read-before-turn-limit/);
+  assert.match(agentHistory, /Finish the implementation and verify it/);
 });
 
 test("automatic skill matching cannot silently switch the default build workflow into plan mode", async () => {
@@ -1364,7 +1395,7 @@ test(
   }
 );
 
-test("replySession continues without appending /continue as a user message", async () => {
+test("replySession persists a manually typed /continue as ordinary user text", async () => {
   const workspace = createTempDir("doku-continue-workspace-");
   const home = createTempDir("doku-continue-home-");
   setHomeDir(home);
@@ -1398,12 +1429,12 @@ test("replySession continues without appending /continue as a user message", asy
 
   assert.equal(activatedSessionIds.length, 1);
   assert.equal(activatedSessionIds[0], sessionId);
-  assert.equal(messagesAfter.length, messagesBefore.length);
+  assert.equal(messagesAfter.length, messagesBefore.length + 1);
   assert.equal(
     userMessages.some((message) => message.content === "/continue"),
-    false
+    true
   );
-  assert.equal(fetchCalls.length, 0);
+  assert.equal(fetchCalls.length, 1);
 });
 
 test("replySession records the current file-history branch head as checkpointHash", async (t) => {
@@ -1720,7 +1751,7 @@ test("restoreSessionCode restores project files from the recorded Git checkpoint
   assert.equal(fs.existsSync(path.join(workspace, "new.txt")), false);
 });
 
-test("replySession /continue runs trailing pending tool calls before requesting another response", async () => {
+test("natural recovery supersedes a trailing pending tool call instead of replaying it", async () => {
   const workspace = createTempDir("doku-continue-tool-workspace-");
   const home = createTempDir("doku-continue-tool-home-");
   setHomeDir(home);
@@ -1753,7 +1784,7 @@ test("replySession /continue runs trailing pending tool calls before requesting 
   (manager as any).appendSessionMessage(sessionId, pendingAssistant);
   (manager as any).activateSession = originalActivateSession;
 
-  await manager.replySession(sessionId, { text: "/continue" });
+  await manager.replySession(sessionId, { text: "Skip that read and finish another way." });
 
   const messages = manager.listSessionMessages(sessionId);
   const toolMessage = messages.find((message) => {
@@ -1763,16 +1794,22 @@ test("replySession /continue runs trailing pending tool calls before requesting 
   const assistantMessages = messages.filter((message) => message.role === "assistant");
   const userMessages = messages.filter((message) => message.role === "user");
 
-  assert.ok(toolMessage);
-  assert.match(toolMessage.content ?? "", /hello from pending tool/);
+  assert.equal(toolMessage, undefined);
   assert.equal(assistantMessages[assistantMessages.length - 1]?.content, "continued after tool");
   assert.equal(
-    userMessages.some((message) => message.content === "/continue"),
-    false
+    userMessages.filter((message) => message.content === "Skip that read and finish another way.").length,
+    1
   );
+  const projectCode = workspace.replace(/[\\/]/g, "-").replace(/:/g, "");
+  const agentHistory = fs.readFileSync(
+    path.join(home, ".doku", "projects", projectCode, `${sessionId}.agent.jsonl`),
+    "utf8"
+  );
+  assert.match(agentHistory, /call-pending-read/);
+  assert.match(agentHistory, /"status":"incomplete"/);
 });
 
-test("Plan mode rejects a pending mutating tool call before continuing", async () => {
+test("Plan mode supersedes a pending mutating tool call during natural recovery", async () => {
   const workspace = createTempDir("doku-plan-pending-tool-workspace-");
   const home = createTempDir("doku-plan-pending-tool-home-");
   setHomeDir(home);
@@ -1813,14 +1850,14 @@ test("Plan mode rejects a pending mutating tool call before continuing", async (
   manager.setWorkflowMode(sessionId, WORKFLOW_MODE.PLAN);
   manager.activateSession = activateSession;
 
-  await manager.replySession(sessionId, { text: "/continue" });
+  await manager.replySession(sessionId, { text: "Do not write that file; revise the approach." });
 
   assert.equal(fs.existsSync(targetPath), false);
   const rejection = manager.listSessionMessages(sessionId).find((message) => {
     const params = message.messageParams as { tool_call_id?: string } | null;
     return message.role === "tool" && params?.tool_call_id === "call-pending-write";
   });
-  assert.match(rejection?.content ?? "", /not allowed in doku-planner profile/i);
+  assert.equal(rejection, undefined);
   assert.equal(manager.getSession(sessionId)?.workflow.mode, WORKFLOW_MODE.PLAN);
 });
 

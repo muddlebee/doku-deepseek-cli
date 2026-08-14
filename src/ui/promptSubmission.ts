@@ -6,7 +6,7 @@ export type PromptSubmission = {
   imageUrls: string[];
   selectedSkills?: SkillInfo[];
   workflowMode?: WorkflowMode;
-  command?: "new" | "resume" | "continue" | "undo" | "mcp" | "exit" | "setup-websearch" | "build";
+  command?: "new" | "resume" | "undo" | "mcp" | "exit" | "setup-websearch" | "build";
 };
 
 export function submitPromptSubmission(

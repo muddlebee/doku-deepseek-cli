@@ -51,7 +51,7 @@ export function completeAgentTurnAtLimit(sessionId: string, deps: OutcomeDepende
   deps.onAssistantMessage(
     deps.buildAssistant(
       sessionId,
-      "The AI agent has taken several steps but hasn't reached a conclusion yet. Run `/continue` to keep going.",
+      "The AI agent has taken several steps but hasn't reached a conclusion yet. Send a message to continue.",
       null
     ),
     false

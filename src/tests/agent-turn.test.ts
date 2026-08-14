@@ -79,7 +79,6 @@ test("Agents turns preserve refusal metadata and fail the session", async () => 
         maxTurns: 1,
         tracingEnabled: false,
         controller: new AbortController(),
-        continueExisting: false,
       },
       {
         store: {
@@ -194,7 +193,6 @@ test("Agents turns persist the final response reasoning in the session entry", a
         maxTurns: 1,
         tracingEnabled: false,
         controller: new AbortController(),
-        continueExisting: false,
       },
       {
         store: { projectDir } as never,
@@ -345,7 +343,7 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
   };
 
   try {
-    const firstOutcome = await runAgentTurn({ ...options, continueExisting: false }, dependencies);
+    const firstOutcome = await runAgentTurn({ ...options }, dependencies);
 
     assert.equal(modelCalls, 1);
     assert.equal(firstOutcome, AGENT_TURN_OUTCOME.NEEDS_CONTINUATION);
@@ -353,19 +351,29 @@ test("Agents turns remain resumable when the turn limit is reached", async () =>
     assert.equal(entry.failReason, null);
     assert.equal(entry.activeTokens, 6);
     assert.equal(entry.usage?.total_tokens, 6);
-    assert.match(displayed.at(-1)?.content ?? "", /`\/continue`/);
+    assert.match(displayed.at(-1)?.content ?? "", /Send a message to continue/);
 
     entry = { ...entry, status: "processing" };
-    const secondOutcome = await runAgentTurn(
-      { ...options, controller: new AbortController(), continueExisting: true },
-      dependencies
-    );
+    messages.push({
+      id: "recovery-message",
+      sessionId,
+      role: "user",
+      content: "Finish the remaining work.",
+      contentParams: null,
+      messageParams: null,
+      compacted: false,
+      visible: true,
+      createTime: now,
+      updateTime: now,
+    });
+    const secondOutcome = await runAgentTurn({ ...options, controller: new AbortController() }, dependencies);
 
     assert.equal(modelCalls, 2);
     assert.equal(secondOutcome, AGENT_TURN_OUTCOME.COMPLETED);
     assert.equal(entry.status, "completed");
     assert.equal(entry.assistantReply, "Finished after continuing.");
     assert.match(JSON.stringify(modelInputs[1]), /function_call_result/);
+    assert.match(JSON.stringify(modelInputs[1]), /Finish the remaining work/);
   } finally {
     fs.rmSync(projectDir, { recursive: true, force: true });
   }
@@ -468,7 +476,6 @@ test("Agents turns refresh tools and compact between model requests", async () =
         maxTurns: 2,
         tracingEnabled: false,
         controller: new AbortController(),
-        continueExisting: false,
       },
       {
         store: { projectDir } as never,
@@ -624,7 +631,7 @@ test("Agents turns replay completed tool work after a later model request fails"
 
   try {
     await assert.rejects(
-      runAgentTurn({ ...options, controller: new AbortController(), continueExisting: false }, dependencies),
+      runAgentTurn({ ...options, controller: new AbortController() }, dependencies),
       /provider disconnected/
     );
 
@@ -641,7 +648,7 @@ test("Agents turns replay completed tool work after a later model request fails"
       createTime: now,
       updateTime: now,
     });
-    await runAgentTurn({ ...options, controller: new AbortController(), continueExisting: false }, dependencies);
+    await runAgentTurn({ ...options, controller: new AbortController() }, dependencies);
 
     assert.equal(entry.assistantReply, "Recovered.");
     assert.match(JSON.stringify(requests.at(-1)?.input), /read-before-failure/);
@@ -781,10 +788,7 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
   };
 
   try {
-    const interruptedRun = runAgentTurn(
-      { ...options, controller: activeController, continueExisting: false },
-      dependencies
-    );
+    const interruptedRun = runAgentTurn({ ...options, controller: activeController }, dependencies);
     await waitFor(() => toolStarted);
     activeController.abort();
     await interruptedRun.catch(() => {});
@@ -810,7 +814,7 @@ test("Agents turns balance interrupted tool calls before the next ordinary reply
       updateTime: now,
     });
     await runAgentTurn(
-      { ...options, controller: activeController, continueExisting: false },
+      { ...options, controller: activeController },
       { ...dependencies, executeTool: async () => "unused" }
     );
 

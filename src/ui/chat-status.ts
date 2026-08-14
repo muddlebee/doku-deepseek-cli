@@ -30,10 +30,10 @@ export function buildChatStatus(input: ChatStatusInput): ChatStatus {
     return { kind: "reasoning", text: input.loadingText || "Sending request…" };
   }
   if (input.entry?.status === "interrupted") {
-    return { kind: "stopped", text: "Turn stopped · Run /continue to resume" };
+    return { kind: "stopped", text: "Turn stopped · Send instructions to continue" };
   }
   if (input.entry?.status === "needs_continuation") {
-    return { kind: "stopped", text: "Turn limit reached · Run /continue to keep going" };
+    return { kind: "stopped", text: "Turn limit reached · Send a message to continue" };
   }
   if (input.entry?.status === "completed") {
     const tokenText =

@@ -21,6 +21,14 @@ const IMMEDIATE_QUEUE_DISCARD_COMMANDS: ReadonlySet<NonNullable<PromptSubmission
   "exit",
 ]);
 
+export const PROMPT_ROUTE = {
+  ENQUEUE: "ENQUEUE",
+  DIRECT_COMMAND: "DIRECT_COMMAND",
+  DIRECT_RECOVERY: "DIRECT_RECOVERY",
+} as const;
+
+export type PromptRoute = (typeof PROMPT_ROUTE)[keyof typeof PROMPT_ROUTE];
+
 export class SerialPromptQueue<T> {
   private readonly pending: QueuedPrompt<T>[] = [];
   private processing = false;
@@ -107,10 +115,11 @@ export function shouldPausePromptQueue(
 }
 
 export function shouldResumePromptQueueAfterRecovery(
+  route: PromptRoute,
   command: PromptSubmission["command"],
   status: SessionStatus | null | undefined
 ): boolean {
-  return (command === "continue" || command === "build") && status === "completed";
+  return (route === PROMPT_ROUTE.DIRECT_RECOVERY || command === "build") && status === "completed";
 }
 
 export function shouldDiscardPromptQueueForModeChange(
@@ -139,6 +148,17 @@ export function shouldDiscardPromptQueueAfterUndoRestore(
   return codeRestored || conversationRestored;
 }
 
-export function shouldBypassPromptQueue(submission: PromptSubmission, isPaused: boolean): boolean {
-  return submission.command === "exit" || (isPaused && submission.command !== undefined);
+export function resolvePromptRoute(
+  submission: PromptSubmission,
+  status: SessionStatus | null | undefined,
+  planStatus: PlanStatus | null | undefined
+): PromptRoute {
+  if (submission.command === "exit") return PROMPT_ROUTE.DIRECT_COMMAND;
+  if (status === "waiting_for_user") return PROMPT_ROUTE.ENQUEUE;
+
+  const needsRecovery =
+    status === "needs_continuation" ||
+    (planStatus === PLAN_STATUS.IMPLEMENTING && (status === "interrupted" || status === "failed"));
+  if (!needsRecovery) return PROMPT_ROUTE.ENQUEUE;
+  return submission.command === undefined ? PROMPT_ROUTE.DIRECT_RECOVERY : PROMPT_ROUTE.DIRECT_COMMAND;
 }

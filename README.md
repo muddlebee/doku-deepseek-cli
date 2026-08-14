@@ -83,7 +83,6 @@ DOKU_PROVIDER=openai DOKU_API_KEY=sk-... DOKU_MODEL=gpt-5.6-sol doku
 | `/` | Open skills / commands menu |
 | `/new` | Start a fresh conversation |
 | `/resume` | Pick a previous conversation to continue |
-| `/continue` | Continue the active conversation |
 | `/model` | Switch model, thinking mode, and reasoning effort |
 | `/skills` | List available skills |
 | `/mcp` | Show MCP server status and tools |

@@ -25,8 +25,8 @@ Use the full checklist for major terminal workflows, release readiness, or provi
 | First answer | Send a short factual prompt | Request, reasoning, and completion states appear in priority order; the final response is visually distinct |
 | Multi-turn | Ask a follow-up that depends on the first answer | The follow-up uses the active session and previous context |
 | Tool execution | Ask doku to inspect `package.json` without changing it | Active tool status appears, the result is summarized once, and the final answer follows |
-| Cancellation | Start a longer task and press Escape | The UI confirms the stopped turn and offers `/continue`; no fake interruption message enters the transcript |
-| Continue | Run `/continue` after cancellation | The same session resumes without adding `/continue` as a user message |
+| Cancellation | Start a longer task and press Escape | The UI confirms the stopped turn and asks for instructions; no fake interruption message enters the transcript |
+| Natural recovery | Send an ordinary instruction after cancellation | The fresh instruction continues the same session before older queued follow-ups, and is stored once as user text |
 | AskUserQuestion | Request a task that needs a choice, then answer it | The session pauses, accepts the answer, and resumes with the answer stored as the tool result |
 | AskUserQuestion decline | Trigger a question and press Escape | Escape clearly declines; the agent continues with available context or asks again only when required |
 | Model switch | Run `/model`, traverse Provider → Model → Reasoning, and use Back at each step | Only supported reasoning levels appear and the welcome/header model changes immediately |

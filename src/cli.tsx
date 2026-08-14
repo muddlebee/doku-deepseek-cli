@@ -51,7 +51,6 @@ if (args.includes("--help") || args.includes("-h")) {
       "  /new             Start a fresh conversation",
       "  /init            Initialize an AGENTS.md file with instructions for LLM",
       "  /resume          Pick a previous conversation to continue",
-      "  /continue        Continue the active conversation, or resume one if empty",
       "  /undo            Restore code and/or conversation to a previous point",
       "  /mcp             Show MCP server status and available tools",
       "  /raw             Toggle display mode for viewing or collapsing reasoning content",
