@@ -438,8 +438,27 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       if (shouldPausePromptQueue(session?.status, session?.workflow.plan?.status)) {
         promptQueue?.pause();
       }
-      const route = resolvePromptRoute(submission, session?.status, session?.workflow.plan?.status);
-      if (route !== PROMPT_ROUTE.ENQUEUE) {
+      const route = resolvePromptRoute(
+        submission,
+        session?.status,
+        session?.workflow.plan?.status,
+        promptQueue?.isPaused() ?? false
+      );
+      if (route === PROMPT_ROUTE.DIRECT_RECOVERY) {
+        const accepted =
+          promptQueue?.enqueuePriority(submission, () => {
+            const recoveredSessionId = sessionManager.getActiveSessionId();
+            const recoveredStatus = recoveredSessionId
+              ? sessionManager.getSession(recoveredSessionId)?.status
+              : undefined;
+            return shouldResumePromptQueueAfterRecovery(route, submission.command, recoveredStatus);
+          }) ?? false;
+        if (!accepted) {
+          setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
+        }
+        return accepted;
+      }
+      if (route === PROMPT_ROUTE.DIRECT_COMMAND) {
         if (shouldDiscardPromptQueueForCommand(submission.command)) {
           promptQueue?.clear();
         }

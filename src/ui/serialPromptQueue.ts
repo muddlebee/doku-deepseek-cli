@@ -6,6 +6,12 @@ export type QueuedPrompt<T> = Readonly<{
   submission: T;
 }>;
 
+type PendingPrompt<T> = QueuedPrompt<T> &
+  Readonly<{
+    priority: boolean;
+    canContinueAfter?: () => boolean;
+  }>;
+
 type SerialPromptQueueOptions<T> = {
   process: (submission: T) => Promise<void>;
   onPendingChange: (pending: readonly QueuedPrompt<T>[]) => void;
@@ -30,9 +36,10 @@ export const PROMPT_ROUTE = {
 export type PromptRoute = (typeof PROMPT_ROUTE)[keyof typeof PROMPT_ROUTE];
 
 export class SerialPromptQueue<T> {
-  private readonly pending: QueuedPrompt<T>[] = [];
+  private readonly pending: PendingPrompt<T>[] = [];
   private processing = false;
   private paused = false;
+  private priorityActive = false;
   private readonly createId: () => string;
   private readonly maxPending: number;
 
@@ -43,7 +50,24 @@ export class SerialPromptQueue<T> {
 
   enqueue(submission: T): boolean {
     if (this.pending.length >= this.maxPending) return false;
-    this.pending.push({ id: this.createId(), submission });
+    this.pending.push({ id: this.createId(), submission, priority: false });
+    this.emitPending();
+    this.startDrain();
+    return true;
+  }
+
+  enqueuePriority(submission: T, canContinueAfter: () => boolean): boolean {
+    const priorityPending = this.pending.some((prompt) => prompt.priority);
+    if (this.pending.length >= this.maxPending && (this.priorityActive || priorityPending)) return false;
+    const firstRegularIndex = this.pending.findIndex((prompt) => !prompt.priority);
+    const insertionIndex = firstRegularIndex === -1 ? this.pending.length : firstRegularIndex;
+    this.pending.splice(insertionIndex, 0, {
+      id: this.createId(),
+      submission,
+      priority: true,
+      canContinueAfter,
+    });
+    this.paused = false;
     this.emitPending();
     this.startDrain();
     return true;
@@ -74,12 +98,19 @@ export class SerialPromptQueue<T> {
         const next = this.pending.shift();
         this.emitPending();
         if (!next) continue;
+        this.priorityActive = next.priority;
         try {
           await this.options.process(next.submission);
         } catch (error) {
           this.options.onError(error);
+        } finally {
+          this.priorityActive = false;
         }
-        if (this.options.canContinue && !this.options.canContinue()) {
+        if (next.priority && !next.canContinueAfter?.()) {
+          this.paused = true;
+          break;
+        }
+        if (!this.pending[0]?.priority && this.options.canContinue && !this.options.canContinue()) {
           this.paused = true;
           break;
         }
@@ -91,12 +122,12 @@ export class SerialPromptQueue<T> {
   }
 
   private emitPending(): void {
-    this.options.onPendingChange([...this.pending]);
+    this.options.onPendingChange(this.pending.map(({ id, submission }) => ({ id, submission })));
   }
 
   private startDrain(): void {
     if (this.processing || this.paused || this.pending.length === 0) return;
-    if (this.options.canContinue && !this.options.canContinue()) {
+    if (!this.pending[0]?.priority && this.options.canContinue && !this.options.canContinue()) {
       this.paused = true;
       return;
     }
@@ -167,7 +198,8 @@ export function shouldDiscardPromptQueueAfterUndoRestore(
 export function resolvePromptRoute(
   submission: PromptSubmission,
   status: SessionStatus | null | undefined,
-  planStatus: PlanStatus | null | undefined
+  planStatus: PlanStatus | null | undefined,
+  isPaused: boolean
 ): PromptRoute {
   if (submission.command === PROMPT_COMMAND.EXIT) return PROMPT_ROUTE.DIRECT_COMMAND;
   if (status === SESSION_STATUS.WAITING_FOR_USER) return PROMPT_ROUTE.ENQUEUE;
@@ -175,7 +207,8 @@ export function resolvePromptRoute(
   const needsRecovery =
     status === SESSION_STATUS.NEEDS_CONTINUATION ||
     (planStatus === PLAN_STATUS.IMPLEMENTING &&
-      (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED));
+      (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED)) ||
+    (isPaused && (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED));
   if (!needsRecovery) return PROMPT_ROUTE.ENQUEUE;
   return submission.command === undefined ? PROMPT_ROUTE.DIRECT_RECOVERY : PROMPT_ROUTE.DIRECT_COMMAND;
 }
