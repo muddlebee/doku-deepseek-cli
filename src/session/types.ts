@@ -1,11 +1,14 @@
-export type SessionStatus =
-  | "failed"
-  | "pending"
-  | "processing"
-  | "waiting_for_user"
-  | "needs_continuation"
-  | "completed"
-  | "interrupted";
+export const SESSION_STATUS = {
+  FAILED: "failed",
+  PENDING: "pending",
+  PROCESSING: "processing",
+  WAITING_FOR_USER: "waiting_for_user",
+  NEEDS_CONTINUATION: "needs_continuation",
+  COMPLETED: "completed",
+  INTERRUPTED: "interrupted",
+} as const;
+
+export type SessionStatus = (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS];
 
 export const WORKFLOW_MODE = {
   BUILD: "build",

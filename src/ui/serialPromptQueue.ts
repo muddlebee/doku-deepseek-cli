@@ -1,5 +1,12 @@
-import { PLAN_STATUS, WORKFLOW_MODE, type PlanStatus, type SessionStatus, type WorkflowMode } from "../session/types";
-import type { PromptSubmission } from "./promptSubmission";
+import {
+  PLAN_STATUS,
+  SESSION_STATUS,
+  WORKFLOW_MODE,
+  type PlanStatus,
+  type SessionStatus,
+  type WorkflowMode,
+} from "../session/types";
+import { PROMPT_COMMAND, type PromptSubmission } from "./promptSubmission";
 
 export type QueuedPrompt<T> = Readonly<{
   id: string;
@@ -17,8 +24,8 @@ type SerialPromptQueueOptions<T> = {
 
 const DEFAULT_MAX_PENDING = 20;
 const IMMEDIATE_QUEUE_DISCARD_COMMANDS: ReadonlySet<NonNullable<PromptSubmission["command"]>> = new Set([
-  "new",
-  "exit",
+  PROMPT_COMMAND.NEW,
+  PROMPT_COMMAND.EXIT,
 ]);
 
 export const PROMPT_ROUTE = {
@@ -110,8 +117,11 @@ export function shouldPausePromptQueue(
   planStatus: PlanStatus | null | undefined
 ): boolean {
   const implementationStopped =
-    planStatus === PLAN_STATUS.IMPLEMENTING && (status === "interrupted" || status === "failed");
-  return status === "waiting_for_user" || status === "needs_continuation" || implementationStopped;
+    planStatus === PLAN_STATUS.IMPLEMENTING &&
+    (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED);
+  return (
+    status === SESSION_STATUS.WAITING_FOR_USER || status === SESSION_STATUS.NEEDS_CONTINUATION || implementationStopped
+  );
 }
 
 export function shouldResumePromptQueueAfterRecovery(
@@ -119,7 +129,9 @@ export function shouldResumePromptQueueAfterRecovery(
   command: PromptSubmission["command"],
   status: SessionStatus | null | undefined
 ): boolean {
-  return (route === PROMPT_ROUTE.DIRECT_RECOVERY || command === "build") && status === "completed";
+  return (
+    (route === PROMPT_ROUTE.DIRECT_RECOVERY || command === PROMPT_COMMAND.BUILD) && status === SESSION_STATUS.COMPLETED
+  );
 }
 
 export function shouldDiscardPromptQueueForModeChange(
@@ -153,12 +165,13 @@ export function resolvePromptRoute(
   status: SessionStatus | null | undefined,
   planStatus: PlanStatus | null | undefined
 ): PromptRoute {
-  if (submission.command === "exit") return PROMPT_ROUTE.DIRECT_COMMAND;
-  if (status === "waiting_for_user") return PROMPT_ROUTE.ENQUEUE;
+  if (submission.command === PROMPT_COMMAND.EXIT) return PROMPT_ROUTE.DIRECT_COMMAND;
+  if (status === SESSION_STATUS.WAITING_FOR_USER) return PROMPT_ROUTE.ENQUEUE;
 
   const needsRecovery =
-    status === "needs_continuation" ||
-    (planStatus === PLAN_STATUS.IMPLEMENTING && (status === "interrupted" || status === "failed"));
+    status === SESSION_STATUS.NEEDS_CONTINUATION ||
+    (planStatus === PLAN_STATUS.IMPLEMENTING &&
+      (status === SESSION_STATUS.INTERRUPTED || status === SESSION_STATUS.FAILED));
   if (!needsRecovery) return PROMPT_ROUTE.ENQUEUE;
   return submission.command === undefined ? PROMPT_ROUTE.DIRECT_RECOVERY : PROMPT_ROUTE.DIRECT_COMMAND;
 }
