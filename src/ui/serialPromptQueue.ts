@@ -1,3 +1,5 @@
+import type { SessionStatus } from "../session/types";
+
 export type QueuedPrompt<T> = Readonly<{
   id: string;
   submission: T;
@@ -39,6 +41,12 @@ export class SerialPromptQueue<T> {
     this.startDrain();
   }
 
+  clear(): void {
+    this.pending.length = 0;
+    this.paused = false;
+    this.emitPending();
+  }
+
   private async drain(): Promise<void> {
     try {
       while (this.pending.length > 0) {
@@ -74,4 +82,8 @@ export class SerialPromptQueue<T> {
     this.processing = true;
     void this.drain();
   }
+}
+
+export function shouldPausePromptQueue(status: SessionStatus | null | undefined): boolean {
+  return status === "waiting_for_user" || status === "needs_continuation";
 }

@@ -49,10 +49,16 @@ import { PlanHandoffPrompt } from "./PlanHandoffPrompt";
 import { PLAN_STATUS, WORKFLOW_MODE, type WorkflowMode } from "../session/types";
 import { buildChatStatus, reconcileChatError } from "./chat-status";
 import { transitionView, type AppView } from "./view-state";
-import { SerialPromptQueue, type QueuedPrompt } from "./serialPromptQueue";
+import { SerialPromptQueue, shouldPausePromptQueue, type QueuedPrompt } from "./serialPromptQueue";
 
 const DEFAULT_MODEL = "deepseek-v4-pro";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const QUEUE_DISCARD_COMMANDS: ReadonlySet<NonNullable<PromptSubmission["command"]>> = new Set([
+  "new",
+  "resume",
+  "undo",
+  "exit",
+]);
 
 type AppProps = {
   projectRoot: string;
@@ -174,7 +180,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       canContinue: () => {
         const manager = sessionManagerRef.current;
         const sessionId = manager?.getActiveSessionId();
-        return !manager || !sessionId || manager.getSession(sessionId)?.status !== "waiting_for_user";
+        return !manager || !sessionId || !shouldPausePromptQueue(manager.getSession(sessionId)?.status);
       },
     });
   }
@@ -420,11 +426,25 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
     [projectRoot, redrawStaticChat, sessionManager]
   );
 
-  const handleSubmit = useCallback((submission: PromptSubmission) => {
-    if (!promptQueueRef.current?.enqueue(submission)) {
-      setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
-    }
-  }, []);
+  const handleSubmit = useCallback(
+    (submission: PromptSubmission) => {
+      const sessionId = sessionManager.getActiveSessionId();
+      const status = sessionId ? sessionManager.getSession(sessionId)?.status : undefined;
+      if (status === "needs_continuation" && submission.command) {
+        if (QUEUE_DISCARD_COMMANDS.has(submission.command)) {
+          promptQueueRef.current?.clear();
+        }
+        void handlePrompt(submission).finally(() => {
+          if (submission.command === "continue") promptQueueRef.current?.resume();
+        });
+        return;
+      }
+      if (!promptQueueRef.current?.enqueue(submission)) {
+        setErrorLine("The prompt queue is full. Wait for a turn to finish before adding another message.");
+      }
+    },
+    [handlePrompt, sessionManager]
+  );
 
   promptProcessorRef.current = handlePrompt;
 

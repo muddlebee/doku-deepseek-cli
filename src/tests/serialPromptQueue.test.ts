@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SerialPromptQueue } from "../ui/serialPromptQueue";
+import type { SessionStatus } from "../session/types";
+import { SerialPromptQueue, shouldPausePromptQueue } from "../ui/serialPromptQueue";
+
+test("prompt queues pause only for statuses that require user-controlled resumption", () => {
+  assert.equal(shouldPausePromptQueue("waiting_for_user"), true);
+  assert.equal(shouldPausePromptQueue("needs_continuation"), true);
+  assert.equal(shouldPausePromptQueue("completed"), false);
+  assert.equal(shouldPausePromptQueue(null), false);
+});
 
 test("SerialPromptQueue processes submissions in order and exposes only waiting prompts", async () => {
   const processed: string[] = [];
@@ -104,4 +112,70 @@ test("SerialPromptQueue pauses pending prompts until an interrupted interaction 
   queue.resume();
   await secondProcessed;
   assert.deepEqual(processed, ["first", "second"]);
+});
+
+test("SerialPromptQueue pauses pending prompts when a turn needs continuation", async () => {
+  const processed: string[] = [];
+  let status: SessionStatus = "processing";
+  let resolveFirst: (() => void) | undefined;
+  const firstProcessed = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  let resolveSecond: (() => void) | undefined;
+  const secondProcessed = new Promise<void>((resolve) => {
+    resolveSecond = resolve;
+  });
+  const queue = new SerialPromptQueue<string>({
+    process: async (submission) => {
+      processed.push(submission);
+      if (submission === "first") {
+        status = "needs_continuation";
+        resolveFirst?.();
+      } else {
+        resolveSecond?.();
+      }
+    },
+    canContinue: () => !shouldPausePromptQueue(status),
+    onPendingChange: () => {},
+    onError: (error) => assert.fail(String(error)),
+  });
+
+  queue.enqueue("first");
+  queue.enqueue("second");
+  await firstProcessed;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(processed, ["first"]);
+
+  status = "completed";
+  queue.resume();
+  await secondProcessed;
+  assert.deepEqual(processed, ["first", "second"]);
+});
+
+test("SerialPromptQueue can discard pending prompts when a paused session is abandoned", async () => {
+  let status: SessionStatus = "processing";
+  let resolveFirst: (() => void) | undefined;
+  const firstProcessed = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const pendingSnapshots: string[][] = [];
+  const queue = new SerialPromptQueue<string>({
+    process: async (submission) => {
+      if (submission === "first") {
+        status = "needs_continuation";
+        resolveFirst?.();
+      }
+    },
+    canContinue: () => !shouldPausePromptQueue(status),
+    onPendingChange: (pending) => pendingSnapshots.push(pending.map((prompt) => prompt.submission)),
+    onError: (error) => assert.fail(String(error)),
+  });
+
+  queue.enqueue("first");
+  queue.enqueue("stale follow-up");
+  await firstProcessed;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  queue.clear();
+
+  assert.deepEqual(pendingSnapshots.at(-1), []);
 });
