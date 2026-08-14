@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { BUILTIN_SKILL_NAME, getBuiltinSkillPath } from "../common/builtin-skills";
 
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
 function stripAnsi(text: string): string {
@@ -337,13 +338,13 @@ test("buildSkillPromptSubmission submits slash command arguments with selected s
 
 test("buildWorkflowPromptSubmission enters plan mode and treats bare build as approval", () => {
   const planSkill: SkillInfo = {
-    name: "planning-and-task-breakdown",
-    path: "builtin:planning-and-task-breakdown",
+    name: BUILTIN_SKILL_NAME.PLAN,
+    path: getBuiltinSkillPath(BUILTIN_SKILL_NAME.PLAN),
     description: "Plan",
   };
   const buildSkill: SkillInfo = {
-    name: "incremental-implementation",
-    path: "builtin:incremental-implementation",
+    name: BUILTIN_SKILL_NAME.BUILD,
+    path: getBuiltinSkillPath(BUILTIN_SKILL_NAME.BUILD),
     description: "Build",
   };
 
@@ -458,24 +459,31 @@ test("workflow mode shortcut alternates between build and plan", () => {
 });
 
 test("visible workflow mode removes conflicting workflow skills", () => {
-  const planSkill: SkillInfo = {
-    name: "planning-and-task-breakdown",
-    path: "builtin:planning-and-task-breakdown",
-    description: "Plan",
-  };
-  const buildSkill: SkillInfo = {
-    name: "incremental-implementation",
-    path: "builtin:incremental-implementation",
-    description: "Build",
-  };
+  const builtinSkill = (name: string, description: string): SkillInfo => ({
+    name,
+    path: getBuiltinSkillPath(name),
+    description,
+  });
+  const planSkill = builtinSkill(BUILTIN_SKILL_NAME.PLAN, "Plan");
+  const buildSkill = builtinSkill(BUILTIN_SKILL_NAME.BUILD, "Build");
   const generalSkill: SkillInfo = { name: "testing", path: "/testing/SKILL.md", description: "Test" };
+  const debugSkill = builtinSkill(BUILTIN_SKILL_NAME.DEBUG, "Debug");
+  const ideateSkill = builtinSkill(BUILTIN_SKILL_NAME.IDEA_REFINE, "Ideate");
+  const reviewSkill = builtinSkill(BUILTIN_SKILL_NAME.REVIEW, "Review");
+  const selectedSkills = [buildSkill, planSkill, debugSkill, ideateSkill, reviewSkill, generalSkill];
 
-  assert.deepEqual(reconcileWorkflowSkills([buildSkill, planSkill, generalSkill], WORKFLOW_MODE.PLAN), [
+  assert.deepEqual(reconcileWorkflowSkills(selectedSkills, WORKFLOW_MODE.PLAN), [
     planSkill,
+    debugSkill,
+    ideateSkill,
+    reviewSkill,
     generalSkill,
   ]);
-  assert.deepEqual(reconcileWorkflowSkills([buildSkill, planSkill, generalSkill], WORKFLOW_MODE.BUILD), [
+  assert.deepEqual(reconcileWorkflowSkills(selectedSkills, WORKFLOW_MODE.BUILD), [
     buildSkill,
+    debugSkill,
+    ideateSkill,
+    reviewSkill,
     generalSkill,
   ]);
 });
