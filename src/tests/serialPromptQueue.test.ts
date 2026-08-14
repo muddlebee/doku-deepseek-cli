@@ -80,11 +80,38 @@ test("persisted recovery state bypasses the queue before its in-memory pause fla
   );
 });
 
-test("only abandoning a paused implementation discards its queued build prompts", () => {
-  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.PLAN), true);
-  assert.equal(shouldDiscardPromptQueueForModeChange(false, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.PLAN), false);
-  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.DRAFT, WORKFLOW_MODE.PLAN), false);
-  assert.equal(shouldDiscardPromptQueueForModeChange(true, PLAN_STATUS.IMPLEMENTING, WORKFLOW_MODE.BUILD), false);
+test("mode changes discard prompts paused behind an abandoned turn", () => {
+  const stoppedPlan = {
+    isPaused: true,
+    sessionStatus: "needs_continuation",
+    currentMode: WORKFLOW_MODE.PLAN,
+    planStatus: PLAN_STATUS.DRAFT,
+    nextMode: WORKFLOW_MODE.BUILD,
+  } satisfies Parameters<typeof shouldDiscardPromptQueueForModeChange>[0];
+
+  assert.equal(shouldDiscardPromptQueueForModeChange(stoppedPlan), true);
+  assert.equal(
+    shouldDiscardPromptQueueForModeChange({
+      ...stoppedPlan,
+      currentMode: WORKFLOW_MODE.BUILD,
+      planStatus: null,
+      nextMode: WORKFLOW_MODE.PLAN,
+    }),
+    true
+  );
+  assert.equal(
+    shouldDiscardPromptQueueForModeChange({
+      ...stoppedPlan,
+      sessionStatus: "interrupted",
+      currentMode: WORKFLOW_MODE.BUILD,
+      planStatus: PLAN_STATUS.IMPLEMENTING,
+      nextMode: WORKFLOW_MODE.PLAN,
+    }),
+    true
+  );
+  assert.equal(shouldDiscardPromptQueueForModeChange({ ...stoppedPlan, isPaused: false }), false);
+  assert.equal(shouldDiscardPromptQueueForModeChange({ ...stoppedPlan, nextMode: WORKFLOW_MODE.PLAN }), false);
+  assert.equal(shouldDiscardPromptQueueForModeChange({ ...stoppedPlan, sessionStatus: "completed" }), false);
 });
 
 test("navigation discards queued prompts only after it changes durable state", () => {

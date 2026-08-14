@@ -30,16 +30,11 @@ import {
   removeAgentTurnState,
   runAgentTurn,
 } from "./session/agent-turn";
-import {
-  approvePlan,
-  changeWorkflowMode,
-  completeImplementation,
-  createWorkflowSnapshot,
-  startImplementation,
-} from "./session/workflow";
+import { approvePlan, completeImplementation, createWorkflowSnapshot, startImplementation } from "./session/workflow";
 import {
   applyPlanToolUpdate,
   buildPlanHandoff,
+  changeWorkflowEntryMode,
   getBuildMessagePlan,
   hasBuildHandoff,
   getPlanToolRejection,
@@ -289,11 +284,7 @@ export class SessionManager {
 
   setWorkflowMode(sessionId: string, mode: WorkflowMode): SessionEntry {
     const now = new Date().toISOString();
-    const updated = this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      workflow: changeWorkflowMode(entry.workflow, mode, now),
-      updateTime: now,
-    }));
+    const updated = this.updateSessionEntry(sessionId, (entry) => changeWorkflowEntryMode(entry, mode, now));
     if (!updated) throw new Error("No active session was found.");
     return updated;
   }

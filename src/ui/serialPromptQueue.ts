@@ -1,11 +1,4 @@
-import {
-  PLAN_STATUS,
-  SESSION_STATUS,
-  WORKFLOW_MODE,
-  type PlanStatus,
-  type SessionStatus,
-  type WorkflowMode,
-} from "../session/types";
+import { PLAN_STATUS, SESSION_STATUS, type PlanStatus, type SessionStatus, type WorkflowMode } from "../session/types";
 import { PROMPT_COMMAND, type PromptSubmission } from "./promptSubmission";
 
 export type QueuedPrompt<T> = Readonly<{
@@ -134,12 +127,23 @@ export function shouldResumePromptQueueAfterRecovery(
   );
 }
 
-export function shouldDiscardPromptQueueForModeChange(
-  isPaused: boolean,
-  planStatus: PlanStatus | null | undefined,
-  nextMode: WorkflowMode
-): boolean {
-  return isPaused && planStatus === PLAN_STATUS.IMPLEMENTING && nextMode === WORKFLOW_MODE.PLAN;
+type PromptQueueModeChange = Readonly<{
+  isPaused: boolean;
+  sessionStatus: SessionStatus | null | undefined;
+  currentMode: WorkflowMode;
+  planStatus: PlanStatus | null | undefined;
+  nextMode: WorkflowMode;
+}>;
+
+export function shouldDiscardPromptQueueForModeChange({
+  isPaused,
+  sessionStatus,
+  currentMode,
+  planStatus,
+  nextMode,
+}: PromptQueueModeChange): boolean {
+  if (!isPaused || currentMode === nextMode) return false;
+  return sessionStatus === SESSION_STATUS.NEEDS_CONTINUATION || planStatus === PLAN_STATUS.IMPLEMENTING;
 }
 
 export function shouldDiscardPromptQueueForCommand(command: PromptSubmission["command"]): boolean {

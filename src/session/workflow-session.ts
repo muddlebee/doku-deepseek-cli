@@ -42,6 +42,20 @@ export function prepareWorkflowEntry(
   };
 }
 
+export function changeWorkflowEntryMode(
+  entry: SessionEntry,
+  mode: WorkflowMode,
+  now = new Date().toISOString()
+): SessionEntry {
+  const modeChanged = entry.workflow.mode !== mode;
+  return {
+    ...entry,
+    workflow: changeWorkflowMode(entry.workflow, mode, now),
+    status: modeChanged && entry.status === "needs_continuation" ? "completed" : entry.status,
+    updateTime: now,
+  };
+}
+
 export function parsePlanToolUpdate(result: ToolExecutionResult): PlanToolUpdate | null {
   if (!result.ok || (result.name !== "UpdatePlan" && result.name !== "FinalizePlan")) return null;
   const markdown = result.metadata?.plan;
