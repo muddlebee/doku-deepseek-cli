@@ -142,11 +142,6 @@ export class SessionExecutionLeaseStore {
     }
   }
 
-  removeOrphaned(sessionId: string): boolean {
-    if (this.inspect(sessionId).state !== "orphaned") return false;
-    return this.moveOrphanedLeaseAside(sessionId);
-  }
-
   listSessionIds(): string[] {
     try {
       return fs

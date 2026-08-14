@@ -72,6 +72,32 @@ test("orphan reconciliation reuses a persisted transcript tool result", () => {
   });
 });
 
+test("orphan reconciliation preserves a persisted incomplete tool result", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-1", "Write")]));
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-1", '{"ok":false,"incomplete":true}', {
+        name: "Write",
+        arguments: '{"path":"note.txt"}',
+      })
+    );
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([
+      { type: "function_call", callId: "call-1", name: "Write", arguments: '{"path":"note.txt"}' },
+    ]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    const result = agentSession
+      .getItemsSync()
+      .find((item) => (item as { type?: unknown }).type === "function_call_result") as {
+      status?: unknown;
+    };
+    assert.equal(result.status, "incomplete");
+  });
+});
+
 test("orphan reconciliation restores a canonical tool result missing from the transcript", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));

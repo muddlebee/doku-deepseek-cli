@@ -601,6 +601,7 @@ export class SessionManager {
         await this.activateSession(sessionId, controller);
       });
     } catch (error) {
+      this.markPreActivationAbort(sessionId, error, controller.signal);
       if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
     } finally {
       if (this.activePromptController === controller) this.activePromptController = null;

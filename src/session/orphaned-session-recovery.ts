@@ -166,7 +166,7 @@ function repairToolHistory(
         type: "function_call_result",
         callId: call.callId,
         name: call.name,
-        status: "completed",
+        status: isIncompleteToolMessage(persistedResult) ? "incomplete" : "completed",
         output: persistedResult.content ?? "",
       });
     } else {
@@ -197,6 +197,15 @@ function repairToolHistory(
   }
 
   return { agentItems, messages, appendedMessages, agentItemsChanged, messagesChanged };
+}
+
+function isIncompleteToolMessage(message: SessionMessage): boolean {
+  try {
+    const value = JSON.parse(message.content ?? "") as { incomplete?: unknown };
+    return value.incomplete === true;
+  } catch {
+    return false;
+  }
 }
 
 function readTranscriptCalls(message: SessionMessage): ToolCall[] {
