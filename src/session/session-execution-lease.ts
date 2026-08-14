@@ -25,7 +25,7 @@ export type SessionLeaseInspection =
   | Readonly<{ state: "missing" }>
   | Readonly<{ state: "owned"; record: SessionExecutionLeaseRecord }>
   | Readonly<{ state: "live"; record: SessionExecutionLeaseRecord }>
-  | Readonly<{ state: "orphaned"; record?: SessionExecutionLeaseRecord }>
+  | Readonly<{ state: "orphaned"; fingerprint: string; record?: SessionExecutionLeaseRecord }>
   | Readonly<{ state: "initializing" }>;
 
 type ProcessState = "alive" | "dead" | "unknown";
@@ -84,6 +84,7 @@ export class SessionExecutionLeaseStore {
         acquiredAt: this.now().toISOString(),
       };
       if (this.tryCreate(record)) {
+        this.removeAbandonedReclaimFiles(sessionId);
         const handle = { sessionId, leaseId: record.leaseId, ownerId: record.ownerId };
         this.heldLeases.set(sessionId, handle);
         return handle;
@@ -95,7 +96,7 @@ export class SessionExecutionLeaseStore {
       }
       if (inspection.state === "initializing") throw new SessionBusyError(sessionId);
       if (inspection.state === "missing") continue;
-      if (this.moveOrphanedLeaseAside(sessionId)) continue;
+      if (this.removeOrphanedLease(sessionId, inspection.fingerprint)) continue;
     }
 
     throw new SessionBusyError(sessionId);
@@ -115,7 +116,9 @@ export class SessionExecutionLeaseStore {
     if (!record) {
       try {
         const ageMs = Math.max(0, this.now().getTime() - fs.statSync(filePath).mtimeMs);
-        return ageMs < MALFORMED_LEASE_GRACE_MS ? { state: "initializing" } : { state: "orphaned" };
+        return ageMs < MALFORMED_LEASE_GRACE_MS
+          ? { state: "initializing" }
+          : { state: "orphaned", fingerprint: fingerprintLease(raw) };
       } catch (error) {
         return isNodeError(error, "ENOENT") ? { state: "missing" } : { state: "initializing" };
       }
@@ -125,7 +128,9 @@ export class SessionExecutionLeaseStore {
     if (record.ownerId === this.ownerId && held?.leaseId === record.leaseId) {
       return { state: "owned", record };
     }
-    return this.getProcessState(record.pid) === "dead" ? { state: "orphaned", record } : { state: "live", record };
+    return this.getProcessState(record.pid) === "dead"
+      ? { state: "orphaned", fingerprint: fingerprintLease(raw), record }
+      : { state: "live", record };
   }
 
   release(handle: SessionExecutionLeaseHandle): void {
@@ -174,26 +179,75 @@ export class SessionExecutionLeaseStore {
     }
   }
 
-  private moveOrphanedLeaseAside(sessionId: string): boolean {
+  private removeOrphanedLease(sessionId: string, expectedFingerprint: string): boolean {
     const filePath = this.leasePath(sessionId);
-    const stalePath = `${filePath}.${crypto.randomUUID()}.stale`;
+    const claimPath = `${filePath}.${expectedFingerprint}.reclaim`;
     try {
-      fs.renameSync(filePath, stalePath);
+      fs.linkSync(filePath, claimPath);
     } catch (error) {
       if (isNodeError(error, "ENOENT")) return false;
+      if (isNodeError(error, "EEXIST")) {
+        this.removeAbandonedReclaimFile(claimPath);
+        return false;
+      }
       throw error;
     }
+
+    let removed = false;
+    let failure: unknown;
     try {
-      fs.unlinkSync(stalePath);
+      const claimedRaw = fs.readFileSync(claimPath, "utf8");
+      const currentRaw = fs.readFileSync(filePath, "utf8");
+      if (
+        fingerprintLease(claimedRaw) !== expectedFingerprint ||
+        fingerprintLease(currentRaw) !== expectedFingerprint
+      ) {
+        removed = false;
+      } else {
+        fs.unlinkSync(filePath);
+        removed = true;
+      }
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) failure = error;
+    }
+    try {
+      fs.unlinkSync(claimPath);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT") && failure === undefined) failure = error;
+    }
+    if (failure !== undefined) throw failure;
+    return removed;
+  }
+
+  private removeAbandonedReclaimFile(claimPath: string): void {
+    try {
+      const ageMs = Math.max(0, this.now().getTime() - fs.statSync(claimPath).mtimeMs);
+      if (ageMs >= MALFORMED_LEASE_GRACE_MS) fs.unlinkSync(claimPath);
     } catch (error) {
       if (!isNodeError(error, "ENOENT")) throw error;
     }
-    return true;
+  }
+
+  private removeAbandonedReclaimFiles(sessionId: string): void {
+    const prefix = `${sessionId}${LEASE_SUFFIX}.`;
+    try {
+      for (const name of fs.readdirSync(this.projectDir)) {
+        if (name.startsWith(prefix) && name.endsWith(".reclaim")) {
+          this.removeAbandonedReclaimFile(path.join(this.projectDir, name));
+        }
+      }
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
   }
 
   private leasePath(sessionId: string): string {
     return path.join(this.projectDir, `${sessionId}${LEASE_SUFFIX}`);
   }
+}
+
+function fingerprintLease(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
 }
 
 function readLeaseRecord(filePath: string, sessionId: string): SessionExecutionLeaseRecord | null {
