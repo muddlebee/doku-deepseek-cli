@@ -477,14 +477,16 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       }
       try {
         const promptQueue = promptQueueRef.current;
-        const planStatus = sessionManager.getSession(sessionId)?.workflow.plan?.status;
-        const discardPausedImplementation = shouldDiscardPromptQueueForModeChange(
-          promptQueue?.isPaused() ?? false,
-          planStatus,
-          nextMode
-        );
+        const session = sessionManager.getSession(sessionId);
+        const discardAbandonedPrompts = shouldDiscardPromptQueueForModeChange({
+          isPaused: promptQueue?.isPaused() ?? false,
+          sessionStatus: session?.status,
+          currentMode: session?.workflow.mode ?? nextMode,
+          planStatus: session?.workflow.plan?.status,
+          nextMode,
+        });
         sessionManager.setWorkflowMode(sessionId, nextMode);
-        if (discardPausedImplementation) promptQueue?.clear();
+        if (discardAbandonedPrompts) promptQueue?.clear();
         setErrorLine(null);
       } catch (error) {
         setErrorLine(error instanceof Error ? error.message : String(error));

@@ -480,6 +480,44 @@ test("an approved implementation remains active when the turn limit is reached",
   assert.equal(manager.getSession(sessionId)?.workflow.plan?.status, PLAN_STATUS.IMPLEMENTING);
 });
 
+test("switching modes abandons a turn that needs continuation", async () => {
+  const workspace = createTempDir("doku-mode-switch-continuation-workspace-");
+  const home = createTempDir("doku-mode-switch-continuation-home-");
+  setHomeDir(home);
+  const notePath = path.join(workspace, "note.txt");
+  fs.writeFileSync(notePath, "context\n", "utf8");
+  const manager = createMockedClientSessionManager(
+    workspace,
+    [
+      {
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "read-before-mode-switch",
+                  type: "function",
+                  function: { name: "read", arguments: JSON.stringify({ file_path: notePath }) },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      },
+    ],
+    { maxTurns: 1 }
+  );
+  const sessionId = await manager.createSession({ text: "Plan the implementation", workflowMode: WORKFLOW_MODE.PLAN });
+
+  assert.equal(manager.getSession(sessionId)?.status, "needs_continuation");
+  const switched = manager.setWorkflowMode(sessionId, WORKFLOW_MODE.BUILD);
+
+  assert.equal(switched.status, "completed");
+  assert.equal(switched.workflow.mode, WORKFLOW_MODE.BUILD);
+});
+
 test("automatic skill matching cannot silently switch the default build workflow into plan mode", async () => {
   const workspace = createTempDir("doku-plan-auto-match-workspace-");
   const home = createTempDir("doku-plan-auto-match-home-");

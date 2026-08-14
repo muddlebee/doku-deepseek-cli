@@ -1122,8 +1122,9 @@ export function buildWorkflowPromptSubmission(
 
 export function reconcileWorkflowSkills(skills: SkillInfo[], workflowMode: WorkflowMode): SkillInfo[] {
   return skills.filter((skill) => {
-    const workflowSkill = getBuiltinWorkflowSkillByName(skill.name);
-    return !workflowSkill?.command || workflowSkill.command === workflowMode;
+    const command = getBuiltinWorkflowSkillByName(skill.name)?.command;
+    const isModeSkill = command === WORKFLOW_MODE.PLAN || command === WORKFLOW_MODE.BUILD;
+    return !isModeSkill || command === workflowMode;
   });
 }
 
