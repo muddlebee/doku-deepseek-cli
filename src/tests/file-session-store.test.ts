@@ -54,6 +54,19 @@ test("FileSessionStore serializes cross-process index updates for different sess
     store.updateIndex((index) => {
       index.entries = [buildEntry("session-1"), buildEntry("session-2")];
     });
+    const staleLockPath = `${store.sessionsIndexPath}.lock`;
+    fs.writeFileSync(
+      staleLockPath,
+      `${JSON.stringify({
+        version: 2,
+        lockId: "stale-owner",
+        pid: 999_999_999,
+        processIdentity: null,
+      })}\n`,
+      "utf8"
+    );
+    const staleTime = new Date(Date.now() - 5_000);
+    fs.utimesSync(staleLockPath, staleTime, staleTime);
 
     const storeModule = pathToFileURL(path.resolve("src/session/file-session-store.ts")).href;
     const script = `
@@ -128,6 +141,69 @@ test("FileSessionStore records process identity and reclaims a lock after PID re
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("FileSessionStore retains the index lock through nested mutations", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-nested-lock-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    const lockPath = `${store.sessionsIndexPath}.lock`;
+    store.updateIndex((index) => {
+      store.updateIndex(() => undefined);
+      assert.equal(fs.existsSync(lockPath), true);
+      index.entries.push(buildEntry("session-1"));
+    });
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test(
+  "FileSessionStore reuses ownership after a failed lock release",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-release-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    let lockPath = "";
+
+    try {
+      const store = new FileSessionStore(path.join(home, "project"));
+      lockPath = `${store.sessionsIndexPath}.lock`;
+      let releaseFailed = false;
+      try {
+        store.updateIndex((index) => {
+          index.entries.push(buildEntry("session-1"));
+          fs.chmodSync(lockPath, 0o000);
+        });
+      } catch (error) {
+        releaseFailed = true;
+        assert.match(String(error), /EACCES|EPERM/);
+      }
+      if (!releaseFailed) {
+        context.skip("This runner can read mode-000 lock files.");
+        return;
+      }
+
+      fs.chmodSync(lockPath, 0o600);
+      store.updateIndex((index) => index.entries.push(buildEntry("session-2")));
+      assert.deepEqual(
+        store.listSessions().map((entry) => entry.id),
+        ["session-1", "session-2"]
+      );
+    } finally {
+      if (lockPath && fs.existsSync(lockPath)) fs.chmodSync(lockPath, 0o600);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+);
 
 test("FileSessionStore does not overwrite a malformed index during an update", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-malformed-index-"));

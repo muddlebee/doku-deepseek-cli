@@ -109,9 +109,13 @@ export class SessionExecutionLeaseStore {
         acquiredAt: this.now().toISOString(),
       };
       if (this.tryCreate(record)) {
-        this.removeStaleReclaimFiles(sessionId);
         const handle = { sessionId, leaseId: record.leaseId, ownerId: record.ownerId };
         this.heldLeases.set(sessionId, handle);
+        try {
+          this.removeStaleReclaimFiles(sessionId);
+        } catch {
+          // Reclaim markers are obsolete bookkeeping once this lease is published.
+        }
         return handle;
       }
 

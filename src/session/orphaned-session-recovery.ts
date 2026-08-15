@@ -33,8 +33,7 @@ export function reconcileOrphanedSession(
 
   const messages = store.listMessages(sessionId);
   const pausedState = readPausedAgentState(sessionId, projectDir);
-  const pendingApproval = messages.find(isPendingApprovalMessage);
-  const pendingCallId = pendingApproval ? getToolMessageCallId(pendingApproval) : null;
+  const pendingCallId = findLatestPendingApprovalCallId(messages);
   if (pausedState && pendingCallId && isResumablePausedAgentState(pausedState, pendingCallId)) {
     const updated = store.updateEntry(sessionId, (current) => ({
       ...current,
@@ -48,14 +47,18 @@ export function reconcileOrphanedSession(
 
   const recoveryId = `${entry.status}:${entry.updateTime}`;
   const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, projectDir));
-  const currentAgentItems = agentSession.getItemsSync();
+  const agentSnapshot = agentSession.readSnapshotSync();
+  const currentAgentItems = agentSnapshot.items;
   const transcriptAgentItems = buildAgentInputItems(messages, true, renderContent);
-  const agentItems =
-    currentAgentItems.length > 0 && hasCurrentCompactionSummaries(currentAgentItems, messages, renderContent)
+  const baseAgentItems =
+    !agentSnapshot.skippedRecords &&
+    currentAgentItems.length > 0 &&
+    containsTranscriptHistory(currentAgentItems, transcriptAgentItems) &&
+    hasCurrentCompactionSummaries(currentAgentItems, messages, renderContent)
       ? currentAgentItems
       : transcriptAgentItems;
-  const repairs = repairToolHistory(sessionId, agentItems, messages, messageFactory);
-  if (agentItems !== currentAgentItems || repairs.agentItemsChanged) {
+  const repairs = repairToolHistory(sessionId, baseAgentItems, messages, messageFactory);
+  if (baseAgentItems !== currentAgentItems || repairs.agentItemsChanged) {
     agentSession.replaceItemsSync(repairs.agentItems);
   }
   if (repairs.messagesChanged) store.saveMessages(sessionId, repairs.messages);
@@ -258,6 +261,38 @@ function hasCurrentCompactionSummaries(
   });
 }
 
+function containsTranscriptHistory(currentItems: AgentInputItem[], transcriptItems: AgentInputItem[]): boolean {
+  const currentHistory = currentItems.map(historyItemKey).filter((key): key is string => key !== null);
+  const transcriptHistory = transcriptItems.map(historyItemKey).filter((key): key is string => key !== null);
+  let currentIndex = 0;
+  for (const transcriptKey of transcriptHistory) {
+    while (currentIndex < currentHistory.length && currentHistory[currentIndex] !== transcriptKey) {
+      currentIndex += 1;
+    }
+    if (currentIndex === currentHistory.length) return false;
+    currentIndex += 1;
+  }
+  return true;
+}
+
+function historyItemKey(item: AgentInputItem): string | null {
+  const record = item as {
+    type?: unknown;
+    role?: unknown;
+    status?: unknown;
+    content?: unknown;
+    rawContent?: unknown;
+  };
+  if (record.type === "function_call" || record.type === "function_call_result") return null;
+  return JSON.stringify({
+    type: record.type ?? null,
+    role: record.role ?? null,
+    status: record.status ?? null,
+    content: record.content ?? null,
+    rawContent: record.rawContent ?? null,
+  });
+}
+
 function eventKey(kind: "call" | "result", callId: string): string {
   return `${kind}:${callId}`;
 }
@@ -352,6 +387,15 @@ function getToolMessageCallId(message: SessionMessage): string | null {
 
 function isPendingApprovalMessage(message: SessionMessage): boolean {
   return message.role === "tool" && message.meta?.pendingApproval === true;
+}
+
+function findLatestPendingApprovalCallId(messages: SessionMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (!isPendingApprovalMessage(messages[index])) continue;
+    const callId = getToolMessageCallId(messages[index]);
+    if (callId) return callId;
+  }
+  return null;
 }
 
 function toTranscriptToolCall(call: ToolCall): unknown {

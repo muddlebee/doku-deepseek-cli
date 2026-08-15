@@ -58,6 +58,23 @@ test("session execution leases publish only complete records", () => {
   fs.rmSync(projectDir, { recursive: true, force: true });
 });
 
+test("session execution leases keep ownership when stale-marker cleanup fails", () => {
+  const projectDir = createLeaseDir();
+  const marker = path.join(projectDir, `session-1.lease.json.${"a".repeat(64)}.reclaim`);
+  fs.mkdirSync(marker);
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+  });
+
+  const handle = store.acquire("session-1");
+
+  assert.equal(store.inspect("session-1").state, "owned");
+  store.release(handle);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
 test("session execution leases allow different sessions", () => {
   const projectDir = createLeaseDir();
   const first = new SessionExecutionLeaseStore(projectDir, { ownerId: "first", pid: 101 });

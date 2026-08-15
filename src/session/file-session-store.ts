@@ -20,6 +20,8 @@ export class FileSessionStore {
   readonly projectDir: string;
   readonly sessionsIndexPath: string;
   private readonly processIdentity: string | null;
+  private readonly indexLockOwnerId = crypto.randomUUID();
+  private heldIndexLock: HeldIndexLock | null = null;
 
   constructor(
     private readonly projectRoot: string,
@@ -162,10 +164,23 @@ export class FileSessionStore {
   private acquireIndexLock(): IndexLockHandle {
     this.ensureProjectDir();
     const lockPath = `${this.sessionsIndexPath}.lock`;
+    if (this.heldIndexLock) {
+      const inspection = inspectIndexLock(lockPath);
+      if (inspection.state === "unreadable") throw inspection.error;
+      if (isMatchingIndexLock(inspection, this.heldIndexLock.handle)) {
+        if (this.heldIndexLock.releasePending) this.heldIndexLock.releasePending = false;
+        else this.heldIndexLock.depth += 1;
+        return this.heldIndexLock.handle;
+      }
+      this.heldIndexLock = null;
+    }
     const deadline = Date.now() + INDEX_LOCK_TIMEOUT_MS;
     while (true) {
-      const handle = { lockPath, lockId: crypto.randomUUID() };
-      if (this.tryCreateIndexLock(handle)) return handle;
+      const handle = { lockPath, lockId: crypto.randomUUID(), ownerId: this.indexLockOwnerId };
+      if (this.tryCreateIndexLock(handle)) {
+        this.heldIndexLock = { handle, depth: 1, releasePending: false };
+        return handle;
+      }
 
       if (this.reclaimStaleIndexLock(lockPath)) continue;
       if (Date.now() >= deadline) throw new Error("Session metadata is busy. Try again shortly.");
@@ -189,6 +204,7 @@ export class FileSessionStore {
         `${JSON.stringify({
           version: 2,
           lockId: handle.lockId,
+          ownerId: handle.ownerId,
           pid: process.pid,
           processIdentity: this.processIdentity,
         })}\n`,
@@ -215,23 +231,29 @@ export class FileSessionStore {
   }
 
   private releaseIndexLock(handle: IndexLockHandle): void {
-    const inspection = inspectIndexLock(handle.lockPath);
-    if (inspection.state === "unreadable") throw inspection.error;
-    if (
-      inspection.state !== "owned" ||
-      inspection.owner.lockId !== handle.lockId ||
-      inspection.owner.pid !== process.pid
-    ) {
+    const held = this.heldIndexLock?.handle.lockId === handle.lockId ? this.heldIndexLock : null;
+    if (held && held.depth > 1) {
+      held.depth -= 1;
       return;
     }
-    const stalePath = `${handle.lockPath}.${handle.lockId}.released`;
-    try {
-      fs.renameSync(handle.lockPath, stalePath);
-    } catch (error) {
-      if (isNodeError(error, "ENOENT")) return;
-      throw error;
+    const inspection = inspectIndexLock(handle.lockPath);
+    if (inspection.state === "unreadable") {
+      if (held) held.releasePending = true;
+      throw inspection.error;
     }
-    fs.rmSync(stalePath, { recursive: true, force: true });
+    if (!isMatchingIndexLock(inspection, handle)) {
+      if (held) this.heldIndexLock = null;
+      return;
+    }
+    try {
+      fs.unlinkSync(handle.lockPath);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) {
+        if (held) held.releasePending = true;
+        throw error;
+      }
+    }
+    if (held) this.heldIndexLock = null;
   }
 
   private reclaimStaleIndexLock(lockPath: string): boolean {
@@ -240,27 +262,86 @@ export class FileSessionStore {
     if (inspection.state === "unreadable") return false;
     if (
       inspection.state === "owned" &&
+      inspection.owner.ownerId !== this.indexLockOwnerId &&
       !isProcessOwnerDefinitelyStale(inspection.owner.pid, inspection.owner.processIdentity)
     ) {
       return false;
     }
     if (inspection.state === "invalid") {
-      try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs < INDEX_LOCK_INITIALIZATION_GRACE_MS) return false;
-      } catch (error) {
-        return isNodeError(error, "ENOENT");
-      }
+      if (Date.now() - inspection.modifiedAt < INDEX_LOCK_INITIALIZATION_GRACE_MS) return false;
     }
+    return this.removeIndexLockWithClaim(lockPath, inspection.fingerprint);
+  }
 
-    const stalePath = `${lockPath}.${crypto.randomUUID()}.stale`;
+  private removeIndexLockWithClaim(lockPath: string, expectedFingerprint: string): boolean {
+    const claimPath = `${lockPath}.${expectedFingerprint}.reclaim`;
+    const claim = this.acquireIndexLockClaim(claimPath, expectedFingerprint);
+    if (!claim) return false;
+
+    let removed = false;
+    let failure: unknown;
     try {
-      fs.renameSync(lockPath, stalePath);
+      const currentClaim = readIndexLockClaim(claimPath, expectedFingerprint);
+      const currentLock = inspectIndexLock(lockPath);
+      if (currentClaim?.claimId === claim.claimId && getIndexLockFingerprint(currentLock) === expectedFingerprint) {
+        fs.rmSync(lockPath, { recursive: true });
+        removed = true;
+      } else if (currentLock.state === "missing") {
+        removed = true;
+      }
     } catch (error) {
-      if (isNodeError(error, "ENOENT")) return true;
-      throw error;
+      if (!isNodeError(error, "ENOENT")) failure = error;
+      else removed = true;
     }
-    fs.rmSync(stalePath, { recursive: true, force: true });
-    return true;
+    try {
+      this.releaseIndexLockClaim(claim);
+    } catch (error) {
+      if (failure === undefined) failure = error;
+    }
+    if (failure !== undefined) throw failure;
+    return removed;
+  }
+
+  private acquireIndexLockClaim(claimPath: string, expectedFingerprint: string): IndexLockClaimHandle | null {
+    for (let attempt = 0; attempt < INDEX_LOCK_CLAIM_ATTEMPTS; attempt += 1) {
+      const record: IndexLockClaimRecord = {
+        version: 1,
+        claimId: crypto.randomUUID(),
+        expectedFingerprint,
+        ownerId: this.indexLockOwnerId,
+        pid: process.pid,
+        processIdentity: this.processIdentity,
+      };
+      if (publishExclusiveIndexFile(claimPath, record.claimId, `${JSON.stringify(record)}\n`)) {
+        return { claimPath, claimId: record.claimId, expectedFingerprint };
+      }
+      const existing = readIndexLockClaim(claimPath, expectedFingerprint);
+      if (
+        !existing ||
+        (existing.ownerId !== this.indexLockOwnerId &&
+          !isProcessOwnerDefinitelyStale(existing.pid, existing.processIdentity))
+      ) {
+        return null;
+      }
+      const stalePath = `${claimPath}.${crypto.randomUUID()}.stale`;
+      try {
+        fs.renameSync(claimPath, stalePath);
+      } catch (error) {
+        if (!isNodeError(error, "ENOENT")) throw error;
+      }
+      fs.rmSync(stalePath, { force: true });
+    }
+    return null;
+  }
+
+  private releaseIndexLockClaim(handle: IndexLockClaimHandle): void {
+    const current = readIndexLockClaim(handle.claimPath, handle.expectedFingerprint);
+    if (current?.claimId !== handle.claimId) return;
+    try {
+      fs.unlinkSync(handle.claimPath);
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
   }
 
   writeAtomic(filePath: string, contents: string): void {
@@ -321,28 +402,53 @@ export class FileSessionStore {
 const INDEX_LOCK_TIMEOUT_MS = 2_000;
 const INDEX_LOCK_POLL_MS = 10;
 const INDEX_LOCK_INITIALIZATION_GRACE_MS = 2_000;
+const INDEX_LOCK_CLAIM_ATTEMPTS = 4;
 const INDEX_LOCK_OWNER_FILE = "owner.json";
 const INDEX_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
-type IndexLockHandle = Readonly<{ lockPath: string; lockId: string }>;
+type IndexLockHandle = Readonly<{ lockPath: string; lockId: string; ownerId: string }>;
+
+type HeldIndexLock = {
+  handle: IndexLockHandle;
+  depth: number;
+  releasePending: boolean;
+};
 
 type IndexLockOwner = Readonly<{
   version: 1 | 2;
   lockId: string;
+  ownerId: string | null;
   pid: number;
   processIdentity: string | null;
 }>;
 
+type IndexLockClaimRecord = Readonly<{
+  version: 1;
+  claimId: string;
+  expectedFingerprint: string;
+  ownerId: string;
+  pid: number;
+  processIdentity: string | null;
+}>;
+
+type IndexLockClaimHandle = Readonly<{
+  claimPath: string;
+  claimId: string;
+  expectedFingerprint: string;
+}>;
+
 type IndexLockInspection =
   | Readonly<{ state: "missing" }>
-  | Readonly<{ state: "invalid" }>
+  | Readonly<{ state: "invalid"; fingerprint: string; modifiedAt: number }>
   | Readonly<{ state: "unreadable"; error: unknown }>
-  | Readonly<{ state: "owned"; owner: IndexLockOwner }>;
+  | Readonly<{ state: "owned"; owner: IndexLockOwner; fingerprint: string }>;
 
 function inspectIndexLock(lockPath: string): IndexLockInspection {
+  let stats: fs.Stats;
   let ownerPath: string;
   try {
-    ownerPath = fs.statSync(lockPath).isDirectory() ? path.join(lockPath, INDEX_LOCK_OWNER_FILE) : lockPath;
+    stats = fs.statSync(lockPath);
+    ownerPath = stats.isDirectory() ? path.join(lockPath, INDEX_LOCK_OWNER_FILE) : lockPath;
   } catch (error) {
     return isNodeError(error, "ENOENT") ? { state: "missing" } : { state: "unreadable", error };
   }
@@ -351,12 +457,21 @@ function inspectIndexLock(lockPath: string): IndexLockInspection {
   try {
     raw = fs.readFileSync(ownerPath, "utf8");
   } catch (error) {
-    return isNodeError(error, "ENOENT") ? { state: "invalid" } : { state: "unreadable", error };
+    return isNodeError(error, "ENOENT")
+      ? {
+          state: "invalid",
+          fingerprint: fingerprintIndexLock(stats.isDirectory(), null, stats),
+          modifiedAt: stats.mtimeMs,
+        }
+      : { state: "unreadable", error };
   }
+
+  const fingerprint = fingerprintIndexLock(stats.isDirectory(), raw, stats);
 
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     const version = value.version === 1 || value.version === 2 ? value.version : null;
+    const ownerId = typeof value.ownerId === "string" && value.ownerId ? value.ownerId : null;
     let processIdentity: string | null | undefined;
     if (version === 1 || value.processIdentity === null) {
       processIdentity = null;
@@ -374,13 +489,105 @@ function inspectIndexLock(lockPath: string): IndexLockInspection {
         ? ({
             version,
             lockId: value.lockId,
+            ownerId,
             pid: value.pid,
             processIdentity,
           } satisfies IndexLockOwner)
         : null;
-    return owner ? { state: "owned", owner } : { state: "invalid" };
+    return owner
+      ? { state: "owned", owner, fingerprint }
+      : { state: "invalid", fingerprint, modifiedAt: stats.mtimeMs };
   } catch {
-    return { state: "invalid" };
+    return { state: "invalid", fingerprint, modifiedAt: stats.mtimeMs };
+  }
+}
+
+function isMatchingIndexLock(inspection: IndexLockInspection, handle: IndexLockHandle): boolean {
+  return (
+    inspection.state === "owned" &&
+    inspection.owner.lockId === handle.lockId &&
+    inspection.owner.ownerId === handle.ownerId &&
+    inspection.owner.pid === process.pid
+  );
+}
+
+function getIndexLockFingerprint(inspection: IndexLockInspection): string | null {
+  return inspection.state === "owned" || inspection.state === "invalid" ? inspection.fingerprint : null;
+}
+
+function fingerprintIndexLock(isDirectory: boolean, raw: string | null, stats: fs.Stats): string {
+  const evidence = raw ?? `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+  return crypto
+    .createHash("sha256")
+    .update(isDirectory ? "directory\0" : "file\0")
+    .update(evidence)
+    .digest("hex");
+}
+
+function publishExclusiveIndexFile(filePath: string, publicationId: string, contents: string): boolean {
+  const temporaryPath = `${filePath}.${publicationId}.initializing`;
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(temporaryPath, "wx");
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) return false;
+    throw error;
+  }
+  try {
+    fs.writeFileSync(descriptor, contents, "utf8");
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  try {
+    fs.linkSync(temporaryPath, filePath);
+    return true;
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) return false;
+    throw error;
+  } finally {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // A private initialization file cannot act as the published lock or claim.
+    }
+  }
+}
+
+function readIndexLockClaim(claimPath: string, expectedFingerprint: string): IndexLockClaimRecord | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(claimPath, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return null;
+    throw error;
+  }
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      value.version !== 1 ||
+      typeof value.claimId !== "string" ||
+      !value.claimId ||
+      value.expectedFingerprint !== expectedFingerprint ||
+      typeof value.ownerId !== "string" ||
+      !value.ownerId ||
+      typeof value.pid !== "number" ||
+      !Number.isInteger(value.pid) ||
+      value.pid <= 0 ||
+      (value.processIdentity !== null && (typeof value.processIdentity !== "string" || !value.processIdentity))
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      claimId: value.claimId,
+      expectedFingerprint,
+      ownerId: value.ownerId,
+      pid: value.pid,
+      processIdentity: value.processIdentity,
+    };
+  } catch {
+    return null;
   }
 }
 

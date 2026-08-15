@@ -142,6 +142,25 @@ test("orphan reconciliation restores a persisted HITL question instead of natura
   });
 });
 
+test("orphan reconciliation resumes the latest persisted HITL question", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    for (const callId of ["ask-old", "ask-current"]) {
+      const pending = factory.tool(sessionId, callId, '{"awaitUserResponse":true}', {
+        name: "AskUserQuestion",
+        arguments: "{}",
+      });
+      pending.meta = { ...pending.meta, pendingApproval: true };
+      store.appendMessage(sessionId, pending);
+    }
+    fs.writeFileSync(pausedAgentStatePath(sessionId, store.projectDir), buildPausedState("ask-current"), "utf8");
+
+    const result = reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.equal(result.entry?.status, "waiting_for_user");
+    assert.equal(fs.existsSync(pausedAgentStatePath(sessionId, store.projectDir)), true);
+  });
+});
+
 test("orphan reconciliation discards malformed HITL state and falls back to safe recovery", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     const pending = factory.tool(sessionId, "ask-1", '{"awaitUserResponse":true}', {
@@ -316,6 +335,47 @@ test("orphan reconciliation seeds an empty canonical history from the uncompacte
       items.slice(2).map((item) => item.type),
       ["function_call", "function_call_result"]
     );
+  });
+});
+
+test("orphan reconciliation rebuilds a partially truncated canonical history", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.system(sessionId, "System instructions"));
+    store.appendMessage(sessionId, factory.user(sessionId, { text: "Original user request" }));
+    store.appendMessage(sessionId, factory.assistant(sessionId, "Partial response", null));
+    const historyPath = agentHistoryPath(sessionId, store.projectDir);
+    const agentSession = new FileAgentSession(sessionId, historyPath);
+    agentSession.replaceItemsSync([{ role: "system", content: "System instructions" }]);
+    fs.appendFileSync(historyPath, '{"version":2,"item":{"role":"user"', "utf8");
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(agentSession.getItemsSync(), [
+      { role: "system", content: "System instructions" },
+      { role: "user", content: "Original user request" },
+      {
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "Partial response" }],
+      },
+    ]);
+    assert.equal(agentSession.readSnapshotSync().skippedRecords, false);
+  });
+});
+
+test("orphan reconciliation rebuilds canonical non-tool history that diverged from the transcript", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.system(sessionId, "System instructions"));
+    store.appendMessage(sessionId, factory.user(sessionId, { text: "Original user request" }));
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([{ role: "system", content: "System instructions" }]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(agentSession.getItemsSync(), [
+      { role: "system", content: "System instructions" },
+      { role: "user", content: "Original user request" },
+    ]);
   });
 });
 
