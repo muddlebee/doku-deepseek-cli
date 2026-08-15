@@ -78,7 +78,6 @@ test("FileSessionStore serializes cross-process index updates for different sess
   }
 });
 
-
 test("FileSessionStore records process identity and reclaims a lock after PID reuse", () => {
   const identity = getProcessIdentity(process.pid);
   if (!identity) return;

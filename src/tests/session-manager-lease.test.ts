@@ -134,7 +134,6 @@ test("session retention does not evict a session leased by another process", asy
   }
 });
 
-
 test("reply creates a replacement session if the selected session disappears before lease acquisition", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-disappeared-home-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-disappeared-workspace-"));
@@ -168,7 +167,10 @@ test("reply creates a replacement session if the selected session disappears bef
     assert.notEqual(replacementId, sessionId);
     assert.equal(manager.getSession(sessionId), null);
     assert.deepEqual(
-      manager.listSessionMessages(replacementId).filter((message) => message.role === "user").map((message) => message.content),
+      manager
+        .listSessionMessages(replacementId)
+        .filter((message) => message.role === "user")
+        .map((message) => message.content),
       ["replacement prompt"]
     );
   } finally {

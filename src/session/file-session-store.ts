@@ -286,12 +286,12 @@ function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
       unknown
     >;
     const version = value.version === 1 || value.version === 2 ? value.version : null;
-    const processIdentity =
-      version === 1
-        ? null
-        : value.processIdentity === null || (typeof value.processIdentity === "string" && value.processIdentity)
-          ? value.processIdentity
-          : undefined;
+    let processIdentity: string | null | undefined;
+    if (version === 1 || value.processIdentity === null) {
+      processIdentity = null;
+    } else if (typeof value.processIdentity === "string" && value.processIdentity) {
+      processIdentity = value.processIdentity;
+    }
     return version &&
       typeof value.lockId === "string" &&
       value.lockId &&

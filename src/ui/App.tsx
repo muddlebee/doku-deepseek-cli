@@ -600,7 +600,9 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           codeRestored = true;
           conversationRestored = true;
         } catch (error) {
-          errors.push(`Code and conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          errors.push(
+            `Code and conversation restore failed: ${error instanceof Error ? error.message : String(error)}`
+          );
         }
       } else {
         try {
