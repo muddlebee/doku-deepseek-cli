@@ -41,6 +41,22 @@ type SessionExecutionLeaseOptions = Readonly<{
   getProcessIdentity?: (pid: number) => string | null;
 }>;
 
+type LeaseReclaimClaimRecord = Readonly<{
+  version: 1;
+  claimId: string;
+  expectedFingerprint: string;
+  ownerId: string;
+  pid: number;
+  processIdentity: string | null;
+  acquiredAt: string;
+}>;
+
+type LeaseReclaimClaimHandle = Readonly<{
+  claimPath: string;
+  claimId: string;
+  expectedFingerprint: string;
+}>;
+
 export class SessionBusyError extends Error {
   readonly sessionId: string;
   readonly ownerPid?: number;
@@ -93,7 +109,7 @@ export class SessionExecutionLeaseStore {
         acquiredAt: this.now().toISOString(),
       };
       if (this.tryCreate(record)) {
-        this.removeAbandonedReclaimFiles(sessionId);
+        this.removeStaleReclaimFiles(sessionId);
         const handle = { sessionId, leaseId: record.leaseId, ownerId: record.ownerId };
         this.heldLeases.set(sessionId, handle);
         return handle;
@@ -191,59 +207,21 @@ export class SessionExecutionLeaseStore {
 
   private tryCreate(record: SessionExecutionLeaseRecord): boolean {
     const filePath = this.leasePath(record.sessionId);
-    const temporaryPath = `${filePath}.${record.leaseId}.initializing`;
-    let descriptor: number;
-    try {
-      descriptor = fs.openSync(temporaryPath, "wx");
-    } catch (error) {
-      if (isNodeError(error, "EEXIST")) return false;
-      throw error;
-    }
-
-    try {
-      fs.writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf8");
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
-
-    try {
-      fs.linkSync(temporaryPath, filePath);
-      return true;
-    } catch (error) {
-      if (isNodeError(error, "EEXIST")) return false;
-      throw error;
-    } finally {
-      try {
-        fs.unlinkSync(temporaryPath);
-      } catch {
-        // A private initialization file is harmless if cleanup is denied.
-      }
-    }
+    return publishExclusiveFile(filePath, record.leaseId, `${JSON.stringify(record)}\n`);
   }
 
   private removeOrphanedLease(sessionId: string, expectedFingerprint: string): boolean {
     const filePath = this.leasePath(sessionId);
     const claimPath = `${filePath}.${expectedFingerprint}.reclaim`;
-    try {
-      fs.writeFileSync(claimPath, `${expectedFingerprint}\n`, { encoding: "utf8", flag: "wx" });
-    } catch (error) {
-      if (isNodeError(error, "EEXIST")) {
-        this.removeAbandonedReclaimFile(claimPath);
-        return false;
-      }
-      throw error;
-    }
+    const claim = this.acquireReclaimClaim(claimPath, expectedFingerprint);
+    if (!claim) return false;
 
     let removed = false;
     let failure: unknown;
     try {
-      const claimedFingerprint = fs.readFileSync(claimPath, "utf8").trim();
+      const currentClaim = parseReclaimClaim(fs.readFileSync(claimPath, "utf8"), expectedFingerprint);
       const currentRaw = fs.readFileSync(filePath, "utf8");
-      if (
-        claimedFingerprint !== expectedFingerprint ||
-        fingerprintLease(currentRaw) !== expectedFingerprint
-      ) {
+      if (currentClaim?.claimId !== claim.claimId || fingerprintLease(currentRaw) !== expectedFingerprint) {
         removed = false;
       } else {
         fs.unlinkSync(filePath);
@@ -253,29 +231,81 @@ export class SessionExecutionLeaseStore {
       if (!isNodeError(error, "ENOENT")) failure = error;
     }
     try {
-      fs.unlinkSync(claimPath);
+      this.releaseReclaimClaim(claim);
     } catch (error) {
-      if (!isNodeError(error, "ENOENT") && failure === undefined) failure = error;
+      if (failure === undefined) failure = error;
     }
     if (failure !== undefined) throw failure;
     return removed;
   }
 
-  private removeAbandonedReclaimFile(claimPath: string): void {
+  private acquireReclaimClaim(claimPath: string, expectedFingerprint: string): LeaseReclaimClaimHandle | null {
+    for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
+      const record: LeaseReclaimClaimRecord = {
+        version: 1,
+        claimId: crypto.randomUUID(),
+        expectedFingerprint,
+        ownerId: this.ownerId,
+        pid: this.pid,
+        processIdentity: this.processIdentity,
+        acquiredAt: this.now().toISOString(),
+      };
+      if (publishExclusiveFile(claimPath, record.claimId, `${JSON.stringify(record)}\n`)) {
+        return { claimPath, claimId: record.claimId, expectedFingerprint };
+      }
+      if (!this.reclaimStaleClaim(claimPath, expectedFingerprint)) return null;
+    }
+    return null;
+  }
+
+  private releaseReclaimClaim(handle: LeaseReclaimClaimHandle): void {
+    let current: LeaseReclaimClaimRecord | null;
     try {
-      const ageMs = Math.max(0, this.now().getTime() - fs.statSync(claimPath).mtimeMs);
-      if (ageMs >= MALFORMED_LEASE_GRACE_MS) fs.unlinkSync(claimPath);
+      current = parseReclaimClaim(fs.readFileSync(handle.claimPath, "utf8"), handle.expectedFingerprint);
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return;
+      throw error;
+    }
+    if (current?.claimId !== handle.claimId) return;
+    try {
+      fs.unlinkSync(handle.claimPath);
     } catch (error) {
       if (!isNodeError(error, "ENOENT")) throw error;
     }
   }
 
-  private removeAbandonedReclaimFiles(sessionId: string): void {
+  private reclaimStaleClaim(claimPath: string, expectedFingerprint: string): boolean {
+    let record: LeaseReclaimClaimRecord | null = null;
+    try {
+      record = parseReclaimClaim(fs.readFileSync(claimPath, "utf8"), expectedFingerprint);
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return true;
+      throw error;
+    }
+    if (record) {
+      if (record.ownerId !== this.ownerId && !this.isProcessOwnerDefinitelyStale(record.pid, record.processIdentity)) {
+        return false;
+      }
+    } else return false;
+
+    const stalePath = `${claimPath}.${crypto.randomUUID()}.stale`;
+    try {
+      fs.renameSync(claimPath, stalePath);
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return true;
+      throw error;
+    }
+    fs.rmSync(stalePath, { force: true });
+    return true;
+  }
+
+  private removeStaleReclaimFiles(sessionId: string): void {
     const prefix = `${sessionId}${LEASE_SUFFIX}.`;
     try {
       for (const name of fs.readdirSync(this.projectDir)) {
         if (name.startsWith(prefix) && name.endsWith(".reclaim")) {
-          this.removeAbandonedReclaimFile(path.join(this.projectDir, name));
+          const match = name.match(/\.lease\.json\.([a-f0-9]{64})\.reclaim$/);
+          if (match?.[1]) this.reclaimStaleClaim(path.join(this.projectDir, name), match[1]);
         }
       }
     } catch (error) {
@@ -285,6 +315,46 @@ export class SessionExecutionLeaseStore {
 
   private leasePath(sessionId: string): string {
     return path.join(this.projectDir, `${sessionId}${LEASE_SUFFIX}`);
+  }
+
+  private isProcessOwnerDefinitelyStale(pid: number, recordedIdentity: string | null): boolean {
+    const state = this.getProcessState(pid);
+    if (state === "dead") return true;
+    if (state !== "alive") return false;
+    const currentIdentity = this.getProcessIdentity(pid);
+    return Boolean(recordedIdentity && currentIdentity && recordedIdentity !== currentIdentity);
+  }
+}
+
+function publishExclusiveFile(filePath: string, publicationId: string, contents: string): boolean {
+  const temporaryPath = `${filePath}.${publicationId}.initializing`;
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(temporaryPath, "wx");
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) return false;
+    throw error;
+  }
+
+  try {
+    fs.writeFileSync(descriptor, contents, "utf8");
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+
+  try {
+    fs.linkSync(temporaryPath, filePath);
+    return true;
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) return false;
+    throw error;
+  } finally {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // A private initialization file cannot be mistaken for a published owner record.
+    }
   }
 }
 
@@ -312,6 +382,31 @@ function parseLeaseRecord(raw: string, sessionId: string): SessionExecutionLease
       return null;
     }
     return value as SessionExecutionLeaseRecord;
+  } catch {
+    return null;
+  }
+}
+
+function parseReclaimClaim(raw: string, expectedFingerprint: string): LeaseReclaimClaimRecord | null {
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      value.version !== 1 ||
+      typeof value.claimId !== "string" ||
+      !value.claimId ||
+      value.expectedFingerprint !== expectedFingerprint ||
+      typeof value.ownerId !== "string" ||
+      !value.ownerId ||
+      typeof value.pid !== "number" ||
+      !Number.isInteger(value.pid) ||
+      value.pid <= 0 ||
+      (value.processIdentity !== null && (typeof value.processIdentity !== "string" || !value.processIdentity)) ||
+      typeof value.acquiredAt !== "string" ||
+      Number.isNaN(Date.parse(value.acquiredAt))
+    ) {
+      return null;
+    }
+    return value as LeaseReclaimClaimRecord;
   } catch {
     return null;
   }

@@ -9,8 +9,9 @@ const SUPPORTED_RUN_STATE_SCHEMA_VERSIONS = new Set(Array.from({ length: 18 }, (
 export function readPausedAgentState(sessionId: string, projectDir: string): string | null {
   try {
     return fs.readFileSync(pausedAgentStatePath(sessionId, projectDir), "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return null;
+    throw error;
   }
 }
 
@@ -49,8 +50,8 @@ export function isResumablePausedAgentState(serializedState: string, expectedCal
 export function removePausedAgentState(sessionId: string, projectDir: string): void {
   try {
     fs.unlinkSync(pausedAgentStatePath(sessionId, projectDir));
-  } catch {
-    // The run may not have been paused.
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) throw error;
   }
 }
 
@@ -92,8 +93,8 @@ export function removeAgentTurnState(sessionId: string, projectDir: string): voi
   removePausedAgentState(sessionId, projectDir);
   try {
     fs.unlinkSync(agentHistoryPath(sessionId, projectDir));
-  } catch {
-    // The session may not have SDK history yet.
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) throw error;
   }
 }
 
@@ -111,4 +112,8 @@ export function agentHistoryPath(sessionId: string, projectDir: string): string 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }

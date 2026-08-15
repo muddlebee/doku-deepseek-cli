@@ -297,6 +297,25 @@ export class SessionManager {
   }
 
   addSessionSystemMessage(sessionId: string, content: string, visible?: boolean, meta?: MessageMeta): void {
+    if (!sessionId) {
+      this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta);
+      return;
+    }
+    if (!this.executionLeases.isHeld(sessionId)) {
+      this.withSessionExecutionLeaseSync(sessionId, () =>
+        this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta)
+      );
+      return;
+    }
+    this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta);
+  }
+
+  private addSessionSystemMessageWithOwnedLease(
+    sessionId: string,
+    content: string,
+    visible?: boolean,
+    meta?: MessageMeta
+  ): void {
     const message = this.buildSystemMessage(sessionId, content, null, visible, meta);
     if (sessionId) this.appendSessionMessage(sessionId, message);
     this.onAssistantMessage(message, false);
@@ -417,6 +436,14 @@ export class SessionManager {
   }
 
   async activateSession(sessionId: string, controller?: AbortController): Promise<void> {
+    if (this.executionLeases.isHeld(sessionId)) {
+      await this.activateSessionWithOwnedLease(sessionId, controller);
+      return;
+    }
+    await this.withSessionExecutionLease(sessionId, () => this.activateSessionWithOwnedLease(sessionId, controller));
+  }
+
+  private async activateSessionWithOwnedLease(sessionId: string, controller?: AbortController): Promise<void> {
     const startedAt = Date.now();
     const clientConfig = this.createOpenAIClient();
     const {
@@ -656,37 +683,43 @@ export class SessionManager {
   }
 
   async compactSession(sessionId: string, signal?: AbortSignal): Promise<void> {
-    this.throwIfAborted(signal);
-    const config = this.createOpenAIClient();
-    if (!config.client) return;
-    const resolvedSettings = this.getResolvedSettings();
-    const profile =
-      config.providerProfile ??
-      resolvedSettings.providerProfile ??
-      ({ type: "openai-compatible", baseURL: config.baseURL, apiMode: "chat_completions" } satisfies ProviderProfile);
-    const provider = await this.providerRegistry.resolve({
-      id: config.provider ?? resolvedSettings.provider ?? "custom",
-      profile,
-      model: config.model,
-      apiKey: config.client.apiKey ?? undefined,
-      baseURL: config.baseURL,
-      apiMode: config.apiMode ?? resolvedSettings.apiMode ?? profile.apiMode ?? "chat_completions",
-      thinkingEnabled: config.thinkingEnabled,
-      reasoningEffort: config.reasoningEffort,
-      debugLogEnabled: config.debugLogEnabled,
-      openAIClient: profile.type === "deepseek" ? undefined : config.client,
+    await this.withSessionExecutionLease(sessionId, async () => {
+      this.throwIfAborted(signal);
+      const config = this.createOpenAIClient();
+      if (!config.client) return;
+      const resolvedSettings = this.getResolvedSettings();
+      const profile =
+        config.providerProfile ??
+        resolvedSettings.providerProfile ??
+        ({
+          type: "openai-compatible",
+          baseURL: config.baseURL,
+          apiMode: "chat_completions",
+        } satisfies ProviderProfile);
+      const provider = await this.providerRegistry.resolve({
+        id: config.provider ?? resolvedSettings.provider ?? "custom",
+        profile,
+        model: config.model,
+        apiKey: config.client.apiKey ?? undefined,
+        baseURL: config.baseURL,
+        apiMode: config.apiMode ?? resolvedSettings.apiMode ?? profile.apiMode ?? "chat_completions",
+        thinkingEnabled: config.thinkingEnabled,
+        reasoningEffort: config.reasoningEffort,
+        debugLogEnabled: config.debugLogEnabled,
+        openAIClient: profile.type === "deepseek" ? undefined : config.client,
+      });
+      try {
+        await this.compactSessionWithProvider(
+          sessionId,
+          provider,
+          config.model,
+          config.tracingEnabled ?? resolvedSettings.tracingEnabled ?? false,
+          signal
+        );
+      } finally {
+        await provider.close().catch(() => {});
+      }
     });
-    try {
-      await this.compactSessionWithProvider(
-        sessionId,
-        provider,
-        config.model,
-        config.tracingEnabled ?? resolvedSettings.tracingEnabled ?? false,
-        signal
-      );
-    } finally {
-      await provider.close().catch(() => {});
-    }
   }
 
   private async compactSessionWithProvider(
@@ -742,6 +775,14 @@ export class SessionManager {
   }
 
   interruptSession(sessionId: string): void {
+    if (this.executionLeases.isHeld(sessionId)) {
+      this.interruptSessionWithOwnedLease(sessionId);
+      return;
+    }
+    this.withSessionExecutionLeaseSync(sessionId, () => this.interruptSessionWithOwnedLease(sessionId));
+  }
+
+  private interruptSessionWithOwnedLease(sessionId: string): void {
     const { killedPids, failedPids } = this.processTracker.killAll(sessionId);
 
     const controller = this.sessionControllers.get(sessionId);

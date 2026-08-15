@@ -89,9 +89,11 @@ test("FileSessionStore records process identity and reclaims a lock after PID re
   try {
     const store = new FileSessionStore(path.join(home, "project"));
     store.updateIndex((index) => {
-      const owner = JSON.parse(
-        fs.readFileSync(`${store.sessionsIndexPath}.lock`, "utf8")
-      ) as { version: number; pid: number; processIdentity: string | null };
+      const owner = JSON.parse(fs.readFileSync(`${store.sessionsIndexPath}.lock`, "utf8")) as {
+        version: number;
+        pid: number;
+        processIdentity: string | null;
+      };
       assert.equal(owner.version, 2);
       assert.equal(owner.pid, process.pid);
       assert.equal(owner.processIdentity, identity);
@@ -116,7 +118,10 @@ test("FileSessionStore records process identity and reclaims a lock after PID re
       index.entries.push(buildEntry("session-2"));
     });
     assert.ok(Date.now() - startedAt < 1_000);
-    assert.deepEqual(store.listSessions().map((entry) => entry.id), ["session-1", "session-2"]);
+    assert.deepEqual(
+      store.listSessions().map((entry) => entry.id),
+      ["session-1", "session-2"]
+    );
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
@@ -142,6 +147,29 @@ test("FileSessionStore does not overwrite a malformed index during an update", (
       SyntaxError
     );
     assert.equal(fs.readFileSync(store.sessionsIndexPath, "utf8"), '{"version":1,"entries":[');
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("FileSessionStore does not normalize a structurally malformed index during an update", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-invalid-index-shape-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    store.ensureProjectDir();
+    const malformed = '{"version":1,"entries":{"session-1":{"status":"processing"}}}';
+    fs.writeFileSync(store.sessionsIndexPath, malformed, "utf8");
+
+    assert.throws(
+      () => store.updateIndex((index) => index.entries.push(buildEntry("session-2"))),
+      /metadata is malformed/
+    );
+    assert.equal(fs.readFileSync(store.sessionsIndexPath, "utf8"), malformed);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;

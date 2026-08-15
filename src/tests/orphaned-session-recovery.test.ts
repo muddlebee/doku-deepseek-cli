@@ -176,7 +176,6 @@ test("orphan reconciliation rejects a JSON object that is not an SDK run state",
   });
 });
 
-
 test("orphan reconciliation inserts a repaired call before its surviving canonical result", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-1", "Read")]));
@@ -200,6 +199,104 @@ test("orphan reconciliation inserts a repaired call before its surviving canonic
   });
 });
 
+test("orphan reconciliation inserts a persisted result before later canonical tool events", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(
+      sessionId,
+      factory.assistant(sessionId, "", [toolCall("call-1", "Read"), toolCall("call-2", "Read")])
+    );
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-1", '{"ok":true,"output":"first"}', {
+        name: "Read",
+        arguments: '{"path":"first.txt"}',
+      })
+    );
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-2", '{"ok":true,"output":"second"}', {
+        name: "Read",
+        arguments: '{"path":"second.txt"}',
+      })
+    );
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([
+      { type: "function_call", callId: "call-1", name: "Read", arguments: '{"path":"first.txt"}' },
+      { type: "function_call", callId: "call-2", name: "Read", arguments: '{"path":"second.txt"}' },
+      {
+        type: "function_call_result",
+        callId: "call-2",
+        name: "Read",
+        status: "completed",
+        output: '{"ok":true,"output":"second"}',
+      },
+    ]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(
+      agentSession.getItemsSync().map((item) => {
+        const value = item as { type?: unknown; callId?: unknown };
+        return `${value.type}:${value.callId}`;
+      }),
+      ["function_call:call-1", "function_call:call-2", "function_call_result:call-1", "function_call_result:call-2"]
+    );
+  });
+});
+
+test("orphan reconciliation restores transcript calls and results in canonical event order", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-1", '{"ok":true,"output":"first"}', {
+        name: "Read",
+        arguments: '{"path":"first.txt"}',
+      })
+    );
+    store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-2", "Read")]));
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-2", '{"ok":true,"output":"second"}', {
+        name: "Read",
+        arguments: '{"path":"second.txt"}',
+      })
+    );
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([
+      { type: "function_call", callId: "call-1", name: "Read", arguments: '{"path":"first.txt"}' },
+      {
+        type: "function_call_result",
+        callId: "call-1",
+        name: "Read",
+        status: "completed",
+        output: '{"ok":true,"output":"first"}',
+      },
+      { type: "function_call", callId: "call-2", name: "Read", arguments: '{"path":"second.txt"}' },
+      {
+        type: "function_call_result",
+        callId: "call-2",
+        name: "Read",
+        status: "completed",
+        output: '{"ok":true,"output":"second"}',
+      },
+    ]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(
+      store
+        .listMessages(sessionId)
+        .filter((message) => message.role === "assistant" || message.role === "tool")
+        .flatMap((message) =>
+          message.role === "assistant"
+            ? readCallIds(message).map((callId) => `call:${callId}`)
+            : [`result:${String((message.messageParams as { tool_call_id?: unknown })?.tool_call_id)}`]
+        ),
+      ["call:call-1", "result:call-1", "call:call-2", "result:call-2"]
+    );
+  });
+});
+
 test("orphan reconciliation seeds an empty canonical history from the uncompacted transcript", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     store.appendMessage(sessionId, factory.system(sessionId, "System instructions"));
@@ -219,6 +316,63 @@ test("orphan reconciliation seeds an empty canonical history from the uncompacte
       items.slice(2).map((item) => item.type),
       ["function_call", "function_call_result"]
     );
+  });
+});
+
+test("orphan reconciliation preserves incomplete status while seeding canonical history", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-1", "Write")]));
+    store.appendMessage(
+      sessionId,
+      factory.tool(sessionId, "call-1", '{"ok":false,"incomplete":true}', {
+        name: "Write",
+        arguments: '{"path":"note.txt"}',
+      })
+    );
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    const result = agentSession
+      .getItemsSync()
+      .find((item) => (item as { type?: unknown }).type === "function_call_result") as { status?: unknown };
+    assert.equal(result.status, "incomplete");
+  });
+});
+
+test("orphan reconciliation completes an interrupted compaction from the transcript summary", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    const oldAssistant = factory.assistant(sessionId, "", [toolCall("old-call", "Read")]);
+    oldAssistant.compacted = true;
+    const oldTool = factory.tool(sessionId, "old-call", '{"ok":true,"output":"old"}', {
+      name: "Read",
+      arguments: '{"path":"old.txt"}',
+    });
+    oldTool.compacted = true;
+    store.appendMessage(sessionId, oldAssistant);
+    store.appendMessage(sessionId, oldTool);
+    const summary = factory.system(sessionId, "Compacted summary");
+    summary.meta = { isSummary: true };
+    store.appendMessage(sessionId, summary);
+    store.appendMessage(sessionId, factory.user(sessionId, { text: "new tail" }));
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([
+      { type: "function_call", callId: "old-call", name: "Read", arguments: '{"path":"old.txt"}' },
+      {
+        type: "function_call_result",
+        callId: "old-call",
+        name: "Read",
+        status: "completed",
+        output: '{"ok":true,"output":"old"}',
+      },
+    ]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(agentSession.getItemsSync(), [
+      { role: "system", content: "Compacted summary" },
+      { role: "user", content: "new tail" },
+    ]);
   });
 });
 
@@ -288,6 +442,13 @@ function toolCall(id: string, name: string): unknown {
     type: "function",
     function: { name, arguments: '{"path":"note.txt"}' },
   };
+}
+
+function readCallIds(message: { messageParams: unknown }): string[] {
+  const params = message.messageParams as { tool_calls?: Array<{ id?: unknown }> } | null;
+  return (params?.tool_calls ?? [])
+    .map((call) => call.id)
+    .filter((callId): callId is string => typeof callId === "string");
 }
 
 function buildPausedState(callId: string): string {

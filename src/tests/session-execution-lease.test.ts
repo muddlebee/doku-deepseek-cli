@@ -150,7 +150,7 @@ test(
   }
 );
 
-test("session execution leases do not remove a fresh reclaim marker for an old lease", () => {
+test("session execution leases do not steal an unowned legacy reclaim marker", () => {
   const projectDir = createLeaseDir();
   const leasePath = path.join(projectDir, "session-1.lease.json");
   const record: SessionExecutionLeaseRecord = {
@@ -164,13 +164,14 @@ test("session execution leases do not remove a fresh reclaim marker for an old l
   };
   const raw = `${JSON.stringify(record)}\n`;
   fs.writeFileSync(leasePath, raw, "utf8");
-  const old = new Date("2026-08-15T11:00:00.000Z");
-  fs.utimesSync(leasePath, old, old);
+  const leaseTime = new Date("2026-08-15T11:00:00.000Z");
+  fs.utimesSync(leasePath, leaseTime, leaseTime);
   const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
   const claimPath = `${leasePath}.${fingerprint}.reclaim`;
   fs.writeFileSync(claimPath, `${fingerprint}\n`, "utf8");
   const now = new Date("2026-08-15T12:00:00.000Z");
-  fs.utimesSync(claimPath, now, now);
+  const claimTime = new Date("2026-08-15T10:00:00.000Z");
+  fs.utimesSync(claimPath, claimTime, claimTime);
 
   const store = new SessionExecutionLeaseStore(projectDir, {
     ownerId: "replacement",
@@ -181,6 +182,141 @@ test("session execution leases do not remove a fresh reclaim marker for an old l
 
   assert.throws(() => store.acquire("session-1"), SessionBusyError);
   assert.equal(fs.existsSync(claimPath), true);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
+test("session execution leases do not steal an old reclaim claim from a live owner", () => {
+  const projectDir = createLeaseDir();
+  const leasePath = path.join(projectDir, "session-1.lease.json");
+  const record: SessionExecutionLeaseRecord = {
+    version: 2,
+    sessionId: "session-1",
+    leaseId: "old-lease",
+    ownerId: "old-owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+    acquiredAt: "2026-08-15T10:00:00.000Z",
+  };
+  const raw = `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(leasePath, raw, "utf8");
+  const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
+  const claimPath = `${leasePath}.${fingerprint}.reclaim`;
+  fs.writeFileSync(
+    claimPath,
+    `${JSON.stringify({
+      version: 1,
+      claimId: "live-claim",
+      expectedFingerprint: fingerprint,
+      ownerId: "live-reclaimer",
+      pid: 303,
+      processIdentity: "boot-a:start-3",
+      acquiredAt: "2026-08-15T10:00:00.000Z",
+    })}\n`,
+    "utf8"
+  );
+  const old = new Date("2026-08-15T10:00:00.000Z");
+  fs.utimesSync(claimPath, old, old);
+
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "replacement",
+    pid: 202,
+    now: () => new Date("2026-08-15T12:00:00.000Z"),
+    getProcessState: (pid) => (pid === 101 ? "dead" : "alive"),
+    getProcessIdentity: (pid) => (pid === 303 ? "boot-a:start-3" : "boot-a:start-2"),
+  });
+
+  assert.throws(() => store.acquire("session-1"), SessionBusyError);
+  assert.equal(JSON.parse(fs.readFileSync(claimPath, "utf8")).claimId, "live-claim");
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
+test("session execution leases reclaim a claim whose PID identity was reused", () => {
+  const projectDir = createLeaseDir();
+  const leasePath = path.join(projectDir, "session-1.lease.json");
+  const record: SessionExecutionLeaseRecord = {
+    version: 2,
+    sessionId: "session-1",
+    leaseId: "old-lease",
+    ownerId: "old-owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+    acquiredAt: "2026-08-15T10:00:00.000Z",
+  };
+  const raw = `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(leasePath, raw, "utf8");
+  const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
+  fs.writeFileSync(
+    `${leasePath}.${fingerprint}.reclaim`,
+    `${JSON.stringify({
+      version: 1,
+      claimId: "stale-claim",
+      expectedFingerprint: fingerprint,
+      ownerId: "stale-reclaimer",
+      pid: 303,
+      processIdentity: "boot-a:start-old",
+      acquiredAt: "2026-08-15T10:00:00.000Z",
+    })}\n`,
+    "utf8"
+  );
+
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "replacement",
+    pid: 202,
+    processIdentity: "boot-a:start-2",
+    getProcessState: () => "alive",
+    getProcessIdentity: (pid) => {
+      if (pid === 101) return "boot-a:start-reused-lease";
+      if (pid === 303) return "boot-a:start-reused-claim";
+      return "boot-a:start-2";
+    },
+  });
+
+  const handle = store.acquire("session-1");
+  assert.equal(store.inspect("session-1").state, "owned");
+  store.release(handle);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
+test("session execution leases recover a reclaim claim abandoned by the same owner", () => {
+  const projectDir = createLeaseDir();
+  const leasePath = path.join(projectDir, "session-1.lease.json");
+  const record: SessionExecutionLeaseRecord = {
+    version: 2,
+    sessionId: "session-1",
+    leaseId: "old-lease",
+    ownerId: "old-owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+    acquiredAt: "2026-08-15T10:00:00.000Z",
+  };
+  const raw = `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(leasePath, raw, "utf8");
+  const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
+  fs.writeFileSync(
+    `${leasePath}.${fingerprint}.reclaim`,
+    `${JSON.stringify({
+      version: 1,
+      claimId: "abandoned-claim",
+      expectedFingerprint: fingerprint,
+      ownerId: "replacement",
+      pid: 202,
+      processIdentity: "boot-a:start-2",
+      acquiredAt: "2026-08-15T10:00:00.000Z",
+    })}\n`,
+    "utf8"
+  );
+
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "replacement",
+    pid: 202,
+    processIdentity: "boot-a:start-2",
+    getProcessState: (pid) => (pid === 101 ? "dead" : "alive"),
+    getProcessIdentity: () => "boot-a:start-2",
+  });
+
+  const handle = store.acquire("session-1");
+  assert.equal(store.inspect("session-1").state, "owned");
+  store.release(handle);
   fs.rmSync(projectDir, { recursive: true, force: true });
 });
 

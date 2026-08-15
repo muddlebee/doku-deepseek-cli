@@ -134,6 +134,41 @@ test("session retention does not evict a session leased by another process", asy
   }
 });
 
+test("session creation publishes its complete transcript before its index entry", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-create-order-home-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-create-order-workspace-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const manager = createManager(workspace);
+    setActivationToComplete(manager);
+    const store = (manager as any).sessionStore as FileSessionStore;
+    const saveMessages = store.saveMessages.bind(store);
+    const updateIndex = store.updateIndex.bind(store);
+    let transcriptPublished = false;
+    let firstIndexUpdate = true;
+    store.saveMessages = ((sessionId: string, messages: SessionMessage[]) => {
+      transcriptPublished = messages.some((message) => message.role === "user");
+      saveMessages(sessionId, messages);
+    }) as typeof store.saveMessages;
+    store.updateIndex = ((updater: Parameters<FileSessionStore["updateIndex"]>[0]) => {
+      if (firstIndexUpdate) {
+        firstIndexUpdate = false;
+        assert.equal(transcriptPublished, true);
+      }
+      return updateIndex(updater);
+    }) as typeof store.updateIndex;
+
+    await manager.createSession({ text: "initial prompt" });
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("reply creates a replacement session if the selected session disappears before lease acquisition", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-disappeared-home-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-disappeared-workspace-"));
@@ -198,6 +233,38 @@ test("a build that loses lease acquisition does not mark the real owner's pendin
     const second = createManager(workspace);
     await assert.rejects(second.approveAndBuild(sessionId), SessionBusyError);
     assert.equal(second.getSession(sessionId)?.status, "pending");
+    owner.release(lease);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("interrupting a session owned by another process performs no local mutation", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-busy-interrupt-home-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-busy-interrupt-workspace-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const first = createManager(workspace);
+    setActivationToComplete(first);
+    const sessionId = await first.createSession({ text: "initial prompt" });
+    const before = first.getSession(sessionId);
+    const owner = new SessionExecutionLeaseStore((first as any).sessionStore.projectDir);
+    const lease = owner.acquire(sessionId);
+    const second = createManager(workspace);
+    let killAttempted = false;
+    (second as any).processTracker.killAll = () => {
+      killAttempted = true;
+      return { killedPids: [], failedPids: [] };
+    };
+
+    assert.throws(() => second.interruptSession(sessionId), SessionBusyError);
+    assert.equal(killAttempted, false);
+    assert.deepEqual(second.getSession(sessionId), before);
     owner.release(lease);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;

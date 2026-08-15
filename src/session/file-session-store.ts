@@ -122,25 +122,25 @@ export class FileSessionStore {
       if (isNodeError(error, "ENOENT")) return this.emptyIndex();
       throw error;
     }
-    const parsed = JSON.parse(raw) as SessionsIndex;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      !isRecord(parsed) ||
+      parsed.version !== 1 ||
+      !Array.isArray(parsed.entries) ||
+      hasInvalidEntryIdentity(parsed.entries) ||
+      (parsed.originalPath !== undefined && typeof parsed.originalPath !== "string")
+    ) {
+      throw new Error("Session metadata is malformed and was not changed.");
+    }
     return {
       version: 1,
-      entries: Array.isArray(parsed.entries) ? parsed.entries.map((entry) => this.normalizeEntry(entry)) : [],
+      entries: parsed.entries.map((entry) => this.normalizeEntry(entry)),
       originalPath: parsed.originalPath || this.projectRoot,
     };
   }
 
   private emptyIndex(): SessionsIndex {
     return { version: 1, entries: [], originalPath: this.projectRoot };
-  }
-
-  saveIndex(index: SessionsIndex): void {
-    const lock = this.acquireIndexLock();
-    try {
-      this.saveIndexUnlocked(index);
-    } finally {
-      this.releaseIndexLock(lock);
-    }
   }
 
   private saveIndexUnlocked(index: SessionsIndex): void {
@@ -215,8 +215,15 @@ export class FileSessionStore {
   }
 
   private releaseIndexLock(handle: IndexLockHandle): void {
-    const owner = readIndexLockOwner(handle.lockPath);
-    if (owner?.lockId !== handle.lockId || owner.pid !== process.pid) return;
+    const inspection = inspectIndexLock(handle.lockPath);
+    if (inspection.state === "unreadable") throw inspection.error;
+    if (
+      inspection.state !== "owned" ||
+      inspection.owner.lockId !== handle.lockId ||
+      inspection.owner.pid !== process.pid
+    ) {
+      return;
+    }
     const stalePath = `${handle.lockPath}.${handle.lockId}.released`;
     try {
       fs.renameSync(handle.lockPath, stalePath);
@@ -228,9 +235,16 @@ export class FileSessionStore {
   }
 
   private reclaimStaleIndexLock(lockPath: string): boolean {
-    const owner = readIndexLockOwner(lockPath);
-    if (owner && !isProcessOwnerDefinitelyStale(owner.pid, owner.processIdentity)) return false;
-    if (!owner) {
+    const inspection = inspectIndexLock(lockPath);
+    if (inspection.state === "missing") return true;
+    if (inspection.state === "unreadable") return false;
+    if (
+      inspection.state === "owned" &&
+      !isProcessOwnerDefinitelyStale(inspection.owner.pid, inspection.owner.processIdentity)
+    ) {
+      return false;
+    }
+    if (inspection.state === "invalid") {
       try {
         if (Date.now() - fs.statSync(lockPath).mtimeMs < INDEX_LOCK_INITIALIZATION_GRACE_MS) return false;
       } catch (error) {
@@ -319,12 +333,29 @@ type IndexLockOwner = Readonly<{
   processIdentity: string | null;
 }>;
 
-function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
+type IndexLockInspection =
+  | Readonly<{ state: "missing" }>
+  | Readonly<{ state: "invalid" }>
+  | Readonly<{ state: "unreadable"; error: unknown }>
+  | Readonly<{ state: "owned"; owner: IndexLockOwner }>;
+
+function inspectIndexLock(lockPath: string): IndexLockInspection {
+  let ownerPath: string;
   try {
-    const ownerPath = fs.statSync(lockPath).isDirectory()
-      ? path.join(lockPath, INDEX_LOCK_OWNER_FILE)
-      : lockPath;
-    const value = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as Record<string, unknown>;
+    ownerPath = fs.statSync(lockPath).isDirectory() ? path.join(lockPath, INDEX_LOCK_OWNER_FILE) : lockPath;
+  } catch (error) {
+    return isNodeError(error, "ENOENT") ? { state: "missing" } : { state: "unreadable", error };
+  }
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(ownerPath, "utf8");
+  } catch (error) {
+    return isNodeError(error, "ENOENT") ? { state: "invalid" } : { state: "unreadable", error };
+  }
+
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
     const version = value.version === 1 || value.version === 2 ? value.version : null;
     let processIdentity: string | null | undefined;
     if (version === 1 || value.processIdentity === null) {
@@ -332,22 +363,24 @@ function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
     } else if (typeof value.processIdentity === "string" && value.processIdentity) {
       processIdentity = value.processIdentity;
     }
-    return version &&
+    const owner =
+      version &&
       typeof value.lockId === "string" &&
       value.lockId &&
       typeof value.pid === "number" &&
       Number.isInteger(value.pid) &&
       value.pid > 0 &&
       processIdentity !== undefined
-      ? {
-          version,
-          lockId: value.lockId,
-          pid: value.pid,
-          processIdentity,
-        }
-      : null;
+        ? ({
+            version,
+            lockId: value.lockId,
+            pid: value.pid,
+            processIdentity,
+          } satisfies IndexLockOwner)
+        : null;
+    return owner ? { state: "owned", owner } : { state: "invalid" };
   } catch {
-    return null;
+    return { state: "invalid" };
   }
 }
 
@@ -405,4 +438,16 @@ function serializeProcesses(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasInvalidEntryIdentity(entries: unknown[]): boolean {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || !entry.id || path.basename(entry.id) !== entry.id) {
+      return true;
+    }
+    if (ids.has(entry.id)) return true;
+    ids.add(entry.id);
+  }
+  return false;
 }

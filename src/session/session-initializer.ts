@@ -21,6 +21,18 @@ export type SessionInitializerOptions = {
 export function initializeSession(options: SessionInitializerOptions): void {
   const { sessionId, userPrompt, store, messages } = options;
   const now = new Date().toISOString();
+  const promptOptions = { model: options.model, webSearchEnabled: true };
+  const initialMessages = [messages.system(sessionId, getSystemPrompt(options.projectRoot, promptOptions))];
+  const defaultSkills = getDefaultSkillPrompt();
+  if (defaultSkills) initialMessages.push(messages.system(sessionId, defaultSkills));
+  initialMessages.push(
+    messages.system(sessionId, getRuntimeContext(options.projectRoot, options.model, options.webSearchProvider))
+  );
+  const instructions = messages.loadAgentInstructions();
+  if (instructions) initialMessages.push(messages.system(sessionId, instructions));
+  initialMessages.push(messages.user(sessionId, userPrompt));
+  store.saveMessages(sessionId, initialMessages);
+
   const removalReservations: Array<() => void> = [];
   try {
     const dropped = store.updateIndex((index) => {
@@ -40,18 +52,6 @@ export function initializeSession(options: SessionInitializerOptions): void {
   } finally {
     removalReservations.forEach((release) => release());
   }
-
-  const promptOptions = { model: options.model, webSearchEnabled: true };
-  store.appendMessage(sessionId, messages.system(sessionId, getSystemPrompt(options.projectRoot, promptOptions)));
-  const defaultSkills = getDefaultSkillPrompt();
-  if (defaultSkills) store.appendMessage(sessionId, messages.system(sessionId, defaultSkills));
-  store.appendMessage(
-    sessionId,
-    messages.system(sessionId, getRuntimeContext(options.projectRoot, options.model, options.webSearchProvider))
-  );
-  const instructions = messages.loadAgentInstructions();
-  if (instructions) store.appendMessage(sessionId, messages.system(sessionId, instructions));
-  store.appendMessage(sessionId, messages.user(sessionId, userPrompt));
 }
 
 function reserveOldestRemovableSession(

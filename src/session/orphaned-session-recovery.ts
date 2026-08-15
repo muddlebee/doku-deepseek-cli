@@ -49,10 +49,13 @@ export function reconcileOrphanedSession(
   const recoveryId = `${entry.status}:${entry.updateTime}`;
   const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, projectDir));
   const currentAgentItems = agentSession.getItemsSync();
+  const transcriptAgentItems = buildAgentInputItems(messages, true, renderContent);
   const agentItems =
-    currentAgentItems.length > 0 ? currentAgentItems : buildAgentInputItems(messages, true, renderContent);
+    currentAgentItems.length > 0 && hasCurrentCompactionSummaries(currentAgentItems, messages, renderContent)
+      ? currentAgentItems
+      : transcriptAgentItems;
   const repairs = repairToolHistory(sessionId, agentItems, messages, messageFactory);
-  if (currentAgentItems.length === 0 || repairs.agentItemsChanged) {
+  if (agentItems !== currentAgentItems || repairs.agentItemsChanged) {
     agentSession.replaceItemsSync(repairs.agentItems);
   }
   if (repairs.messagesChanged) store.saveMessages(sessionId, repairs.messages);
@@ -110,6 +113,8 @@ function repairToolHistory(
   const agentResults = new Map<string, AgentInputItem>();
   const transcriptCallIds = new Set<string>();
   const transcriptResults = new Map<string, SessionMessage>();
+  const agentEventOrder = new Map<string, number>();
+  const transcriptEventOrder = new Map<string, number>();
 
   for (const item of agentItems) {
     const record = item as { type?: unknown; callId?: unknown; name?: unknown; arguments?: unknown };
@@ -120,9 +125,11 @@ function repairToolHistory(
         arguments: typeof record.arguments === "string" ? record.arguments : "{}",
       });
       agentCallIds.add(record.callId);
+      agentEventOrder.set(eventKey("call", record.callId), agentEventOrder.size);
     } else if (record.type === "function_call_result" && typeof record.callId === "string") {
       agentResultIds.add(record.callId);
       agentResults.set(record.callId, item);
+      agentEventOrder.set(eventKey("result", record.callId), agentEventOrder.size);
     }
   }
 
@@ -132,11 +139,15 @@ function repairToolHistory(
       for (const call of readTranscriptCalls(message)) {
         calls.set(call.callId, call);
         transcriptCallIds.add(call.callId);
+        transcriptEventOrder.set(eventKey("call", call.callId), transcriptEventOrder.size);
       }
       continue;
     }
     const callId = getToolMessageCallId(message);
-    if (callId && !message.meta?.pendingApproval) transcriptResults.set(callId, message);
+    if (callId && !message.meta?.pendingApproval) {
+      transcriptResults.set(callId, message);
+      transcriptEventOrder.set(eventKey("result", callId), transcriptEventOrder.size);
+    }
   }
 
   let agentItemsChanged = false;
@@ -149,18 +160,17 @@ function repairToolHistory(
         name: call.name,
         arguments: call.arguments,
       };
-      const resultIndex = agentItems.findIndex((item) => {
-        const record = item as { type?: unknown; callId?: unknown };
-        return record.type === "function_call_result" && record.callId === call.callId;
-      });
-      if (resultIndex >= 0) agentItems.splice(resultIndex, 0, callItem);
-      else agentItems.push(callItem);
+      const matchingResultIndex = agentItems.findIndex(
+        (item) => agentItemEventKey(item) === eventKey("result", call.callId)
+      );
+      if (matchingResultIndex >= 0) agentItems.splice(matchingResultIndex, 0, callItem);
+      else insertAgentItemInEventOrder(agentItems, callItem, eventKey("call", call.callId), transcriptEventOrder);
       agentCallIds.add(call.callId);
       agentItemsChanged = true;
     }
     if (!transcriptCallIds.has(call.callId)) {
       const assistant = messageFactory.assistant(sessionId, "", [toTranscriptToolCall(call)]);
-      messages.push(assistant);
+      insertTranscriptMessageInEventOrder(messages, assistant, eventKey("call", call.callId), agentEventOrder);
       appendedMessages.push(assistant);
       transcriptCallIds.add(call.callId);
       messagesChanged = true;
@@ -173,7 +183,7 @@ function repairToolHistory(
           name: call.name,
           arguments: call.arguments,
         });
-        messages.push(toolMessage);
+        insertTranscriptMessageInEventOrder(messages, toolMessage, eventKey("result", call.callId), agentEventOrder);
         appendedMessages.push(toolMessage);
         transcriptResults.set(call.callId, toolMessage);
         messagesChanged = true;
@@ -183,13 +193,18 @@ function repairToolHistory(
 
     const persistedResult = transcriptResults.get(call.callId);
     if (persistedResult) {
-      agentItems.push({
-        type: "function_call_result",
-        callId: call.callId,
-        name: call.name,
-        status: isIncompleteToolMessage(persistedResult) ? "incomplete" : "completed",
-        output: persistedResult.content ?? "",
-      });
+      insertAgentItemInEventOrder(
+        agentItems,
+        {
+          type: "function_call_result",
+          callId: call.callId,
+          name: call.name,
+          status: isIncompleteToolMessage(persistedResult) ? "incomplete" : "completed",
+          output: persistedResult.content ?? "",
+        },
+        eventKey("result", call.callId),
+        transcriptEventOrder
+      );
     } else {
       const content = JSON.stringify({
         ok: false,
@@ -218,6 +233,90 @@ function repairToolHistory(
   }
 
   return { agentItems, messages, appendedMessages, agentItemsChanged, messagesChanged };
+}
+
+function hasCurrentCompactionSummaries(
+  agentItems: AgentInputItem[],
+  messages: SessionMessage[],
+  renderContent: (message: SessionMessage) => string
+): boolean {
+  const summaries = messages
+    .filter((message) => !message.compacted && message.role === "system" && message.meta?.isSummary)
+    .map(renderContent);
+  if (summaries.length === 0) return true;
+  const currentSystemMessages = new Map<string, number>();
+  for (const item of agentItems) {
+    const record = item as { role?: unknown; content?: unknown };
+    if (record.role !== "system" || typeof record.content !== "string") continue;
+    currentSystemMessages.set(record.content, (currentSystemMessages.get(record.content) ?? 0) + 1);
+  }
+  return summaries.every((summary) => {
+    const count = currentSystemMessages.get(summary) ?? 0;
+    if (count === 0) return false;
+    currentSystemMessages.set(summary, count - 1);
+    return true;
+  });
+}
+
+function eventKey(kind: "call" | "result", callId: string): string {
+  return `${kind}:${callId}`;
+}
+
+function insertAgentItemInEventOrder(
+  items: AgentInputItem[],
+  item: AgentInputItem,
+  key: string,
+  order: Map<string, number>
+): void {
+  const position = order.get(key);
+  if (position === undefined) {
+    items.push(item);
+    return;
+  }
+  const nextIndex = items.findIndex((candidate) => {
+    const candidatePosition = order.get(agentItemEventKey(candidate) ?? "");
+    return candidatePosition !== undefined && candidatePosition > position;
+  });
+  if (nextIndex < 0) items.push(item);
+  else items.splice(nextIndex, 0, item);
+}
+
+function insertTranscriptMessageInEventOrder(
+  messages: SessionMessage[],
+  message: SessionMessage,
+  key: string,
+  order: Map<string, number>
+): void {
+  const position = order.get(key);
+  if (position === undefined) {
+    messages.push(message);
+    return;
+  }
+  const nextIndex = messages.findIndex((candidate) =>
+    messageEventKeys(candidate).some((candidateKey) => {
+      const candidatePosition = order.get(candidateKey);
+      return candidatePosition !== undefined && candidatePosition > position;
+    })
+  );
+  if (nextIndex < 0) messages.push(message);
+  else messages.splice(nextIndex, 0, message);
+}
+
+function agentItemEventKey(item: AgentInputItem): string | null {
+  const record = item as { type?: unknown; callId?: unknown };
+  if (typeof record.callId !== "string") return null;
+  if (record.type === "function_call") return eventKey("call", record.callId);
+  if (record.type === "function_call_result") return eventKey("result", record.callId);
+  return null;
+}
+
+function messageEventKeys(message: SessionMessage): string[] {
+  if (message.compacted) return [];
+  if (message.role === "assistant") {
+    return readTranscriptCalls(message).map((call) => eventKey("call", call.callId));
+  }
+  const callId = getToolMessageCallId(message);
+  return callId && !message.meta?.pendingApproval ? [eventKey("result", callId)] : [];
 }
 
 function isIncompleteToolMessage(message: SessionMessage): boolean {
