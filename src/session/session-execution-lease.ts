@@ -210,9 +210,8 @@ export class SessionExecutionLeaseStore {
     const filePath = this.leasePath(sessionId);
     const claimPath = `${filePath}.${expectedFingerprint}.reclaim`;
     try {
-      fs.linkSync(filePath, claimPath);
+      fs.writeFileSync(claimPath, `${expectedFingerprint}\n`, { encoding: "utf8", flag: "wx" });
     } catch (error) {
-      if (isNodeError(error, "ENOENT")) return false;
       if (isNodeError(error, "EEXIST")) {
         this.removeAbandonedReclaimFile(claimPath);
         return false;
@@ -223,10 +222,10 @@ export class SessionExecutionLeaseStore {
     let removed = false;
     let failure: unknown;
     try {
-      const claimedRaw = fs.readFileSync(claimPath, "utf8");
+      const claimedFingerprint = fs.readFileSync(claimPath, "utf8").trim();
       const currentRaw = fs.readFileSync(filePath, "utf8");
       if (
-        fingerprintLease(claimedRaw) !== expectedFingerprint ||
+        claimedFingerprint !== expectedFingerprint ||
         fingerprintLease(currentRaw) !== expectedFingerprint
       ) {
         removed = false;

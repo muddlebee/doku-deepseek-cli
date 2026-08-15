@@ -245,7 +245,7 @@ test("combined undo holds one session lease across code and conversation restora
   }
 });
 
-test("model-change transcript writes reject a second process while the session is leased", async () => {
+test("a model change performs no side effects when another process owns the session", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-model-change-home-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-model-change-workspace-"));
   const originalHome = process.env.HOME;
@@ -260,10 +260,16 @@ test("model-change transcript writes reject a second process while the session i
     const lease = owner.acquire(sessionId);
 
     const second = createManager(workspace);
+    let settingsWritten = false;
     assert.throws(
-      () => second.addSessionSystemMessageWithLease(sessionId, "model changed", true, { isModelChange: true }),
+      () =>
+        second.withSessionExecutionLeaseSync(sessionId, () => {
+          settingsWritten = true;
+          second.addSessionSystemMessage(sessionId, "model changed", true, { isModelChange: true });
+        }),
       SessionBusyError
     );
+    assert.equal(settingsWritten, false);
     assert.deepEqual(second.listSessionMessages(sessionId), before);
     owner.release(lease);
   } finally {

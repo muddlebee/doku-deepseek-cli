@@ -398,43 +398,49 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleModelConfigChange = useCallback(
     (selection: ModelConfigSelection): string => {
-      const current = resolveCurrentSettings(projectRoot);
-      const { changed } = writeModelConfigSelection(selection, current, projectRoot);
-      const next = resolveCurrentSettings(projectRoot);
-      setResolvedSettings(next);
-
-      if (!changed) {
-        return "Model settings unchanged";
-      }
-
       const activeSessionId = sessionManager.getActiveSessionId();
-      const meta: MessageMeta = {
-        isModelChange: true,
-      };
-      const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
+      const applySelection = (): string => {
+        const current = resolveCurrentSettings(projectRoot);
+        const { changed } = writeModelConfigSelection(selection, current, projectRoot);
+        const next = resolveCurrentSettings(projectRoot);
+        setResolvedSettings(next);
 
-      if (activeSessionId) {
-        sessionManager.addSessionSystemMessageWithLease(activeSessionId, content, true, meta);
-        redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
-      } else {
-        const now = new Date().toISOString();
-        const message: SessionMessage = {
-          id: crypto.randomUUID(),
-          sessionId: "local",
-          role: "system",
-          content,
-          contentParams: null,
-          messageParams: null,
-          compacted: false,
-          visible: true,
-          createTime: now,
-          updateTime: now,
-          meta,
+        if (!changed) {
+          return "Model settings unchanged";
+        }
+
+        const meta: MessageMeta = {
+          isModelChange: true,
         };
-        redrawStaticChat([...messagesRef.current, message]);
-      }
+        const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
 
-      return `Model settings updated: ${formatModelConfig(current)} → ${formatModelConfig(next)}`;
+        if (activeSessionId) {
+          sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
+          redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
+        } else {
+          const now = new Date().toISOString();
+          const message: SessionMessage = {
+            id: crypto.randomUUID(),
+            sessionId: "local",
+            role: "system",
+            content,
+            contentParams: null,
+            messageParams: null,
+            compacted: false,
+            visible: true,
+            createTime: now,
+            updateTime: now,
+            meta,
+          };
+          redrawStaticChat([...messagesRef.current, message]);
+        }
+
+        return `Model settings updated: ${formatModelConfig(current)} → ${formatModelConfig(next)}`;
+      };
+
+      return activeSessionId
+        ? sessionManager.withSessionExecutionLeaseSync(activeSessionId, applySelection)
+        : applySelection();
     },
     [projectRoot, redrawStaticChat, sessionManager]
   );

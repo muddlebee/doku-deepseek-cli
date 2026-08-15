@@ -176,6 +176,29 @@ test("orphan reconciliation rejects a JSON object that is not an SDK run state",
   });
 });
 
+
+test("orphan reconciliation seeds an empty canonical history from the uncompacted transcript", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.system(sessionId, "System instructions"));
+    store.appendMessage(sessionId, factory.user(sessionId, { text: "Original user request" }));
+    store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-1", "Read")]));
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    assert.deepEqual(agentSession.getItemsSync(), []);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    const items = agentSession.getItemsSync() as Array<Record<string, unknown>>;
+    assert.deepEqual(items.slice(0, 2), [
+      { role: "system", content: "System instructions" },
+      { role: "user", content: "Original user request" },
+    ]);
+    assert.deepEqual(
+      items.slice(2).map((item) => item.type),
+      ["function_call", "function_call_result"]
+    );
+  });
+});
+
 test("orphan reconciliation does not restore compacted tool history", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     const assistant = factory.assistant(sessionId, "", [toolCall("old-call", "Read")]);

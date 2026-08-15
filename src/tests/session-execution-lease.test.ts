@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -102,13 +103,22 @@ test("session execution leases reclaim a reused live PID with a different proces
 test(
   "session execution leases retain in-memory ownership when file removal fails",
   { skip: process.platform === "win32" },
-  () => {
+  (context) => {
     const projectDir = createLeaseDir();
     const store = new SessionExecutionLeaseStore(projectDir);
     const handle = store.acquire("session-1");
+    const probePath = path.join(projectDir, "permission-probe");
+    fs.writeFileSync(probePath, "", "utf8");
     fs.chmodSync(projectDir, 0o500);
 
     try {
+      try {
+        fs.unlinkSync(probePath);
+        context.skip("This runner can unlink files from a non-writable directory.");
+        return;
+      } catch (error) {
+        assert.match(String(error), /EACCES|EPERM/);
+      }
       assert.throws(() => store.release(handle), /EACCES|EPERM/);
       assert.equal(store.inspect("session-1").state, "owned");
     } finally {
@@ -118,6 +128,41 @@ test(
     }
   }
 );
+
+
+test("session execution leases do not remove a fresh reclaim marker for an old lease", () => {
+  const projectDir = createLeaseDir();
+  const leasePath = path.join(projectDir, "session-1.lease.json");
+  const record: SessionExecutionLeaseRecord = {
+    version: 2,
+    sessionId: "session-1",
+    leaseId: "old-lease",
+    ownerId: "old-owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+    acquiredAt: "2026-08-15T11:00:00.000Z",
+  };
+  const raw = `${JSON.stringify(record)}\n`;
+  fs.writeFileSync(leasePath, raw, "utf8");
+  const old = new Date("2026-08-15T11:00:00.000Z");
+  fs.utimesSync(leasePath, old, old);
+  const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
+  const claimPath = `${leasePath}.${fingerprint}.reclaim`;
+  fs.writeFileSync(claimPath, `${fingerprint}\n`, "utf8");
+  const now = new Date("2026-08-15T12:00:00.000Z");
+  fs.utimesSync(claimPath, now, now);
+
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "replacement",
+    pid: 202,
+    now: () => now,
+    getProcessState: () => "dead",
+  });
+
+  assert.throws(() => store.acquire("session-1"), SessionBusyError);
+  assert.equal(fs.existsSync(claimPath), true);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
 
 test("session execution leases wait for recent malformed records and reclaim old ones", () => {
   const projectDir = createLeaseDir();

@@ -1,4 +1,5 @@
 import type { AgentInputItem } from "@openai/agents";
+import { buildAgentInputItems } from "./agent-history";
 import { FileAgentSession } from "./agents-session";
 import {
   agentHistoryPath,
@@ -22,7 +23,8 @@ export function reconcileOrphanedSession(
   sessionId: string,
   projectDir: string,
   store: FileSessionStore,
-  messageFactory: SessionMessageFactory
+  messageFactory: SessionMessageFactory,
+  renderContent: (message: SessionMessage) => string = (message) => message.content ?? ""
 ): OrphanedSessionRecoveryResult {
   const entry = store.getSession(sessionId);
   if (!entry || (entry.status !== SESSION_STATUS.PENDING && entry.status !== SESSION_STATUS.PROCESSING)) {
@@ -46,8 +48,13 @@ export function reconcileOrphanedSession(
 
   const recoveryId = `${entry.status}:${entry.updateTime}`;
   const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, projectDir));
-  const repairs = repairToolHistory(sessionId, agentSession.getItemsSync(), messages, messageFactory);
-  if (repairs.agentItemsChanged) agentSession.replaceItemsSync(repairs.agentItems);
+  const currentAgentItems = agentSession.getItemsSync();
+  const agentItems =
+    currentAgentItems.length > 0 ? currentAgentItems : buildAgentInputItems(messages, true, renderContent);
+  const repairs = repairToolHistory(sessionId, agentItems, messages, messageFactory);
+  if (currentAgentItems.length === 0 || repairs.agentItemsChanged) {
+    agentSession.replaceItemsSync(repairs.agentItems);
+  }
   if (repairs.messagesChanged) store.saveMessages(sessionId, repairs.messages);
 
   const appendedMessages = [...repairs.appendedMessages];

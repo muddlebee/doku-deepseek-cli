@@ -19,6 +19,7 @@ export class FileSessionStore {
   readonly projectCode: string;
   readonly projectDir: string;
   readonly sessionsIndexPath: string;
+  private readonly processIdentity: string | null;
 
   constructor(
     private readonly projectRoot: string,
@@ -27,6 +28,7 @@ export class FileSessionStore {
     this.projectCode = projectRoot.replace(/[\\/]/g, "-").replace(/:/g, "");
     this.projectDir = path.join(os.homedir(), ".doku", "projects", this.projectCode);
     this.sessionsIndexPath = path.join(this.projectDir, "sessions-index.json");
+    this.processIdentity = getProcessIdentity(process.pid);
   }
 
   ensureProjectDir(): string {
@@ -159,7 +161,7 @@ export class FileSessionStore {
             version: 2,
             lockId: handle.lockId,
             pid: process.pid,
-            processIdentity: getProcessIdentity(process.pid),
+            processIdentity: this.processIdentity,
           })}\n`,
           "utf8"
         );

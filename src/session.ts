@@ -302,20 +302,6 @@ export class SessionManager {
     this.onAssistantMessage(message, false);
   }
 
-  addSessionSystemMessageWithLease(
-    sessionId: string,
-    content: string,
-    visible?: boolean,
-    meta?: MessageMeta
-  ): void {
-    this.withSessionExecutionLeaseSync(sessionId, () => {
-      if (!this.sessionStore.getSession(sessionId)) {
-        throw new Error("No active session was found.");
-      }
-      this.addSessionSystemMessage(sessionId, content, visible, meta);
-    });
-  }
-
   async handleUserPrompt(userPrompt: UserPromptContent): Promise<void> {
     const controller = new AbortController();
     this.activePromptController = controller;
@@ -799,7 +785,7 @@ export class SessionManager {
     }
   }
 
-  private withSessionExecutionLeaseSync<T>(sessionId: string, operation: () => T): T {
+  withSessionExecutionLeaseSync<T>(sessionId: string, operation: () => T): T {
     const handle = this.executionLeases.acquire(sessionId);
     try {
       this.reconcileOwnedSession(sessionId);
@@ -814,7 +800,8 @@ export class SessionManager {
       sessionId,
       this.sessionStore.projectDir,
       this.sessionStore,
-      this.messageFactory
+      this.messageFactory,
+      (message) => this.renderAgentMessageContent(message)
     );
     if (this.activeSessionId === sessionId) {
       recovery.appendedMessages
