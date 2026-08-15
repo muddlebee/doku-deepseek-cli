@@ -414,7 +414,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
       const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
 
       if (activeSessionId) {
-        sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
+        sessionManager.addSessionSystemMessageWithLease(activeSessionId, content, true, meta);
         redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
       } else {
         const now = new Date().toISOString();
@@ -593,21 +593,22 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
       const errors: string[] = [];
       let codeRestored = false;
+      let conversationRestored = false;
       if (restoreMode === "code-and-conversation") {
         try {
-          sessionManager.restoreSessionCode(sessionId, target.message.id);
+          sessionManager.restoreSessionCodeAndConversation(sessionId, target.message.id);
           codeRestored = true;
+          conversationRestored = true;
         } catch (error) {
-          errors.push(`Code restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          errors.push(`Code and conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-      }
-
-      let conversationRestored = false;
-      try {
-        sessionManager.restoreSessionConversation(sessionId, target.message.id);
-        conversationRestored = true;
-      } catch (error) {
-        errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+      } else {
+        try {
+          sessionManager.restoreSessionConversation(sessionId, target.message.id);
+          conversationRestored = true;
+        } catch (error) {
+          errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
       if (shouldDiscardPromptQueueAfterUndoRestore(codeRestored, conversationRestored)) {

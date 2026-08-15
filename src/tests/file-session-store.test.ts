@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { FileSessionStore } from "../session/file-session-store";
+import { getProcessIdentity } from "../session/session-execution-lease";
 import type { SessionEntry, SessionMessage } from "../session/types";
 
 test("FileSessionStore separates new messages from a malformed unterminated tail", () => {
@@ -70,6 +71,53 @@ test("FileSessionStore serializes cross-process index updates for different sess
 
     assert.equal(store.getSession("session-1")?.activeTokens, 40);
     assert.equal(store.getSession("session-2")?.activeTokens, 40);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+
+test("FileSessionStore records process identity and reclaims a lock after PID reuse", () => {
+  const identity = getProcessIdentity(process.pid);
+  if (!identity) return;
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-identity-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    store.updateIndex((index) => {
+      const owner = JSON.parse(
+        fs.readFileSync(path.join(`${store.sessionsIndexPath}.lock`, "owner.json"), "utf8")
+      ) as { version: number; pid: number; processIdentity: string | null };
+      assert.equal(owner.version, 2);
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.processIdentity, identity);
+      index.entries = [buildEntry("session-1")];
+    });
+
+    const lockPath = `${store.sessionsIndexPath}.lock`;
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        version: 2,
+        lockId: "stale-owner",
+        pid: process.pid,
+        processIdentity: `${identity}:reused`,
+      })}\n`,
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    store.updateIndex((index) => {
+      index.entries.push(buildEntry("session-2"));
+    });
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.deepEqual(store.listSessions().map((entry) => entry.id), ["session-1", "session-2"]);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;

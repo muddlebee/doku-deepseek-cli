@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { appendJsonLines } from "./jsonl";
-import { isProcessDefinitelyDead } from "./session-execution-lease";
+import { getProcessIdentity, isProcessOwnerDefinitelyStale } from "./session-execution-lease";
 import { buildToolParamsSnippet, buildToolResultSnippet, isInvisibleToolExecution } from "./tool-presentation";
 import type {
   ModelUsage,
@@ -155,7 +155,12 @@ export class FileSessionStore {
         fs.mkdirSync(lockPath);
         fs.writeFileSync(
           path.join(lockPath, INDEX_LOCK_OWNER_FILE),
-          `${JSON.stringify({ version: 1, lockId: handle.lockId, pid: process.pid })}\n`,
+          `${JSON.stringify({
+            version: 2,
+            lockId: handle.lockId,
+            pid: process.pid,
+            processIdentity: getProcessIdentity(process.pid),
+          })}\n`,
           "utf8"
         );
         return handle;
@@ -184,7 +189,7 @@ export class FileSessionStore {
 
   private reclaimStaleIndexLock(lockPath: string): boolean {
     const owner = readIndexLockOwner(lockPath);
-    if (owner && !isProcessDefinitelyDead(owner.pid)) return false;
+    if (owner && !isProcessOwnerDefinitelyStale(owner.pid, owner.processIdentity)) return false;
     if (!owner) {
       try {
         if (Date.now() - fs.statSync(lockPath).mtimeMs < INDEX_LOCK_INITIALIZATION_GRACE_MS) return false;
@@ -267,7 +272,12 @@ const INDEX_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 type IndexLockHandle = Readonly<{ lockPath: string; lockId: string }>;
 
-type IndexLockOwner = Readonly<{ version: 1; lockId: string; pid: number }>;
+type IndexLockOwner = Readonly<{
+  version: 1 | 2;
+  lockId: string;
+  pid: number;
+  processIdentity: string | null;
+}>;
 
 function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
   try {
@@ -275,13 +285,26 @@ function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
       string,
       unknown
     >;
-    return value.version === 1 &&
+    const version = value.version === 1 || value.version === 2 ? value.version : null;
+    const processIdentity =
+      version === 1
+        ? null
+        : value.processIdentity === null || (typeof value.processIdentity === "string" && value.processIdentity)
+          ? value.processIdentity
+          : undefined;
+    return version &&
       typeof value.lockId === "string" &&
       value.lockId &&
       typeof value.pid === "number" &&
       Number.isInteger(value.pid) &&
-      value.pid > 0
-      ? (value as IndexLockOwner)
+      value.pid > 0 &&
+      processIdentity !== undefined
+      ? {
+          version,
+          lockId: value.lockId,
+          pid: value.pid,
+          processIdentity,
+        }
       : null;
   } catch {
     return null;

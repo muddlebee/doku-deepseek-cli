@@ -315,6 +315,18 @@ export function isProcessDefinitelyDead(pid: number): boolean {
   return getProcessState(pid) === "dead";
 }
 
+export function getProcessIdentity(pid: number): string | null {
+  return readProcessIdentity(pid);
+}
+
+export function isProcessOwnerDefinitelyStale(pid: number, recordedIdentity: string | null): boolean {
+  const state = getProcessState(pid);
+  if (state === "dead") return true;
+  if (state !== "alive") return false;
+  const currentIdentity = readProcessIdentity(pid);
+  return Boolean(recordedIdentity && currentIdentity && recordedIdentity !== currentIdentity);
+}
+
 function readProcessIdentity(pid: number): string | null {
   try {
     if (process.platform === "linux") {

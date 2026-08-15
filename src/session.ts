@@ -302,6 +302,20 @@ export class SessionManager {
     this.onAssistantMessage(message, false);
   }
 
+  addSessionSystemMessageWithLease(
+    sessionId: string,
+    content: string,
+    visible?: boolean,
+    meta?: MessageMeta
+  ): void {
+    this.withSessionExecutionLeaseSync(sessionId, () => {
+      if (!this.sessionStore.getSession(sessionId)) {
+        throw new Error("No active session was found.");
+      }
+      this.addSessionSystemMessage(sessionId, content, visible, meta);
+    });
+  }
+
   async handleUserPrompt(userPrompt: UserPromptContent): Promise<void> {
     const controller = new AbortController();
     this.activePromptController = controller;
@@ -366,6 +380,11 @@ export class SessionManager {
       return;
     }
     await this.withSessionExecutionLease(sessionId, async () => {
+      if (!this.sessionStore.getSession(sessionId)) {
+        await this.createSession(userPrompt, controller);
+        return;
+      }
+
       const signal = controller?.signal;
       try {
         this.throwIfAborted(signal);
@@ -571,39 +590,43 @@ export class SessionManager {
     this.activePromptController = controller;
     try {
       await this.withSessionExecutionLease(sessionId, async () => {
-        const entry = this.sessionStore.getSession(sessionId);
-        if (!entry) throw new Error("No active session was found.");
-        const now = new Date().toISOString();
-        const workflow = startImplementation(approvePlan(entry.workflow, now), now);
-        const buildSkill = (await this.skillCatalog.list(sessionId)).find(
-          (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
-        );
-        const prompt: UserPromptContent = {
-          text: "/build",
-          skills: buildSkill ? [buildSkill] : undefined,
-          workflowMode: WORKFLOW_MODE.BUILD,
-        };
+        try {
+          const entry = this.sessionStore.getSession(sessionId);
+          if (!entry) throw new Error("No active session was found.");
+          const now = new Date().toISOString();
+          const workflow = startImplementation(approvePlan(entry.workflow, now), now);
+          const buildSkill = (await this.skillCatalog.list(sessionId)).find(
+            (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
+          );
+          const prompt: UserPromptContent = {
+            text: "/build",
+            skills: buildSkill ? [buildSkill] : undefined,
+            workflowMode: WORKFLOW_MODE.BUILD,
+          };
 
-        this.reportNewPrompt();
-        this.checkpoints.ensureSession(sessionId);
-        if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
-          this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
+          this.reportNewPrompt();
+          this.checkpoints.ensureSession(sessionId);
+          if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
+            this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
+          }
+
+          this.updateSessionEntry(sessionId, (current) => ({
+            ...current,
+            workflow,
+            status: "pending",
+            failReason: null,
+            updateTime: now,
+          }));
+          this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
+          await this.appendSkills(sessionId, prompt, controller.signal, true);
+          this.activeSessionId = sessionId;
+          await this.activateSession(sessionId, controller);
+        } catch (error) {
+          this.markPreActivationFailure(sessionId, error, controller.signal);
+          throw error;
         }
-
-        this.updateSessionEntry(sessionId, (current) => ({
-          ...current,
-          workflow,
-          status: "pending",
-          failReason: null,
-          updateTime: now,
-        }));
-        this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
-        await this.appendSkills(sessionId, prompt, controller.signal, true);
-        this.activeSessionId = sessionId;
-        await this.activateSession(sessionId, controller);
       });
     } catch (error) {
-      this.markPreActivationFailure(sessionId, error, controller.signal);
       if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
     } finally {
       if (this.activePromptController === controller) this.activePromptController = null;
@@ -875,52 +898,67 @@ export class SessionManager {
   }
 
   restoreSessionConversation(sessionId: string, messageId: string): SessionMessage[] {
-    return this.withSessionExecutionLeaseSync(sessionId, () => {
-      const messages = this.listSessionMessages(sessionId);
-      const targetIndex = messages.findIndex((message) => message.id === messageId);
-      if (targetIndex === -1) {
-        throw new Error("Selected message was not found in this session.");
-      }
-
-      const keptMessages = messages.slice(0, targetIndex);
-      this.saveSessionMessages(sessionId, keptMessages);
-      this.removeAgentRuntimeState(sessionId);
-      const now = new Date().toISOString();
-      const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
-      const latestAssistantParams = latestAssistant?.messageParams as
-        | { tool_calls?: unknown[]; reasoning_content?: string }
-        | null
-        | undefined;
-      const workflow = restoreWorkflowFromMessages(keptMessages);
-
-      this.updateSessionEntry(sessionId, (entry) => ({
-        ...entry,
-        workflow,
-        assistantReply: latestAssistant?.content ?? null,
-        assistantThinking:
-          typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
-        assistantRefusal: null,
-        toolCalls: null,
-        status: "completed",
-        failReason: null,
-        processes: null,
-        updateTime: now,
-      }));
-      return keptMessages;
-    });
+    return this.withSessionExecutionLeaseSync(sessionId, () =>
+      this.restoreSessionConversationWithOwnedLease(sessionId, messageId)
+    );
   }
 
   restoreSessionCode(sessionId: string, messageId: string): void {
     this.withSessionExecutionLeaseSync(sessionId, () => {
-      const message = this.listSessionMessages(sessionId).find((item) => item.id === messageId);
-      if (!message) {
-        throw new Error("Selected message was not found in this session.");
-      }
-      if (!message.checkpointHash) {
-        throw new Error("Selected message has no code checkpoint.");
-      }
-      this.checkpoints.restore(sessionId, message.checkpointHash);
+      this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
     });
+  }
+
+  restoreSessionCodeAndConversation(sessionId: string, messageId: string): SessionMessage[] {
+    return this.withSessionExecutionLeaseSync(sessionId, () => {
+      this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
+      return this.restoreSessionConversationWithOwnedLease(sessionId, messageId);
+    });
+  }
+
+  private restoreSessionConversationWithOwnedLease(sessionId: string, messageId: string): SessionMessage[] {
+    const messages = this.listSessionMessages(sessionId);
+    const targetIndex = messages.findIndex((message) => message.id === messageId);
+    if (targetIndex === -1) {
+      throw new Error("Selected message was not found in this session.");
+    }
+
+    const keptMessages = messages.slice(0, targetIndex);
+    this.saveSessionMessages(sessionId, keptMessages);
+    this.removeAgentRuntimeState(sessionId);
+    const now = new Date().toISOString();
+    const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
+    const latestAssistantParams = latestAssistant?.messageParams as
+      | { tool_calls?: unknown[]; reasoning_content?: string }
+      | null
+      | undefined;
+    const workflow = restoreWorkflowFromMessages(keptMessages);
+
+    this.updateSessionEntry(sessionId, (entry) => ({
+      ...entry,
+      workflow,
+      assistantReply: latestAssistant?.content ?? null,
+      assistantThinking:
+        typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
+      assistantRefusal: null,
+      toolCalls: null,
+      status: "completed",
+      failReason: null,
+      processes: null,
+      updateTime: now,
+    }));
+    return keptMessages;
+  }
+
+  private restoreSessionCodeWithOwnedLease(sessionId: string, messageId: string): void {
+    const message = this.listSessionMessages(sessionId).find((item) => item.id === messageId);
+    if (!message) {
+      throw new Error("Selected message was not found in this session.");
+    }
+    if (!message.checkpointHash) {
+      throw new Error("Selected message has no code checkpoint.");
+    }
+    this.checkpoints.restore(sessionId, message.checkpointHash);
   }
 
   private removeSessionMessages(sessionIds: string[]): void {
