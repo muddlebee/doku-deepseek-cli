@@ -13,6 +13,7 @@ import {
   type SessionEntry,
   SessionBusyError,
   SessionManager,
+  SessionRestoreError,
   type SessionMessage,
   type SkillInfo,
   type UndoTarget,
@@ -606,6 +607,10 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           codeRestored = true;
           conversationRestored = true;
         } catch (error) {
+          if (error instanceof SessionRestoreError) {
+            codeRestored = error.codeRestored;
+            conversationRestored = error.conversationRestored;
+          }
           errors.push(
             `Code and conversation restore failed: ${error instanceof Error ? error.message : String(error)}`
           );
@@ -615,6 +620,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
           sessionManager.restoreSessionConversation(sessionId, target.message.id);
           conversationRestored = true;
         } catch (error) {
+          if (error instanceof SessionRestoreError) conversationRestored = error.conversationRestored;
           errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }

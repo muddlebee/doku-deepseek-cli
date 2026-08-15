@@ -22,6 +22,7 @@ import { formatProcessStopFailure, hasProcessStopFailure, SessionProcessTracker 
 import { SessionToolCoordinator } from "./session/tool-coordinator";
 import { SessionBusyError, SessionExecutionLeaseStore } from "./session/session-execution-lease";
 import { reconcileOrphanedSession } from "./session/orphaned-session-recovery";
+import { SessionRestoreError } from "./session/restore-error";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
 import { isUndoTargetMessage, SessionCheckpointManager } from "./session/checkpoint-manager";
@@ -74,6 +75,7 @@ export type {
 } from "./session/types";
 export { isProcessStopFailureMessage } from "./session/process-tracker";
 export { SessionBusyError } from "./session/session-execution-lease";
+export { SessionRestoreError } from "./session/restore-error";
 
 const DEFAULT_COMPACT_PROMPT_TOKEN_THRESHOLD = 128 * 1024;
 // Both deepseek-v4-flash and deepseek-v4-pro have a 1M token context window.
@@ -939,8 +941,14 @@ export class SessionManager {
 
   restoreSessionCodeAndConversation(sessionId: string, messageId: string): SessionMessage[] {
     return this.withSessionExecutionLeaseSync(sessionId, () => {
-      this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
-      return this.restoreSessionConversationWithOwnedLease(sessionId, messageId);
+      let codeRestored = false;
+      try {
+        this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
+        codeRestored = true;
+        return this.restoreSessionConversationWithOwnedLease(sessionId, messageId);
+      } catch (error) {
+        throw mergeSessionRestoreError(error, codeRestored);
+      }
     });
   }
 
@@ -952,30 +960,37 @@ export class SessionManager {
     }
 
     const keptMessages = messages.slice(0, targetIndex);
-    this.saveSessionMessages(sessionId, keptMessages);
-    this.removeAgentRuntimeState(sessionId);
-    const now = new Date().toISOString();
-    const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
-    const latestAssistantParams = latestAssistant?.messageParams as
-      | { tool_calls?: unknown[]; reasoning_content?: string }
-      | null
-      | undefined;
-    const workflow = restoreWorkflowFromMessages(keptMessages);
+    let conversationRestored = false;
+    try {
+      this.saveSessionMessages(sessionId, keptMessages);
+      conversationRestored = true;
+      this.removeAgentRuntimeState(sessionId);
+      const now = new Date().toISOString();
+      const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
+      const latestAssistantParams = latestAssistant?.messageParams as
+        | { tool_calls?: unknown[]; reasoning_content?: string }
+        | null
+        | undefined;
+      const workflow = restoreWorkflowFromMessages(keptMessages);
 
-    this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      workflow,
-      assistantReply: latestAssistant?.content ?? null,
-      assistantThinking:
-        typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
-      assistantRefusal: null,
-      toolCalls: null,
-      status: "completed",
-      failReason: null,
-      processes: null,
-      updateTime: now,
-    }));
-    return keptMessages;
+      this.updateSessionEntry(sessionId, (entry) => ({
+        ...entry,
+        workflow,
+        assistantReply: latestAssistant?.content ?? null,
+        assistantThinking:
+          typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
+        assistantRefusal: null,
+        toolCalls: null,
+        status: "completed",
+        failReason: null,
+        processes: null,
+        updateTime: now,
+      }));
+      return keptMessages;
+    } catch (error) {
+      if (error instanceof SessionRestoreError) throw error;
+      throw new SessionRestoreError(errorMessage(error), false, conversationRestored, { cause: error });
+    }
   }
 
   private restoreSessionCodeWithOwnedLease(sessionId: string, messageId: string): void {
@@ -1097,4 +1112,17 @@ export class SessionManager {
       messages: this.listSessionMessages(sessionId),
     });
   }
+}
+
+function mergeSessionRestoreError(error: unknown, codeRestored: boolean): SessionRestoreError {
+  if (error instanceof SessionRestoreError) {
+    return new SessionRestoreError(error.message, codeRestored || error.codeRestored, error.conversationRestored, {
+      cause: error,
+    });
+  }
+  return new SessionRestoreError(errorMessage(error), codeRestored, false, { cause: error });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

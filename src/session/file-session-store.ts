@@ -39,11 +39,36 @@ export class FileSessionStore {
   }
 
   listSessions(): SessionEntry[] {
+    this.recoverPendingSessionCreations();
     return this.loadIndex().entries;
   }
 
   getSession(sessionId: string): SessionEntry | null {
+    this.recoverPendingSessionCreations(sessionId);
     return this.loadIndex().entries.find((entry) => entry.id === sessionId) ?? null;
+  }
+
+  hasSessionEntry(sessionId: string): boolean {
+    return this.loadIndexForUpdate().entries.some((entry) => entry.id === sessionId);
+  }
+
+  prepareSessionCreation(entry: SessionEntry): void {
+    this.ensureProjectDir();
+    const record: PendingSessionCreation = {
+      version: 1,
+      entry: { ...entry, processes: serializeProcesses(entry.processes) },
+      pid: process.pid,
+      processIdentity: this.processIdentity,
+    };
+    this.writeAtomic(this.sessionCreationPath(entry.id), `${JSON.stringify(record)}\n`);
+  }
+
+  completeSessionCreation(sessionId: string): void {
+    try {
+      fs.unlinkSync(this.sessionCreationPath(sessionId));
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+    }
   }
 
   listMessages(sessionId: string): SessionMessage[] {
@@ -76,8 +101,8 @@ export class FileSessionStore {
     for (const sessionId of sessionIds) {
       try {
         fs.unlinkSync(this.messagesPath(sessionId));
-      } catch {
-        // The transcript may already be absent.
+      } catch (error) {
+        if (!isNodeError(error, "ENOENT")) throw error;
       }
     }
   }
@@ -363,6 +388,61 @@ export class FileSessionStore {
     return path.join(this.projectDir, `${sessionId}.jsonl`);
   }
 
+  private sessionCreationPath(sessionId: string): string {
+    return path.join(this.projectDir, `${sessionId}${SESSION_CREATION_SUFFIX}`);
+  }
+
+  private recoverPendingSessionCreations(onlySessionId?: string): void {
+    this.ensureProjectDir();
+    const names = onlySessionId
+      ? [`${onlySessionId}${SESSION_CREATION_SUFFIX}`]
+      : fs.readdirSync(this.projectDir).filter((name) => name.endsWith(SESSION_CREATION_SUFFIX));
+    for (const name of names) {
+      const markerPath = path.join(this.projectDir, name);
+      const sessionId = name.slice(0, -SESSION_CREATION_SUFFIX.length);
+      const pending = this.readPendingSessionCreation(markerPath, sessionId);
+      if (!pending || !isProcessOwnerDefinitelyStale(pending.pid, pending.processIdentity)) continue;
+      if (fs.existsSync(this.messagesPath(sessionId))) {
+        this.updateIndex((index) => {
+          if (!index.entries.some((entry) => entry.id === sessionId)) index.entries.push(pending.entry);
+        });
+      }
+      this.completeSessionCreation(sessionId);
+    }
+  }
+
+  private readPendingSessionCreation(markerPath: string, sessionId: string): RecoveredSessionCreation | null {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(markerPath, "utf8");
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return null;
+      throw error;
+    }
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (
+        !isRecord(value) ||
+        value.version !== 1 ||
+        !isRecord(value.entry) ||
+        value.entry.id !== sessionId ||
+        typeof value.pid !== "number" ||
+        !Number.isInteger(value.pid) ||
+        value.pid <= 0 ||
+        (value.processIdentity !== null && (typeof value.processIdentity !== "string" || !value.processIdentity))
+      ) {
+        return null;
+      }
+      return {
+        entry: this.normalizeEntry(value.entry),
+        pid: value.pid,
+        processIdentity: value.processIdentity,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private normalizeMessage(message: SessionMessage): SessionMessage {
     if (message.role !== "tool") return message;
     const meta = message.meta ? { ...message.meta } : undefined;
@@ -405,6 +485,20 @@ const INDEX_LOCK_INITIALIZATION_GRACE_MS = 2_000;
 const INDEX_LOCK_CLAIM_ATTEMPTS = 4;
 const INDEX_LOCK_OWNER_FILE = "owner.json";
 const INDEX_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+const SESSION_CREATION_SUFFIX = ".creating.json";
+
+type PendingSessionCreation = Readonly<{
+  version: 1;
+  entry: Record<string, unknown>;
+  pid: number;
+  processIdentity: string | null;
+}>;
+
+type RecoveredSessionCreation = Readonly<{
+  entry: SessionEntry;
+  pid: number;
+  processIdentity: string | null;
+}>;
 
 type IndexLockHandle = Readonly<{ lockPath: string; lockId: string; ownerId: string }>;
 

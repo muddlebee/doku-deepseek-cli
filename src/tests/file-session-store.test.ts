@@ -43,6 +43,33 @@ test("FileSessionStore separates new messages from a malformed unterminated tail
   }
 });
 
+test("FileSessionStore recovers a completed session creation abandoned before index publication", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-creation-recovery-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    const entry = buildEntry("session-1");
+    store.prepareSessionCreation(entry);
+    store.saveMessages("session-1", [buildMessage("session-1")]);
+    const markerPath = path.join(store.projectDir, "session-1.creating.json");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(markerPath, `${JSON.stringify({ ...marker, pid: 999_999_999, processIdentity: null })}\n`);
+
+    assert.deepEqual(
+      store.listSessions().map((session) => session.id),
+      ["session-1"]
+    );
+    assert.equal(fs.existsSync(markerPath), false);
+    assert.equal(store.listMessages("session-1")[0]?.content, "initial prompt");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("FileSessionStore serializes cross-process index updates for different sessions", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-concurrency-"));
   const projectRoot = path.join(home, "project");
@@ -270,6 +297,21 @@ function buildEntry(id: string): SessionEntry {
     updateTime: "2026-08-15T00:00:00.000Z",
     processes: null,
     workflow: { mode: "build", plan: null },
+  };
+}
+
+function buildMessage(sessionId: string): SessionMessage {
+  return {
+    id: "message-1",
+    sessionId,
+    role: "user",
+    content: "initial prompt",
+    contentParams: null,
+    messageParams: null,
+    compacted: false,
+    visible: true,
+    createTime: "2026-08-15T00:00:00.000Z",
+    updateTime: "2026-08-15T00:00:00.000Z",
   };
 }
 

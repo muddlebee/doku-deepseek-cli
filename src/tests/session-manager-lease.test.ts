@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { SessionBusyError, SessionManager, type SessionEntry, type SessionMessage } from "../session";
+import {
+  SessionBusyError,
+  SessionManager,
+  SessionRestoreError,
+  type SessionEntry,
+  type SessionMessage,
+} from "../session";
 import { FileSessionStore } from "../session/file-session-store";
 import { SessionExecutionLeaseStore } from "../session/session-execution-lease";
 
@@ -304,6 +310,43 @@ test("combined undo holds one session lease across code and conversation restora
 
     manager.restoreSessionCodeAndConversation(sessionId, target.id);
     assert.deepEqual(manager.listSessionMessages(sessionId), messages.slice(0, messages.indexOf(target)));
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("combined undo reports both durable mutations when later conversation cleanup fails", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-partial-undo-home-"));
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "doku-manager-partial-undo-workspace-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const manager = createManager(workspace);
+    setActivationToComplete(manager);
+    const sessionId = await manager.createSession({ text: "initial prompt" });
+    await manager.replySession(sessionId, { text: "later prompt" });
+    const mutableManager = manager as any;
+    const target = manager.listSessionMessages(sessionId).find((message) => message.role === "user");
+    assert.ok(target);
+    target.checkpointHash = target.checkpointHash ?? "test-checkpoint";
+    mutableManager.saveSessionMessages(sessionId, manager.listSessionMessages(sessionId));
+    mutableManager.checkpoints.restore = () => undefined;
+    mutableManager.removeAgentRuntimeState = () => {
+      throw new Error("runtime cleanup failed");
+    };
+
+    assert.throws(
+      () => manager.restoreSessionCodeAndConversation(sessionId, target.id),
+      (error: unknown) =>
+        error instanceof SessionRestoreError &&
+        error.codeRestored &&
+        error.conversationRestored &&
+        /runtime cleanup failed/.test(error.message)
+    );
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;

@@ -31,12 +31,15 @@ export function initializeSession(options: SessionInitializerOptions): void {
   const instructions = messages.loadAgentInstructions();
   if (instructions) initialMessages.push(messages.system(sessionId, instructions));
   initialMessages.push(messages.user(sessionId, userPrompt));
-  store.saveMessages(sessionId, initialMessages);
+  const entry = buildEntry(sessionId, userPrompt, now);
+  store.prepareSessionCreation(entry);
 
   const removalReservations: Array<() => void> = [];
+  let entryPublished = false;
   try {
+    store.saveMessages(sessionId, initialMessages);
     const dropped = store.updateIndex((index) => {
-      index.entries.push(buildEntry(sessionId, userPrompt, now));
+      index.entries.push(entry);
       index.entries.sort((a, b) => compareUpdateTime(a, b));
       const removable: SessionEntry[] = [];
       while (index.entries.length > MAX_SESSION_ENTRIES) {
@@ -48,7 +51,36 @@ export function initializeSession(options: SessionInitializerOptions): void {
       }
       return removable;
     });
+    entryPublished = true;
+    try {
+      store.completeSessionCreation(sessionId);
+    } catch {
+      // The indexed session is authoritative; stale-marker recovery will remove the redundant marker.
+    }
     options.removeSessions(dropped.map((entry) => entry.id));
+  } catch (error) {
+    if (!entryPublished) {
+      try {
+        entryPublished = store.hasSessionEntry(sessionId);
+      } catch (verificationError) {
+        throw new AggregateError(
+          [error, verificationError],
+          "Session creation failed and its publication state could not be verified."
+        );
+      }
+    }
+    if (!entryPublished) {
+      try {
+        options.removeSessions([sessionId]);
+        store.completeSessionCreation(sessionId);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Session creation failed and its durable state needs recovery."
+        );
+      }
+    }
+    throw error;
   } finally {
     removalReservations.forEach((release) => release());
   }
