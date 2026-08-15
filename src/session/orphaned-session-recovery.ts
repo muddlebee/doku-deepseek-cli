@@ -143,12 +143,18 @@ function repairToolHistory(
   let messagesChanged = false;
   for (const call of calls.values()) {
     if (!agentCallIds.has(call.callId)) {
-      agentItems.push({
+      const callItem: AgentInputItem = {
         type: "function_call",
         callId: call.callId,
         name: call.name,
         arguments: call.arguments,
+      };
+      const resultIndex = agentItems.findIndex((item) => {
+        const record = item as { type?: unknown; callId?: unknown };
+        return record.type === "function_call_result" && record.callId === call.callId;
       });
+      if (resultIndex >= 0) agentItems.splice(resultIndex, 0, callItem);
+      else agentItems.push(callItem);
       agentCallIds.add(call.callId);
       agentItemsChanged = true;
     }

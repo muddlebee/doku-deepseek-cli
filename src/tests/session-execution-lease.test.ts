@@ -37,6 +37,27 @@ test("session execution leases reject a second live owner and release by token",
   fs.rmSync(projectDir, { recursive: true, force: true });
 });
 
+test("session execution leases publish only complete records", () => {
+  const projectDir = createLeaseDir();
+  const store = new SessionExecutionLeaseStore(projectDir, {
+    ownerId: "owner",
+    pid: 101,
+    processIdentity: "boot-a:start-1",
+  });
+
+  const handle = store.acquire("session-1");
+  const record = JSON.parse(fs.readFileSync(path.join(projectDir, "session-1.lease.json"), "utf8"));
+  assert.equal(record.leaseId, handle.leaseId);
+  assert.equal(record.processIdentity, "boot-a:start-1");
+  assert.equal(
+    fs.readdirSync(projectDir).some((name) => name.endsWith(".initializing")),
+    false
+  );
+
+  store.release(handle);
+  fs.rmSync(projectDir, { recursive: true, force: true });
+});
+
 test("session execution leases allow different sessions", () => {
   const projectDir = createLeaseDir();
   const first = new SessionExecutionLeaseStore(projectDir, { ownerId: "first", pid: 101 });
@@ -128,7 +149,6 @@ test(
     }
   }
 );
-
 
 test("session execution leases do not remove a fresh reclaim marker for an old lease", () => {
   const projectDir = createLeaseDir();

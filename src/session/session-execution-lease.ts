@@ -190,19 +190,35 @@ export class SessionExecutionLeaseStore {
   }
 
   private tryCreate(record: SessionExecutionLeaseRecord): boolean {
+    const filePath = this.leasePath(record.sessionId);
+    const temporaryPath = `${filePath}.${record.leaseId}.initializing`;
     let descriptor: number;
     try {
-      descriptor = fs.openSync(this.leasePath(record.sessionId), "wx");
+      descriptor = fs.openSync(temporaryPath, "wx");
     } catch (error) {
       if (isNodeError(error, "EEXIST")) return false;
       throw error;
     }
+
     try {
       fs.writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf8");
       fs.fsyncSync(descriptor);
-      return true;
     } finally {
       fs.closeSync(descriptor);
+    }
+
+    try {
+      fs.linkSync(temporaryPath, filePath);
+      return true;
+    } catch (error) {
+      if (isNodeError(error, "EEXIST")) return false;
+      throw error;
+    } finally {
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        // A private initialization file is harmless if cleanup is denied.
+      }
     }
   }
 

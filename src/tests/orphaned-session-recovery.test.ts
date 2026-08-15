@@ -177,6 +177,29 @@ test("orphan reconciliation rejects a JSON object that is not an SDK run state",
 });
 
 
+test("orphan reconciliation inserts a repaired call before its surviving canonical result", () => {
+  withRecoveryFixture(({ sessionId, store, factory }) => {
+    store.appendMessage(sessionId, factory.assistant(sessionId, "", [toolCall("call-1", "Read")]));
+    const agentSession = new FileAgentSession(sessionId, agentHistoryPath(sessionId, store.projectDir));
+    agentSession.replaceItemsSync([
+      {
+        type: "function_call_result",
+        callId: "call-1",
+        name: "Read",
+        status: "completed",
+        output: '{"ok":true}',
+      },
+    ]);
+
+    reconcileOrphanedSession(sessionId, store.projectDir, store, factory);
+
+    assert.deepEqual(
+      agentSession.getItemsSync().map((item) => (item as { type?: unknown }).type),
+      ["function_call", "function_call_result"]
+    );
+  });
+});
+
 test("orphan reconciliation seeds an empty canonical history from the uncompacted transcript", () => {
   withRecoveryFixture(({ sessionId, store, factory }) => {
     store.appendMessage(sessionId, factory.system(sessionId, "System instructions"));

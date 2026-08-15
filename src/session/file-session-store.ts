@@ -96,7 +96,7 @@ export class FileSessionStore {
   updateIndex<T>(updater: (index: SessionsIndex) => T): T {
     const lock = this.acquireIndexLock();
     try {
-      const index = this.loadIndex();
+      const index = this.loadIndexForUpdate();
       const result = updater(index);
       this.saveIndexUnlocked(index);
       return result;
@@ -106,20 +106,32 @@ export class FileSessionStore {
   }
 
   loadIndex(): SessionsIndex {
-    this.ensureProjectDir();
-    if (!fs.existsSync(this.sessionsIndexPath)) {
-      return { version: 1, entries: [], originalPath: this.projectRoot };
-    }
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.sessionsIndexPath, "utf8")) as SessionsIndex;
-      return {
-        version: 1,
-        entries: Array.isArray(parsed.entries) ? parsed.entries.map((entry) => this.normalizeEntry(entry)) : [],
-        originalPath: parsed.originalPath || this.projectRoot,
-      };
+      return this.loadIndexForUpdate();
     } catch {
-      return { version: 1, entries: [], originalPath: this.projectRoot };
+      return this.emptyIndex();
     }
+  }
+
+  private loadIndexForUpdate(): SessionsIndex {
+    this.ensureProjectDir();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.sessionsIndexPath, "utf8");
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return this.emptyIndex();
+      throw error;
+    }
+    const parsed = JSON.parse(raw) as SessionsIndex;
+    return {
+      version: 1,
+      entries: Array.isArray(parsed.entries) ? parsed.entries.map((entry) => this.normalizeEntry(entry)) : [],
+      originalPath: parsed.originalPath || this.projectRoot,
+    };
+  }
+
+  private emptyIndex(): SessionsIndex {
+    return { version: 1, entries: [], originalPath: this.projectRoot };
   }
 
   saveIndex(index: SessionsIndex): void {
@@ -153,26 +165,52 @@ export class FileSessionStore {
     const deadline = Date.now() + INDEX_LOCK_TIMEOUT_MS;
     while (true) {
       const handle = { lockPath, lockId: crypto.randomUUID() };
-      try {
-        fs.mkdirSync(lockPath);
-        fs.writeFileSync(
-          path.join(lockPath, INDEX_LOCK_OWNER_FILE),
-          `${JSON.stringify({
-            version: 2,
-            lockId: handle.lockId,
-            pid: process.pid,
-            processIdentity: this.processIdentity,
-          })}\n`,
-          "utf8"
-        );
-        return handle;
-      } catch (error) {
-        if (!isNodeError(error, "EEXIST")) throw error;
-      }
+      if (this.tryCreateIndexLock(handle)) return handle;
 
       if (this.reclaimStaleIndexLock(lockPath)) continue;
       if (Date.now() >= deadline) throw new Error("Session metadata is busy. Try again shortly.");
       Atomics.wait(INDEX_LOCK_SLEEP, 0, 0, INDEX_LOCK_POLL_MS);
+    }
+  }
+
+  private tryCreateIndexLock(handle: IndexLockHandle): boolean {
+    const temporaryPath = `${handle.lockPath}.${handle.lockId}.initializing`;
+    let descriptor: number;
+    try {
+      descriptor = fs.openSync(temporaryPath, "wx");
+    } catch (error) {
+      if (isNodeError(error, "EEXIST")) return false;
+      throw error;
+    }
+
+    try {
+      fs.writeFileSync(
+        descriptor,
+        `${JSON.stringify({
+          version: 2,
+          lockId: handle.lockId,
+          pid: process.pid,
+          processIdentity: this.processIdentity,
+        })}\n`,
+        "utf8"
+      );
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+
+    try {
+      fs.linkSync(temporaryPath, handle.lockPath);
+      return true;
+    } catch (error) {
+      if (isNodeError(error, "EEXIST")) return false;
+      throw error;
+    } finally {
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        // A private initialization file is harmless if cleanup is denied.
+      }
     }
   }
 
@@ -283,10 +321,10 @@ type IndexLockOwner = Readonly<{
 
 function readIndexLockOwner(lockPath: string): IndexLockOwner | null {
   try {
-    const value = JSON.parse(fs.readFileSync(path.join(lockPath, INDEX_LOCK_OWNER_FILE), "utf8")) as Record<
-      string,
-      unknown
-    >;
+    const ownerPath = fs.statSync(lockPath).isDirectory()
+      ? path.join(lockPath, INDEX_LOCK_OWNER_FILE)
+      : lockPath;
+    const value = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as Record<string, unknown>;
     const version = value.version === 1 || value.version === 2 ? value.version : null;
     let processIdentity: string | null | undefined;
     if (version === 1 || value.processIdentity === null) {
