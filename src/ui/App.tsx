@@ -11,7 +11,9 @@ import {
   type LlmStreamProgress,
   type MessageMeta,
   type SessionEntry,
+  SessionBusyError,
   SessionManager,
+  SessionRestoreError,
   type SessionMessage,
   type SkillInfo,
   type UndoTarget,
@@ -139,6 +141,7 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         }
       },
       onSessionEntryUpdated: (entry) => {
+        if (sessionManagerRef.current?.getActiveSessionId() !== entry.id) return;
         setRunningProcesses(entry.processes);
         setActiveEntry(entry);
         setErrorLine((current) => reconcileChatError(current, entry));
@@ -349,6 +352,13 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
         refreshSessionsList();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof SessionBusyError) {
+          const sessionId = sessionManager.getActiveSessionId();
+          if (sessionId) {
+            setMessages(loadVisibleMessages(sessionManager, sessionId));
+            setActiveEntry(sessionManager.getSession(sessionId));
+          }
+        }
         setErrorLine(message);
       } finally {
         setBusy(false);
@@ -389,43 +399,49 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
   const handleModelConfigChange = useCallback(
     (selection: ModelConfigSelection): string => {
-      const current = resolveCurrentSettings(projectRoot);
-      const { changed } = writeModelConfigSelection(selection, current, projectRoot);
-      const next = resolveCurrentSettings(projectRoot);
-      setResolvedSettings(next);
-
-      if (!changed) {
-        return "Model settings unchanged";
-      }
-
       const activeSessionId = sessionManager.getActiveSessionId();
-      const meta: MessageMeta = {
-        isModelChange: true,
-      };
-      const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
+      const applySelection = (): string => {
+        const current = resolveCurrentSettings(projectRoot);
+        const { changed } = writeModelConfigSelection(selection, current, projectRoot);
+        const next = resolveCurrentSettings(projectRoot);
+        setResolvedSettings(next);
 
-      if (activeSessionId) {
-        sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
-        redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
-      } else {
-        const now = new Date().toISOString();
-        const message: SessionMessage = {
-          id: crypto.randomUUID(),
-          sessionId: "local",
-          role: "system",
-          content,
-          contentParams: null,
-          messageParams: null,
-          compacted: false,
-          visible: true,
-          createTime: now,
-          updateTime: now,
-          meta,
+        if (!changed) {
+          return "Model settings unchanged";
+        }
+
+        const meta: MessageMeta = {
+          isModelChange: true,
         };
-        redrawStaticChat([...messagesRef.current, message]);
-      }
+        const content = `/model\n└ Set ${selection.provider ?? next.provider}/${selection.model} (${selection?.thinkingEnabled ? selection?.reasoningEffort : "no thinking"})`;
 
-      return `Model settings updated: ${formatModelConfig(current)} → ${formatModelConfig(next)}`;
+        if (activeSessionId) {
+          sessionManager.addSessionSystemMessage(activeSessionId, content, true, meta);
+          redrawStaticChat(loadVisibleMessages(sessionManager, activeSessionId));
+        } else {
+          const now = new Date().toISOString();
+          const message: SessionMessage = {
+            id: crypto.randomUUID(),
+            sessionId: "local",
+            role: "system",
+            content,
+            contentParams: null,
+            messageParams: null,
+            compacted: false,
+            visible: true,
+            createTime: now,
+            updateTime: now,
+            meta,
+          };
+          redrawStaticChat([...messagesRef.current, message]);
+        }
+
+        return `Model settings updated: ${formatModelConfig(current)} → ${formatModelConfig(next)}`;
+      };
+
+      return activeSessionId
+        ? sessionManager.withSessionExecutionLeaseSync(activeSessionId, applySelection)
+        : applySelection();
     },
     [projectRoot, redrawStaticChat, sessionManager]
   );
@@ -584,21 +600,29 @@ export function App({ projectRoot, initialPrompt, onRestart }: AppProps): React.
 
       const errors: string[] = [];
       let codeRestored = false;
+      let conversationRestored = false;
       if (restoreMode === "code-and-conversation") {
         try {
-          sessionManager.restoreSessionCode(sessionId, target.message.id);
+          sessionManager.restoreSessionCodeAndConversation(sessionId, target.message.id);
           codeRestored = true;
+          conversationRestored = true;
         } catch (error) {
-          errors.push(`Code restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          if (error instanceof SessionRestoreError) {
+            codeRestored = error.codeRestored;
+            conversationRestored = error.conversationRestored;
+          }
+          errors.push(
+            `Code and conversation restore failed: ${error instanceof Error ? error.message : String(error)}`
+          );
         }
-      }
-
-      let conversationRestored = false;
-      try {
-        sessionManager.restoreSessionConversation(sessionId, target.message.id);
-        conversationRestored = true;
-      } catch (error) {
-        errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+      } else {
+        try {
+          sessionManager.restoreSessionConversation(sessionId, target.message.id);
+          conversationRestored = true;
+        } catch (error) {
+          if (error instanceof SessionRestoreError) conversationRestored = error.conversationRestored;
+          errors.push(`Conversation restore failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
       if (shouldDiscardPromptQueueAfterUndoRestore(codeRestored, conversationRestored)) {

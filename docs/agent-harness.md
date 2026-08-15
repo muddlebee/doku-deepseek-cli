@@ -308,6 +308,10 @@ Build follow-ups and unpauses, allowing the next planning prompt to run without 
 Opening `/resume` or `/undo` is non-destructive: queued prompts are discarded only after another session is selected
 or an undo restore changes durable state.
 
+The prompt queue belongs to the running Ink process and is intentionally not persisted. If doku exits unexpectedly,
+follow-ups that had not started are discarded. After restart, the user must send a fresh instruction to recover the
+durable active turn. This avoids running stale instructions that were never acknowledged after a process boundary.
+
 ## Auxiliary model calls
 
 Some tool features need a short model call outside the main coding turn. Edit uses one to repair escaping-only
@@ -424,6 +428,33 @@ generations without implementing either provider protocol itself.
 If the configured outer limit is reached, the complete run history remains in `FileAgentSession`, the session becomes
 `needs_continuation`, and the UI asks for another message. That message starts another bounded loop with the prior
 function calls and results intact.
+
+### Crash-safe recovery
+
+Each user-level session operation holds an exclusive file lease for the full operation. A second doku process can
+browse session metadata, but it cannot submit to, change the mode of, approve, or restore a session while another live
+process owns that session. The lease is released after a normal result or handled interruption. A lease whose owner is
+confirmed dead is reclaimed on the next session listing or activation; an owner whose liveness cannot be determined is
+treated as live. The record includes the operating-system process start identity, so a reused PID is not mistaken for
+the original owner. Session retention also skips live-leased sessions instead of deleting their active history.
+
+When a lease is reclaimed from a `pending` or `processing` turn, doku reconciles the application transcript and the
+canonical `FileAgentSession` before accepting another prompt:
+
+- Persisted tool results are copied to whichever history is missing them.
+- A tool call with no durable result is recorded as incomplete in both histories and is never replayed automatically.
+- A validated serialized `AskUserQuestion` run state returns to `waiting_for_user` so the structured answer flow
+  survives. Invalid or SDK-incompatible state falls back to natural recovery rather than failing the answer turn.
+- Missing or invalid approval state falls back to `needs_recovery`.
+- A single system notice records the recovery and warns that processes recorded by the previous doku instance were not
+  terminated by the recovering process.
+
+The next ordinary message in `needs_recovery` starts a new user-level turn with the repaired canonical history. It is
+persisted once and becomes the instruction that tells the model how to inspect or continue the interrupted work.
+
+Session metadata lives in a shared index, so index read-modify-write operations use a separate short-lived lock. This
+prevents two processes working on different sessions from overwriting each other's metadata while preserving the
+per-session execution boundary.
 
 ## Session history
 

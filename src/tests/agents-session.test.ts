@@ -32,5 +32,6 @@ test("FileAgentSession separates new records from a malformed unterminated tail"
   await session.addItems([{ role: "user", content: "survives" }]);
 
   assert.deepEqual(await session.getItems(), [{ role: "user", content: "survives" }]);
+  assert.equal(session.readSnapshotSync().skippedRecords, true);
   assert.match(fs.readFileSync(file, "utf8"), /assistant"\n\{"version":2/);
 });

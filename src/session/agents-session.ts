@@ -10,6 +10,11 @@ export type DokuAgentSessionRecord = {
   display?: Record<string, unknown>;
 };
 
+export type AgentSessionSnapshot = Readonly<{
+  items: AgentInputItem[];
+  skippedRecords: boolean;
+}>;
+
 export class FileAgentSession implements Session {
   constructor(
     private readonly sessionId: string,
@@ -21,7 +26,7 @@ export class FileAgentSession implements Session {
   }
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
-    const items = this.readItems();
+    const items = this.getItemsSync();
     return limit == null ? items : items.slice(Math.max(0, items.length - limit));
   }
 
@@ -35,7 +40,7 @@ export class FileAgentSession implements Session {
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
-    const items = this.readItems();
+    const items = this.readItems().items;
     const item = items.pop();
     if (item) this.writeItemsAtomically(items);
     return item;
@@ -46,24 +51,39 @@ export class FileAgentSession implements Session {
   }
 
   async replaceItems(items: AgentInputItem[]): Promise<void> {
+    this.replaceItemsSync(items);
+  }
+
+  getItemsSync(): AgentInputItem[] {
+    return this.readSnapshotSync().items;
+  }
+
+  readSnapshotSync(): AgentSessionSnapshot {
+    return this.readItems();
+  }
+
+  replaceItemsSync(items: AgentInputItem[]): void {
     this.writeItemsAtomically(items);
   }
 
-  private readItems(): AgentInputItem[] {
-    if (!fs.existsSync(this.filePath)) return [];
+  private readItems(): AgentSessionSnapshot {
+    if (!fs.existsSync(this.filePath)) return { items: [], skippedRecords: false };
     const items: AgentInputItem[] = [];
+    let skippedRecords = false;
     for (const line of fs.readFileSync(this.filePath, "utf8").split(/\r?\n/)) {
       if (!line.trim()) continue;
       try {
         const record = JSON.parse(line) as Record<string, unknown>;
         if (record.version === 2 && record.item && typeof record.item === "object") {
           items.push(record.item as AgentInputItem);
+        } else {
+          skippedRecords = true;
         }
       } catch {
-        // A malformed tail must not make older session items unavailable.
+        skippedRecords = true;
       }
     }
-    return items;
+    return { items, skippedRecords };
   }
 
   private writeItemsAtomically(items: AgentInputItem[]): void {

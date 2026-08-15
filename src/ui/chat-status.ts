@@ -35,6 +35,9 @@ export function buildChatStatus(input: ChatStatusInput): ChatStatus {
   if (input.entry?.status === "needs_continuation") {
     return { kind: "stopped", text: "Turn limit reached · Send a message to continue" };
   }
+  if (input.entry?.status === "needs_recovery") {
+    return { kind: "stopped", text: "Previous turn ended unexpectedly · Send instructions to continue" };
+  }
   if (input.entry?.status === "completed") {
     const tokenText =
       input.entry.activeTokens > 0 ? ` · ${input.entry.activeTokens.toLocaleString()} context tokens` : "";

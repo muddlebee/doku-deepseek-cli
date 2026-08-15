@@ -27,6 +27,8 @@ Use the full checklist for major terminal workflows, release readiness, or provi
 | Tool execution | Ask doku to inspect `package.json` without changing it | Active tool status appears, the result is summarized once, and the final answer follows |
 | Cancellation | Start a longer task and press Escape | The UI confirms the stopped turn and asks for instructions; no fake interruption message enters the transcript |
 | Natural recovery | Send an ordinary instruction after cancellation | The fresh instruction continues the same session before older queued follow-ups, and is stored once as user text |
+| Crash recovery | Start a tool-using turn, terminate doku from another terminal, restart, select the session, and send an inspection-first instruction | The session asks for recovery instructions, unresolved tools are shown as incomplete and are not replayed, and the new instruction continues with prior history |
+| Concurrent session owner | While one doku process is running a turn, open the same session in another process and submit a prompt | The second process reports that the session is busy and does not persist or execute its prompt |
 | AskUserQuestion | Request a task that needs a choice, then answer it | The session pauses, accepts the answer, and resumes with the answer stored as the tool result |
 | AskUserQuestion decline | Trigger a question and press Escape | Escape clearly declines; the agent continues with available context or asks again only when required |
 | Model switch | Run `/model`, traverse Provider → Model → Reasoning, and use Back at each step | Only supported reasoning levels appear and the welcome/header model changes immediately |
@@ -39,6 +41,8 @@ Use the full checklist for major terminal workflows, release readiness, or provi
 - Set an invalid `DOKU_BASE_URL`: setup must name the invalid override before chat.
 - Use an invalid provider credential: the chat status must show one concise provider failure rather than styling it as an assistant answer.
 - Open `/resume`, `/undo`, and `/mcp` with no entries: each view must show an actionable empty state and an Escape hint.
+- Queue a follow-up behind a running turn, terminate doku, and restart: the queued follow-up must not run after restart.
+- Terminate doku while `AskUserQuestion` is visible, then restart: the same structured question must accept an answer.
 
 ## Automated gates
 

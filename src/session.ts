@@ -20,6 +20,9 @@ import { SessionMessageFactory } from "./session/message-factory";
 import { notifyTaskCompletion, reportNewPrompt } from "./session/notifications";
 import { formatProcessStopFailure, hasProcessStopFailure, SessionProcessTracker } from "./session/process-tracker";
 import { SessionToolCoordinator } from "./session/tool-coordinator";
+import { SessionBusyError, SessionExecutionLeaseStore } from "./session/session-execution-lease";
+import { reconcileOrphanedSession } from "./session/orphaned-session-recovery";
+import { SessionRestoreError } from "./session/restore-error";
 import { initializeSession } from "./session/session-initializer";
 import { compactAgentSession } from "./session/compactor";
 import { isUndoTargetMessage, SessionCheckpointManager } from "./session/checkpoint-manager";
@@ -71,6 +74,8 @@ export type {
   UserPromptContent,
 } from "./session/types";
 export { isProcessStopFailureMessage } from "./session/process-tracker";
+export { SessionBusyError } from "./session/session-execution-lease";
+export { SessionRestoreError } from "./session/restore-error";
 
 const DEFAULT_COMPACT_PROMPT_TOKEN_THRESHOLD = 128 * 1024;
 // Both deepseek-v4-flash and deepseek-v4-pro have a 1M token context window.
@@ -147,6 +152,7 @@ export class SessionManager {
   private readonly processTracker: SessionProcessTracker;
   private readonly checkpoints: SessionCheckpointManager;
   private readonly toolCoordinator: SessionToolCoordinator;
+  private readonly executionLeases: SessionExecutionLeaseStore;
 
   constructor(options: SessionManagerOptions) {
     this.projectRoot = options.projectRoot;
@@ -154,6 +160,7 @@ export class SessionManager {
     this.getResolvedSettings = options.getResolvedSettings;
     this.onAssistantMessage = options.onAssistantMessage;
     this.sessionStore = new FileSessionStore(this.projectRoot, options.onSessionEntryUpdated);
+    this.executionLeases = new SessionExecutionLeaseStore(this.sessionStore.projectDir);
     this.skillCatalog = new SkillCatalog(this.projectRoot, getExtensionRoot(), (sessionId) =>
       this.listSessionMessages(sessionId)
     );
@@ -283,13 +290,34 @@ export class SessionManager {
   }
 
   setWorkflowMode(sessionId: string, mode: WorkflowMode): SessionEntry {
-    const now = new Date().toISOString();
-    const updated = this.updateSessionEntry(sessionId, (entry) => changeWorkflowEntryMode(entry, mode, now));
-    if (!updated) throw new Error("No active session was found.");
-    return updated;
+    return this.withSessionExecutionLeaseSync(sessionId, () => {
+      const now = new Date().toISOString();
+      const updated = this.updateSessionEntry(sessionId, (entry) => changeWorkflowEntryMode(entry, mode, now));
+      if (!updated) throw new Error("No active session was found.");
+      return updated;
+    });
   }
 
   addSessionSystemMessage(sessionId: string, content: string, visible?: boolean, meta?: MessageMeta): void {
+    if (!sessionId) {
+      this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta);
+      return;
+    }
+    if (!this.executionLeases.isHeld(sessionId)) {
+      this.withSessionExecutionLeaseSync(sessionId, () =>
+        this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta)
+      );
+      return;
+    }
+    this.addSessionSystemMessageWithOwnedLease(sessionId, content, visible, meta);
+  }
+
+  private addSessionSystemMessageWithOwnedLease(
+    sessionId: string,
+    content: string,
+    visible?: boolean,
+    meta?: MessageMeta
+  ): void {
     const message = this.buildSystemMessage(sessionId, content, null, visible, meta);
     if (sessionId) this.appendSessionMessage(sessionId, message);
     this.onAssistantMessage(message, false);
@@ -317,65 +345,107 @@ export class SessionManager {
   }
 
   async createSession(userPrompt: UserPromptContent, controller?: AbortController): Promise<string> {
-    this.reportNewPrompt();
-    const signal = controller?.signal;
-    this.throwIfAborted(signal);
-
     const sessionId = crypto.randomUUID();
-    this.checkpoints.ensureSession(sessionId);
-    const promptOptions = this.getPromptToolOptions();
-    initializeSession({
-      sessionId,
-      userPrompt,
-      projectRoot: this.projectRoot,
-      model: promptOptions.model,
-      webSearchProvider: this.resolveActiveWebSearchProvider(),
-      store: this.sessionStore,
-      messages: this.messageFactory,
-      removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
+    return this.withSessionExecutionLease(sessionId, async () => {
+      const signal = controller?.signal;
+      try {
+        this.reportNewPrompt();
+        this.throwIfAborted(signal);
+
+        this.checkpoints.ensureSession(sessionId);
+        const promptOptions = this.getPromptToolOptions();
+        initializeSession({
+          sessionId,
+          userPrompt,
+          projectRoot: this.projectRoot,
+          model: promptOptions.model,
+          webSearchProvider: this.resolveActiveWebSearchProvider(),
+          store: this.sessionStore,
+          messages: this.messageFactory,
+          reserveSessionRemoval: (candidateId) => this.reserveSessionRemoval(candidateId),
+          removeSessions: (sessionIds) => this.removeSessionMessages(sessionIds),
+        });
+        const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+        if (workflow) this.stampLatestMessageWorkflow(sessionId, workflow);
+        const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
+
+        await this.appendSkills(sessionId, preparedPrompt, signal, false);
+
+        this.activeSessionId = sessionId;
+        await this.activateSession(sessionId, controller);
+        return sessionId;
+      } catch (error) {
+        this.markPreActivationFailure(sessionId, error, signal);
+        throw error;
+      }
     });
-    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
-    if (workflow) this.stampLatestMessageWorkflow(sessionId, workflow);
-    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
-
-    await this.appendSkills(sessionId, preparedPrompt, signal, false);
-
-    this.activeSessionId = sessionId;
-    await this.activateSession(sessionId, controller);
-    return sessionId;
   }
 
   async replySession(sessionId: string, userPrompt: UserPromptContent, controller?: AbortController): Promise<void> {
-    const signal = controller?.signal;
-    this.throwIfAborted(signal);
-    const now = new Date().toISOString();
-    const updated = this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      status: "pending",
-      failReason: null,
-      updateTime: now,
-    }));
-
-    if (!updated) {
+    if (!this.sessionStore.getSession(sessionId)) {
       await this.createSession(userPrompt, controller);
       return;
     }
+    await this.withSessionExecutionLease(sessionId, async () => {
+      if (!this.sessionStore.getSession(sessionId)) {
+        await this.createSession(userPrompt, controller);
+        return;
+      }
 
-    this.reportNewPrompt();
+      const signal = controller?.signal;
+      try {
+        this.throwIfAborted(signal);
+        const now = new Date().toISOString();
+        this.updateSessionEntry(sessionId, (entry) => ({
+          ...entry,
+          status: "pending",
+          failReason: null,
+          updateTime: now,
+        }));
 
-    this.checkpoints.ensureSession(sessionId);
-    const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
-    const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
-    const userMessage = this.buildUserMessage(sessionId, preparedPrompt, workflow ?? undefined);
-    this.appendSessionMessage(sessionId, userMessage);
+        this.reportNewPrompt();
 
-    await this.appendSkills(sessionId, preparedPrompt, signal, true);
+        this.checkpoints.ensureSession(sessionId);
+        const workflow = this.prepareWorkflowForPrompt(sessionId, userPrompt);
+        const preparedPrompt = workflow ? { ...userPrompt, workflowMode: workflow.mode } : userPrompt;
+        const userMessage = this.buildUserMessage(sessionId, preparedPrompt, workflow ?? undefined);
+        this.appendSessionMessage(sessionId, userMessage);
 
-    this.activeSessionId = sessionId;
-    await this.activateSession(sessionId, controller);
+        await this.appendSkills(sessionId, preparedPrompt, signal, true);
+
+        this.activeSessionId = sessionId;
+        await this.activateSession(sessionId, controller);
+      } catch (error) {
+        this.markPreActivationFailure(sessionId, error, signal);
+        throw error;
+      }
+    });
+  }
+
+  private markPreActivationFailure(sessionId: string, error: unknown, signal?: AbortSignal): void {
+    const aborted = Boolean(signal?.aborted || this.isAbortLikeError(error));
+    const failReason = aborted ? "interrupted" : error instanceof Error ? error.message : String(error);
+    this.updateSessionEntry(sessionId, (entry) =>
+      entry.status === "pending"
+        ? {
+            ...entry,
+            status: aborted ? "interrupted" : "failed",
+            failReason,
+            updateTime: new Date().toISOString(),
+          }
+        : entry
+    );
   }
 
   async activateSession(sessionId: string, controller?: AbortController): Promise<void> {
+    if (this.executionLeases.isHeld(sessionId)) {
+      await this.activateSessionWithOwnedLease(sessionId, controller);
+      return;
+    }
+    await this.withSessionExecutionLease(sessionId, () => this.activateSessionWithOwnedLease(sessionId, controller));
+  }
+
+  private async activateSessionWithOwnedLease(sessionId: string, controller?: AbortController): Promise<void> {
     const startedAt = Date.now();
     const clientConfig = this.createOpenAIClient();
     const {
@@ -534,36 +604,43 @@ export class SessionManager {
     const controller = new AbortController();
     this.activePromptController = controller;
     try {
-      const entry = this.getSession(sessionId);
-      if (!entry) throw new Error("No active session was found.");
-      const now = new Date().toISOString();
-      const workflow = startImplementation(approvePlan(entry.workflow, now), now);
-      const buildSkill = (await this.skillCatalog.list(sessionId)).find(
-        (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
-      );
-      const prompt: UserPromptContent = {
-        text: "/build",
-        skills: buildSkill ? [buildSkill] : undefined,
-        workflowMode: WORKFLOW_MODE.BUILD,
-      };
+      await this.withSessionExecutionLease(sessionId, async () => {
+        try {
+          const entry = this.sessionStore.getSession(sessionId);
+          if (!entry) throw new Error("No active session was found.");
+          const now = new Date().toISOString();
+          const workflow = startImplementation(approvePlan(entry.workflow, now), now);
+          const buildSkill = (await this.skillCatalog.list(sessionId)).find(
+            (skill) => skill.name === BUILTIN_SKILL_NAME.BUILD
+          );
+          const prompt: UserPromptContent = {
+            text: "/build",
+            skills: buildSkill ? [buildSkill] : undefined,
+            workflowMode: WORKFLOW_MODE.BUILD,
+          };
 
-      this.reportNewPrompt();
-      this.checkpoints.ensureSession(sessionId);
-      if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
-        this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
-      }
+          this.reportNewPrompt();
+          this.checkpoints.ensureSession(sessionId);
+          if (!hasBuildHandoff(this.listSessionMessages(sessionId), workflow)) {
+            this.appendSessionMessage(sessionId, this.buildUserMessage(sessionId, prompt, workflow));
+          }
 
-      this.updateSessionEntry(sessionId, (current) => ({
-        ...current,
-        workflow,
-        status: "pending",
-        failReason: null,
-        updateTime: now,
-      }));
-      this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
-      await this.appendSkills(sessionId, prompt, controller.signal, true);
-      this.activeSessionId = sessionId;
-      await this.activateSession(sessionId, controller);
+          this.updateSessionEntry(sessionId, (current) => ({
+            ...current,
+            workflow,
+            status: "pending",
+            failReason: null,
+            updateTime: now,
+          }));
+          this.addSessionSystemMessage(sessionId, "◆ Plan approved · BUILD mode", true);
+          await this.appendSkills(sessionId, prompt, controller.signal, true);
+          this.activeSessionId = sessionId;
+          await this.activateSession(sessionId, controller);
+        } catch (error) {
+          this.markPreActivationFailure(sessionId, error, controller.signal);
+          throw error;
+        }
+      });
     } catch (error) {
       if (!this.isAbortLikeError(error) && !controller.signal.aborted) throw error;
     } finally {
@@ -608,37 +685,43 @@ export class SessionManager {
   }
 
   async compactSession(sessionId: string, signal?: AbortSignal): Promise<void> {
-    this.throwIfAborted(signal);
-    const config = this.createOpenAIClient();
-    if (!config.client) return;
-    const resolvedSettings = this.getResolvedSettings();
-    const profile =
-      config.providerProfile ??
-      resolvedSettings.providerProfile ??
-      ({ type: "openai-compatible", baseURL: config.baseURL, apiMode: "chat_completions" } satisfies ProviderProfile);
-    const provider = await this.providerRegistry.resolve({
-      id: config.provider ?? resolvedSettings.provider ?? "custom",
-      profile,
-      model: config.model,
-      apiKey: config.client.apiKey ?? undefined,
-      baseURL: config.baseURL,
-      apiMode: config.apiMode ?? resolvedSettings.apiMode ?? profile.apiMode ?? "chat_completions",
-      thinkingEnabled: config.thinkingEnabled,
-      reasoningEffort: config.reasoningEffort,
-      debugLogEnabled: config.debugLogEnabled,
-      openAIClient: profile.type === "deepseek" ? undefined : config.client,
+    await this.withSessionExecutionLease(sessionId, async () => {
+      this.throwIfAborted(signal);
+      const config = this.createOpenAIClient();
+      if (!config.client) return;
+      const resolvedSettings = this.getResolvedSettings();
+      const profile =
+        config.providerProfile ??
+        resolvedSettings.providerProfile ??
+        ({
+          type: "openai-compatible",
+          baseURL: config.baseURL,
+          apiMode: "chat_completions",
+        } satisfies ProviderProfile);
+      const provider = await this.providerRegistry.resolve({
+        id: config.provider ?? resolvedSettings.provider ?? "custom",
+        profile,
+        model: config.model,
+        apiKey: config.client.apiKey ?? undefined,
+        baseURL: config.baseURL,
+        apiMode: config.apiMode ?? resolvedSettings.apiMode ?? profile.apiMode ?? "chat_completions",
+        thinkingEnabled: config.thinkingEnabled,
+        reasoningEffort: config.reasoningEffort,
+        debugLogEnabled: config.debugLogEnabled,
+        openAIClient: profile.type === "deepseek" ? undefined : config.client,
+      });
+      try {
+        await this.compactSessionWithProvider(
+          sessionId,
+          provider,
+          config.model,
+          config.tracingEnabled ?? resolvedSettings.tracingEnabled ?? false,
+          signal
+        );
+      } finally {
+        await provider.close().catch(() => {});
+      }
     });
-    try {
-      await this.compactSessionWithProvider(
-        sessionId,
-        provider,
-        config.model,
-        config.tracingEnabled ?? resolvedSettings.tracingEnabled ?? false,
-        signal
-      );
-    } finally {
-      await provider.close().catch(() => {});
-    }
   }
 
   private async compactSessionWithProvider(
@@ -688,12 +771,20 @@ export class SessionManager {
     }
 
     const sessionId = this.activeSessionId;
-    if (sessionId) {
+    if (sessionId && (this.sessionControllers.has(sessionId) || this.executionLeases.isHeld(sessionId))) {
       this.interruptSession(sessionId);
     }
   }
 
   interruptSession(sessionId: string): void {
+    if (this.executionLeases.isHeld(sessionId)) {
+      this.interruptSessionWithOwnedLease(sessionId);
+      return;
+    }
+    this.withSessionExecutionLeaseSync(sessionId, () => this.interruptSessionWithOwnedLease(sessionId));
+  }
+
+  private interruptSessionWithOwnedLease(sessionId: string): void {
     const { killedPids, failedPids } = this.processTracker.killAll(sessionId);
 
     const controller = this.sessionControllers.get(sessionId);
@@ -727,6 +818,75 @@ export class SessionManager {
     return !this.sessionControllers.has(sessionId);
   }
 
+  private async withSessionExecutionLease<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const handle = this.executionLeases.acquire(sessionId);
+    try {
+      this.reconcileOwnedSession(sessionId);
+      return await operation();
+    } finally {
+      this.executionLeases.release(handle);
+    }
+  }
+
+  withSessionExecutionLeaseSync<T>(sessionId: string, operation: () => T): T {
+    const handle = this.executionLeases.acquire(sessionId);
+    try {
+      this.reconcileOwnedSession(sessionId);
+      return operation();
+    } finally {
+      this.executionLeases.release(handle);
+    }
+  }
+
+  private reconcileOwnedSession(sessionId: string): SessionEntry | null {
+    const recovery = reconcileOrphanedSession(
+      sessionId,
+      this.sessionStore.projectDir,
+      this.sessionStore,
+      this.messageFactory,
+      (message) => this.renderAgentMessageContent(message)
+    );
+    if (this.activeSessionId === sessionId) {
+      recovery.appendedMessages
+        .filter((message) => message.visible)
+        .forEach((message) => this.onAssistantMessage(message, false));
+    }
+    return recovery.entry;
+  }
+
+  private reconcileSessionIfAvailable(sessionId: string): SessionEntry | null {
+    const entry = this.sessionStore.getSession(sessionId);
+    const inspection = this.executionLeases.inspect(sessionId);
+    if (inspection.state === "live" || inspection.state === "owned" || inspection.state === "initializing") {
+      return entry;
+    }
+    const recoverableWithoutLease =
+      inspection.state === "missing" && entry && (entry.status === "pending" || entry.status === "processing");
+    if (inspection.state === "missing" && !recoverableWithoutLease) return entry;
+
+    try {
+      const handle = this.executionLeases.acquire(sessionId);
+      try {
+        return this.reconcileOwnedSession(sessionId);
+      } finally {
+        this.executionLeases.release(handle);
+      }
+    } catch (error) {
+      if (error instanceof SessionBusyError) return this.sessionStore.getSession(sessionId);
+      throw error;
+    }
+  }
+
+  private reserveSessionRemoval(sessionId: string): (() => void) | null {
+    try {
+      const handle = this.executionLeases.acquire(sessionId);
+      return () => this.executionLeases.release(handle);
+    } catch (error) {
+      if (error instanceof SessionBusyError) return null;
+      throw error;
+    }
+  }
+
   private emitRuntimeError(sessionId: string, content: string): void {
     this.onAssistantMessage(this.buildSystemMessage(sessionId, content, null, true, { notice: "error" }), false);
   }
@@ -736,6 +896,13 @@ export class SessionManager {
   }
 
   listSessions(): SessionEntry[] {
+    const entries = this.sessionStore.listSessions();
+    const sessionIds = new Set(entries.map((entry) => entry.id));
+    entries.forEach((entry) => this.reconcileSessionIfAvailable(entry.id));
+    this.executionLeases
+      .listSessionIds()
+      .filter((sessionId) => !sessionIds.has(sessionId))
+      .forEach((sessionId) => this.reconcileSessionIfAvailable(sessionId));
     return this.sessionStore.listSessions();
   }
 
@@ -761,6 +928,31 @@ export class SessionManager {
   }
 
   restoreSessionConversation(sessionId: string, messageId: string): SessionMessage[] {
+    return this.withSessionExecutionLeaseSync(sessionId, () =>
+      this.restoreSessionConversationWithOwnedLease(sessionId, messageId)
+    );
+  }
+
+  restoreSessionCode(sessionId: string, messageId: string): void {
+    this.withSessionExecutionLeaseSync(sessionId, () => {
+      this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
+    });
+  }
+
+  restoreSessionCodeAndConversation(sessionId: string, messageId: string): SessionMessage[] {
+    return this.withSessionExecutionLeaseSync(sessionId, () => {
+      let codeRestored = false;
+      try {
+        this.restoreSessionCodeWithOwnedLease(sessionId, messageId);
+        codeRestored = true;
+        return this.restoreSessionConversationWithOwnedLease(sessionId, messageId);
+      } catch (error) {
+        throw mergeSessionRestoreError(error, codeRestored);
+      }
+    });
+  }
+
+  private restoreSessionConversationWithOwnedLease(sessionId: string, messageId: string): SessionMessage[] {
     const messages = this.listSessionMessages(sessionId);
     const targetIndex = messages.findIndex((message) => message.id === messageId);
     if (targetIndex === -1) {
@@ -768,33 +960,40 @@ export class SessionManager {
     }
 
     const keptMessages = messages.slice(0, targetIndex);
-    this.saveSessionMessages(sessionId, keptMessages);
-    this.removeAgentRuntimeState(sessionId);
-    const now = new Date().toISOString();
-    const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
-    const latestAssistantParams = latestAssistant?.messageParams as
-      | { tool_calls?: unknown[]; reasoning_content?: string }
-      | null
-      | undefined;
-    const workflow = restoreWorkflowFromMessages(keptMessages);
+    let conversationRestored = false;
+    try {
+      this.saveSessionMessages(sessionId, keptMessages);
+      conversationRestored = true;
+      this.removeAgentRuntimeState(sessionId);
+      const now = new Date().toISOString();
+      const latestAssistant = [...keptMessages].reverse().find((message) => message.role === "assistant");
+      const latestAssistantParams = latestAssistant?.messageParams as
+        | { tool_calls?: unknown[]; reasoning_content?: string }
+        | null
+        | undefined;
+      const workflow = restoreWorkflowFromMessages(keptMessages);
 
-    this.updateSessionEntry(sessionId, (entry) => ({
-      ...entry,
-      workflow,
-      assistantReply: latestAssistant?.content ?? null,
-      assistantThinking:
-        typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
-      assistantRefusal: null,
-      toolCalls: null,
-      status: "completed",
-      failReason: null,
-      processes: null,
-      updateTime: now,
-    }));
-    return keptMessages;
+      this.updateSessionEntry(sessionId, (entry) => ({
+        ...entry,
+        workflow,
+        assistantReply: latestAssistant?.content ?? null,
+        assistantThinking:
+          typeof latestAssistantParams?.reasoning_content === "string" ? latestAssistantParams.reasoning_content : null,
+        assistantRefusal: null,
+        toolCalls: null,
+        status: "completed",
+        failReason: null,
+        processes: null,
+        updateTime: now,
+      }));
+      return keptMessages;
+    } catch (error) {
+      if (error instanceof SessionRestoreError) throw error;
+      throw new SessionRestoreError(errorMessage(error), false, conversationRestored, { cause: error });
+    }
   }
 
-  restoreSessionCode(sessionId: string, messageId: string): void {
+  private restoreSessionCodeWithOwnedLease(sessionId: string, messageId: string): void {
     const message = this.listSessionMessages(sessionId).find((item) => item.id === messageId);
     if (!message) {
       throw new Error("Selected message was not found in this session.");
@@ -913,4 +1112,17 @@ export class SessionManager {
       messages: this.listSessionMessages(sessionId),
     });
   }
+}
+
+function mergeSessionRestoreError(error: unknown, codeRestored: boolean): SessionRestoreError {
+  if (error instanceof SessionRestoreError) {
+    return new SessionRestoreError(error.message, codeRestored || error.codeRestored, error.conversationRestored, {
+      cause: error,
+    });
+  }
+  return new SessionRestoreError(errorMessage(error), codeRestored, false, { cause: error });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

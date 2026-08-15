@@ -74,6 +74,19 @@ test("chat status confirms interruption and requests recovery instructions", () 
   assert.deepEqual(result, { kind: "stopped", text: "Turn stopped · Send instructions to continue" });
 });
 
+test("chat status identifies a turn orphaned by a previous process", () => {
+  const status = buildChatStatus({
+    error: null,
+    waitingForUser: false,
+    busy: false,
+    loadingText: null,
+    entry: entry({ status: "needs_recovery" }),
+  });
+  assert.equal(status.kind, "stopped");
+  assert.match(status.text, /ended unexpectedly/);
+  assert.match(status.text, /Send instructions to continue/);
+});
+
 test("chat status reports completion context without transcript messages", () => {
   const result = buildChatStatus({
     error: null,

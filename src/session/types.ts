@@ -4,6 +4,7 @@ export const SESSION_STATUS = {
   PROCESSING: "processing",
   WAITING_FOR_USER: "waiting_for_user",
   NEEDS_CONTINUATION: "needs_continuation",
+  NEEDS_RECOVERY: "needs_recovery",
   COMPLETED: "completed",
   INTERRUPTED: "interrupted",
 } as const;
@@ -110,6 +111,7 @@ export type MessageMeta = {
   skill?: SkillInfo;
   pendingApproval?: boolean;
   notice?: "error";
+  recoveryId?: string;
   workflowSnapshot?: SessionWorkflow;
 };
 

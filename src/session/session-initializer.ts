@@ -14,30 +14,90 @@ export type SessionInitializerOptions = {
   webSearchProvider?: string;
   store: FileSessionStore;
   messages: SessionMessageFactory;
+  reserveSessionRemoval: (sessionId: string) => (() => void) | null;
   removeSessions: (sessionIds: string[]) => void;
 };
 
 export function initializeSession(options: SessionInitializerOptions): void {
   const { sessionId, userPrompt, store, messages } = options;
   const now = new Date().toISOString();
-  const index = store.loadIndex();
-  index.entries.push(buildEntry(sessionId, userPrompt, now));
-  index.entries.sort((a, b) => compareUpdateTime(a, b));
-  const dropped = index.entries.splice(MAX_SESSION_ENTRIES);
-  store.saveIndex(index);
-  options.removeSessions(dropped.map((entry) => entry.id));
-
   const promptOptions = { model: options.model, webSearchEnabled: true };
-  store.appendMessage(sessionId, messages.system(sessionId, getSystemPrompt(options.projectRoot, promptOptions)));
+  const initialMessages = [messages.system(sessionId, getSystemPrompt(options.projectRoot, promptOptions))];
   const defaultSkills = getDefaultSkillPrompt();
-  if (defaultSkills) store.appendMessage(sessionId, messages.system(sessionId, defaultSkills));
-  store.appendMessage(
-    sessionId,
+  if (defaultSkills) initialMessages.push(messages.system(sessionId, defaultSkills));
+  initialMessages.push(
     messages.system(sessionId, getRuntimeContext(options.projectRoot, options.model, options.webSearchProvider))
   );
   const instructions = messages.loadAgentInstructions();
-  if (instructions) store.appendMessage(sessionId, messages.system(sessionId, instructions));
-  store.appendMessage(sessionId, messages.user(sessionId, userPrompt));
+  if (instructions) initialMessages.push(messages.system(sessionId, instructions));
+  initialMessages.push(messages.user(sessionId, userPrompt));
+  const entry = buildEntry(sessionId, userPrompt, now);
+  store.prepareSessionCreation(entry);
+
+  const removalReservations: Array<() => void> = [];
+  let entryPublished = false;
+  try {
+    store.saveMessages(sessionId, initialMessages);
+    const dropped = store.updateIndex((index) => {
+      index.entries.push(entry);
+      index.entries.sort((a, b) => compareUpdateTime(a, b));
+      const removable: SessionEntry[] = [];
+      while (index.entries.length > MAX_SESSION_ENTRIES) {
+        const reservation = reserveOldestRemovableSession(index.entries, options.reserveSessionRemoval);
+        if (!reservation) break;
+        removalReservations.push(reservation.release);
+        const [candidate] = index.entries.splice(reservation.index, 1);
+        if (candidate) removable.push(candidate);
+      }
+      return removable;
+    });
+    entryPublished = true;
+    try {
+      store.completeSessionCreation(sessionId);
+    } catch {
+      // The indexed session is authoritative; stale-marker recovery will remove the redundant marker.
+    }
+    options.removeSessions(dropped.map((entry) => entry.id));
+  } catch (error) {
+    if (!entryPublished) {
+      try {
+        entryPublished = store.hasSessionEntry(sessionId);
+      } catch (verificationError) {
+        throw new AggregateError(
+          [error, verificationError],
+          "Session creation failed and its publication state could not be verified."
+        );
+      }
+    }
+    if (!entryPublished) {
+      try {
+        options.removeSessions([sessionId]);
+        store.completeSessionCreation(sessionId);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Session creation failed and its durable state needs recovery."
+        );
+      }
+    }
+    throw error;
+  } finally {
+    removalReservations.forEach((release) => release());
+  }
+}
+
+function reserveOldestRemovableSession(
+  entries: SessionEntry[],
+  reserveRemoval: (sessionId: string) => (() => void) | null
+): { index: number; release: () => void } | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const release = reserveRemoval(entry.id);
+    if (!release) continue;
+    return { index, release };
+  }
+  return null;
 }
 
 function buildEntry(sessionId: string, prompt: UserPromptContent, now: string): SessionEntry {

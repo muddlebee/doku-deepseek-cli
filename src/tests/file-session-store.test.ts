@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
 import { FileSessionStore } from "../session/file-session-store";
-import type { SessionMessage } from "../session/types";
+import { getProcessIdentity } from "../session/session-execution-lease";
+import type { SessionEntry, SessionMessage } from "../session/types";
 
 test("FileSessionStore separates new messages from a malformed unterminated tail", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-tail-"));
@@ -39,3 +42,294 @@ test("FileSessionStore separates new messages from a malformed unterminated tail
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("FileSessionStore recovers a completed session creation abandoned before index publication", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-creation-recovery-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    const entry = buildEntry("session-1");
+    store.prepareSessionCreation(entry);
+    store.saveMessages("session-1", [buildMessage("session-1")]);
+    const markerPath = path.join(store.projectDir, "session-1.creating.json");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(markerPath, `${JSON.stringify({ ...marker, pid: 999_999_999, processIdentity: null })}\n`);
+
+    assert.deepEqual(
+      store.listSessions().map((session) => session.id),
+      ["session-1"]
+    );
+    assert.equal(fs.existsSync(markerPath), false);
+    assert.equal(store.listMessages("session-1")[0]?.content, "initial prompt");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("FileSessionStore serializes cross-process index updates for different sessions", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-concurrency-"));
+  const projectRoot = path.join(home, "project");
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(projectRoot);
+    store.updateIndex((index) => {
+      index.entries = [buildEntry("session-1"), buildEntry("session-2")];
+    });
+    const staleLockPath = `${store.sessionsIndexPath}.lock`;
+    fs.writeFileSync(
+      staleLockPath,
+      `${JSON.stringify({
+        version: 2,
+        lockId: "stale-owner",
+        pid: 999_999_999,
+        processIdentity: null,
+      })}\n`,
+      "utf8"
+    );
+    const staleTime = new Date(Date.now() - 5_000);
+    fs.utimesSync(staleLockPath, staleTime, staleTime);
+
+    const storeModule = pathToFileURL(path.resolve("src/session/file-session-store.ts")).href;
+    const script = `
+      import { FileSessionStore } from ${JSON.stringify(storeModule)};
+      const store = new FileSessionStore(process.env.DOKU_TEST_PROJECT);
+      const sessionId = process.env.DOKU_TEST_SESSION;
+      for (let index = 0; index < 40; index += 1) {
+        store.updateEntry(sessionId, (entry) => ({ ...entry, activeTokens: entry.activeTokens + 1 }));
+      }
+    `;
+    await Promise.all([
+      runStoreUpdater(script, { HOME: home, DOKU_TEST_PROJECT: projectRoot, DOKU_TEST_SESSION: "session-1" }),
+      runStoreUpdater(script, { HOME: home, DOKU_TEST_PROJECT: projectRoot, DOKU_TEST_SESSION: "session-2" }),
+    ]);
+
+    assert.equal(store.getSession("session-1")?.activeTokens, 40);
+    assert.equal(store.getSession("session-2")?.activeTokens, 40);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("FileSessionStore records process identity and reclaims a lock after PID reuse", () => {
+  const identity = getProcessIdentity(process.pid);
+  if (!identity) return;
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-identity-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    store.updateIndex((index) => {
+      const owner = JSON.parse(fs.readFileSync(`${store.sessionsIndexPath}.lock`, "utf8")) as {
+        version: number;
+        pid: number;
+        processIdentity: string | null;
+      };
+      assert.equal(owner.version, 2);
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.processIdentity, identity);
+      index.entries = [buildEntry("session-1")];
+    });
+
+    const lockPath = `${store.sessionsIndexPath}.lock`;
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        version: 2,
+        lockId: "stale-owner",
+        pid: process.pid,
+        processIdentity: `${identity}:reused`,
+      })}\n`,
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    store.updateIndex((index) => {
+      index.entries.push(buildEntry("session-2"));
+    });
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.deepEqual(
+      store.listSessions().map((entry) => entry.id),
+      ["session-1", "session-2"]
+    );
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("FileSessionStore retains the index lock through nested mutations", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-nested-lock-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    const lockPath = `${store.sessionsIndexPath}.lock`;
+    store.updateIndex((index) => {
+      store.updateIndex(() => undefined);
+      assert.equal(fs.existsSync(lockPath), true);
+      index.entries.push(buildEntry("session-1"));
+    });
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test(
+  "FileSessionStore reuses ownership after a failed lock release",
+  { skip: process.platform === "win32" },
+  (context) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-release-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    let lockPath = "";
+
+    try {
+      const store = new FileSessionStore(path.join(home, "project"));
+      lockPath = `${store.sessionsIndexPath}.lock`;
+      let releaseFailed = false;
+      try {
+        store.updateIndex((index) => {
+          index.entries.push(buildEntry("session-1"));
+          fs.chmodSync(lockPath, 0o000);
+        });
+      } catch (error) {
+        releaseFailed = true;
+        assert.match(String(error), /EACCES|EPERM/);
+      }
+      if (!releaseFailed) {
+        context.skip("This runner can read mode-000 lock files.");
+        return;
+      }
+
+      fs.chmodSync(lockPath, 0o600);
+      store.updateIndex((index) => index.entries.push(buildEntry("session-2")));
+      assert.deepEqual(
+        store.listSessions().map((entry) => entry.id),
+        ["session-1", "session-2"]
+      );
+    } finally {
+      if (lockPath && fs.existsSync(lockPath)) fs.chmodSync(lockPath, 0o600);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+);
+
+test("FileSessionStore does not overwrite a malformed index during an update", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-malformed-index-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    store.ensureProjectDir();
+    fs.writeFileSync(store.sessionsIndexPath, '{"version":1,"entries":[', "utf8");
+
+    assert.throws(
+      () =>
+        store.updateIndex((index) => {
+          index.entries.push(buildEntry("session-1"));
+        }),
+      SyntaxError
+    );
+    assert.equal(fs.readFileSync(store.sessionsIndexPath, "utf8"), '{"version":1,"entries":[');
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("FileSessionStore does not normalize a structurally malformed index during an update", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "doku-session-store-invalid-index-shape-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = home;
+
+  try {
+    const store = new FileSessionStore(path.join(home, "project"));
+    store.ensureProjectDir();
+    const malformed = '{"version":1,"entries":{"session-1":{"status":"processing"}}}';
+    fs.writeFileSync(store.sessionsIndexPath, malformed, "utf8");
+
+    assert.throws(
+      () => store.updateIndex((index) => index.entries.push(buildEntry("session-2"))),
+      /metadata is malformed/
+    );
+    assert.equal(fs.readFileSync(store.sessionsIndexPath, "utf8"), malformed);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function buildEntry(id: string): SessionEntry {
+  return {
+    id,
+    summary: id,
+    assistantReply: null,
+    assistantThinking: null,
+    assistantRefusal: null,
+    toolCalls: null,
+    status: "completed",
+    failReason: null,
+    usage: null,
+    usagePerModel: null,
+    activeTokens: 0,
+    createTime: "2026-08-15T00:00:00.000Z",
+    updateTime: "2026-08-15T00:00:00.000Z",
+    processes: null,
+    workflow: { mode: "build", plan: null },
+  };
+}
+
+function buildMessage(sessionId: string): SessionMessage {
+  return {
+    id: "message-1",
+    sessionId,
+    role: "user",
+    content: "initial prompt",
+    contentParams: null,
+    messageParams: null,
+    compacted: false,
+    visible: true,
+    createTime: "2026-08-15T00:00:00.000Z",
+    updateTime: "2026-08-15T00:00:00.000Z",
+  };
+}
+
+function runStoreUpdater(script: string, env: Record<string, string>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Store updater exited with ${code ?? "no code"}: ${stderr}`));
+    });
+  });
+}

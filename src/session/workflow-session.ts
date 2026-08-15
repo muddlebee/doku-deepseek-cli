@@ -51,7 +51,10 @@ export function changeWorkflowEntryMode(
   return {
     ...entry,
     workflow: changeWorkflowMode(entry.workflow, mode, now),
-    status: modeChanged && entry.status === "needs_continuation" ? "completed" : entry.status,
+    status:
+      modeChanged && (entry.status === "needs_continuation" || entry.status === "needs_recovery")
+        ? "completed"
+        : entry.status,
     updateTime: now,
   };
 }

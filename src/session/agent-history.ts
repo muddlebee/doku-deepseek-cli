@@ -81,12 +81,21 @@ export function buildAgentInputItems(
         type: "function_call_result",
         callId: params.tool_call_id,
         name: typeof toolName === "string" ? toolName : "tool",
-        status: "completed",
+        status: isIncompleteToolResult(message) ? "incomplete" : "completed",
         output: message.content ?? "",
       });
     }
   }
   return items;
+}
+
+function isIncompleteToolResult(message: SessionMessage): boolean {
+  try {
+    const value = JSON.parse(message.content ?? "") as { incomplete?: unknown };
+    return value.incomplete === true;
+  } catch {
+    return false;
+  }
 }
 
 export function omitUnsupportedAgentImages(items: AgentInputItem[]): {

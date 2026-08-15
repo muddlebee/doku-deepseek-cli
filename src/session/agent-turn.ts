@@ -242,12 +242,20 @@ async function buildRunInput(
   pausedState: string | null
 ): Promise<AgentInputItem[] | RunState<AgentRuntimeContext, Agent<AgentRuntimeContext>>> {
   if (pausedState) {
-    const state = await RunState.fromStringWithContext<AgentRuntimeContext, typeof runtime.initialAgent>(
-      runtime.initialAgent,
-      pausedState,
-      new RunContext(context),
-      { contextStrategy: "replace" }
-    );
+    let state: RunState<AgentRuntimeContext, typeof runtime.initialAgent>;
+    try {
+      state = await RunState.fromStringWithContext<AgentRuntimeContext, typeof runtime.initialAgent>(
+        runtime.initialAgent,
+        pausedState,
+        new RunContext(context),
+        { contextStrategy: "replace" }
+      );
+    } catch {
+      removePausedAgentState(options.sessionId, deps.store.projectDir);
+      delete context.askUserAnswer;
+      await persistReplayableAgentHistory(agentSession, await agentSession.getItems());
+      return buildRunInput(options, deps, runtime, agentSession, context, null);
+    }
     if (!options.provider.supportsImages) {
       await sanitizeResumedStateImages(state, agentSession);
     }
